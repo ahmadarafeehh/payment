@@ -165,6 +165,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
 
+  // Debounce timer: collapses multiple concurrent controller-ready callbacks
+  // into a single setState instead of one per controller, preventing N full
+  // rebuilds when N video thumbnails finish initializing at the same time.
+  Timer? _videoInitDebounce;
+
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = false;
@@ -239,6 +244,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   @override
   void dispose() {
+    // Cancel debounce timer first so it cannot fire after disposal.
+    _videoInitDebounce?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_scrollListener);
     _scrollController.dispose();
@@ -406,6 +413,12 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   // ========== POST VIDEOS ==========
+
+  // ── Initializes a video controller and debounces the setState so that N
+  //    concurrent controller-ready callbacks collapse into one rebuild instead
+  //    of triggering one full rebuild per controller. Previously each listener
+  //    fired setState individually, causing the grid to rebuild (and re-render
+  //    every thumbnail) once per video that finished loading. ───────────────
   Future<void> _initializeVideoController(String videoUrl) async {
     if (_videoControllers.containsKey(videoUrl) ||
         _videoControllersInitialized[videoUrl] == true) return;
@@ -417,16 +430,18 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       _videoControllers[videoUrl] = controller;
       _videoControllersInitialized[videoUrl] = false;
 
-      controller.addListener(() {
-        if (controller.value.isInitialized &&
-            !(_videoControllersInitialized[videoUrl] ?? false)) {
-          _videoControllersInitialized[videoUrl] = true;
-          _configureVideoLoop(controller);
+      controller.initialize().then((_) {
+        if (!mounted || !_videoControllers.containsKey(videoUrl)) return;
+        _videoControllersInitialized[videoUrl] = true;
+        _configureVideoLoop(controller);
+        controller.setVolume(0.0);
+
+        // Debounce: collapse all concurrent init callbacks into one rebuild.
+        _videoInitDebounce?.cancel();
+        _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
           if (mounted) setState(() {});
-        }
+        });
       });
-      await controller.initialize();
-      await controller.setVolume(0.0);
     } catch (_) {
       _videoControllers.remove(videoUrl)?.dispose();
       _videoControllersInitialized.remove(videoUrl);
@@ -446,22 +461,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   VideoPlayerController? _getVideoController(String url) =>
       _videoControllers[url];
+
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
   // ── Shared edit overlay layer (strokes + text) scaled to the preview cell ──
-  //
-  // Works entirely in preview-cell coordinates — no Transform/SizedBox
-  // overflow tricks. This matters for video thumbnails specifically: the old
-  // approach used Transform which does NOT change a widget's layout size, so
-  // the full-screen-sized SizedBox overflowed the tiny grid cell and Flutter's
-  // Stack clipped the painted content away before it could be seen.
-  //
-  // Strokes  — _ScaledDrawingPainter applies canvas.scale() so every authored
-  //             absolute-pixel point is drawn at the correct preview position.
-  // Text     — fractional (0–1) positions are multiplied by previewW/previewH
-  //             directly; fontSize is scaled by the smaller of the two axes so
-  //             text remains legible and proportional.
   Widget _buildEditOverlayLayer(
       VideoEditResult editResult, BoxConstraints constraints) {
     if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
@@ -474,13 +478,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     final double screenH = MediaQuery.of(context).size.height;
     final double scaleX = previewW / screenW;
     final double scaleY = previewH / screenH;
-    // Scale font sizes by the smaller axis so text never overflows the cell.
     final double fontScale = math.min(scaleX, scaleY);
 
     return Stack(
       clipBehavior: Clip.hardEdge,
       children: [
-        // Strokes — canvas.scale() maps authored pixel coords into the cell.
         if (editResult.strokes.isNotEmpty)
           Positioned.fill(
             child: CustomPaint(
@@ -491,8 +493,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               ),
             ),
           ),
-        // Text overlays — fractional positions × preview dimensions give the
-        // correct pixel location inside the cell without any Transform at all.
         ...editResult.overlays.map((o) {
           final scaledOverlay = o.copyWith(fontSize: o.fontSize * fontScale);
           return Positioned(
@@ -543,8 +543,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             ),
           ),
         ),
-        // Strokes + text overlays rendered via the shared helper so that
-        // both video and image thumbnails behave identically.
         if (editResult != null)
           Positioned.fill(
             child: IgnorePointer(
@@ -605,6 +603,9 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   // ========== DATA FETCHING ==========
+
+  // ── Uses Supabase count option so no post-ID rows are transferred just to
+  //    get the total — previously fetched all postId rows and called .length.
   Future<void> getData() async {
     if (!mounted) return;
     setState(() {
@@ -614,9 +615,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     });
 
     try {
-      final totalPostsResponse =
-          await _supabase.from('posts').select('postId').eq('uid', widget.uid);
-      final totalPostCount = totalPostsResponse.length;
+      // Count-only query: returns the integer total without fetching rows.
+      final countResponse = await _supabase
+          .from('posts')
+          .select('postId')
+          .eq('uid', widget.uid)
+          .count(CountOption.exact);
+      final totalPostCount = countResponse.count;
 
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
@@ -1262,16 +1267,12 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   // ── Static image thumbnail — applies filter, rotation, strokes + text ────
-  //
-  // Previously this method only handled filter and rotation; strokes and text
-  // overlays were never rendered, causing a mismatch with the full-screen view.
   Widget _buildPostImage(Map<String, dynamic> post, _ColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final editResult = _parseEditResult(post);
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
-    // Base image, wrapped with filter + rotation when edit data is present.
     Widget baseImage = ClipRRect(
       borderRadius: BorderRadius.circular(4),
       child: editResult == null
@@ -1305,10 +1306,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             ),
     );
 
-    // No edit data — return the plain image immediately.
     if (editResult == null) return baseImage;
 
-    // Compose the base image with the overlay layer (strokes + text).
     return ClipRRect(
       borderRadius: BorderRadius.circular(4),
       child: Stack(fit: StackFit.expand, children: [
@@ -1404,7 +1403,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     final coverImageUrl = coverPost != null ? coverPost['postUrl'] ?? '' : '';
     final isVideoCover = _isVideoFile(coverImageUrl);
 
-    // Parse edit metadata for the gallery cover post
     VideoEditResult? coverEditResult;
     if (coverPost != null) {
       final coverMeta = _extractEditMetadata(coverPost['video_edit_metadata']);
@@ -1719,16 +1717,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 // =============================================================================
 // SCALED DRAWING PAINTER
 // =============================================================================
-//
-// Applies canvas.scale(scaleX, scaleY) before delegating to DrawingPainter so
-// that stroke points authored in the full-screen video-editor space are painted
-// at the correct proportional location inside the much-smaller preview cell.
-//
-// Using canvas transforms here is the only reliable approach: wrapping a
-// DrawingPainter in a Transform widget changes the *visual* output but not
-// the widget's *layout size*, which caused the overlay layer to overflow its
-// Positioned.fill bounds and get clipped away entirely by the parent Stack.
-
 class _ScaledDrawingPainter extends CustomPainter {
   final List<DrawStroke> strokes;
   final double scaleX;
@@ -1744,8 +1732,6 @@ class _ScaledDrawingPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     canvas.save();
     canvas.scale(scaleX, scaleY);
-    // Paint strokes in the original authored coordinate space; the canvas
-    // transform above maps them into the preview cell automatically.
     DrawingPainter(strokes: strokes, currentStroke: null)
         .paint(canvas, Size(size.width / scaleX, size.height / scaleY));
     canvas.restore();
@@ -1753,7 +1739,5 @@ class _ScaledDrawingPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ScaledDrawingPainter old) =>
-      old.strokes != strokes ||
-      old.scaleX != scaleX ||
-      old.scaleY != scaleY;
+      old.strokes != strokes || old.scaleX != scaleX || old.scaleY != scaleY;
 }
