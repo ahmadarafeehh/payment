@@ -7,7 +7,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/services/notification_service.dart';
 import 'package:Ratedly/utils/utils.dart';
 import 'package:Ratedly/widgets/edit_profile_screen.dart';
-import 'package:Ratedly/screens/Profile_page/image_screen.dart';
 import 'package:Ratedly/screens/Profile_page/custom_camera_screen.dart';
 import 'package:Ratedly/widgets/settings_screen.dart';
 import 'package:Ratedly/widgets/user_list_screen.dart';
@@ -20,6 +19,7 @@ import 'package:Ratedly/screens/Profile_page/gallery_detail_screen.dart';
 import 'package:country_flags/country_flags.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
+import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 
 class _ColorSet {
   final Color textColor;
@@ -293,6 +293,18 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       try {
         _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
       } catch (_) {}
+    }
+  }
+
+  void _pauseAllGridVideos() {
+    for (final c in _videoControllers.values) {
+      if (c.value.isPlaying) c.pause();
+    }
+  }
+
+  void _resumeAllGridVideos() {
+    for (final c in _videoControllers.values) {
+      if (c.value.isInitialized && !c.value.isPlaying) c.play();
     }
   }
 
@@ -791,6 +803,30 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
+  // ── Loads the next batch of posts for ProfilePostFeedScreen ──────────────
+  // Mirrors _loadMorePosts() but is a standalone Future so the feed screen
+  // can call it via its onLoadMore callback without touching state fields.
+  Future<List<Map<String, dynamic>>> _loadMorePostsForFeed(
+      int currentCount) async {
+    try {
+      final newPosts = await _supabase
+          .from('posts')
+          .select(
+              'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
+          .eq('uid', widget.uid)
+          .order('datePublished', ascending: false)
+          .range(currentCount, currentCount + _subsequentPostsLimit - 1);
+
+      // Pre-spin up video controllers for the incoming batch so thumbnails
+      // are ready before the user swipes to them in the grid on return.
+      _preInitializeVideoControllers(newPosts);
+
+      return List<Map<String, dynamic>>.from(newPosts);
+    } catch (_) {
+      return [];
+    }
+  }
+
   Future<List<dynamic>> _processUserList(
       List<dynamic> userList, String idKey) async {
     if (userList.isEmpty) return [];
@@ -1184,7 +1220,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         if (postIndex < 0 || postIndex >= _displayedPosts.length) {
           return Container();
         }
-        return _buildPostItem(_displayedPosts[postIndex], colors);
+        return _buildPostItem(_displayedPosts[postIndex], colors, postIndex);
       },
     );
   }
@@ -1216,36 +1252,58 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildPostItem(Map<String, dynamic> post, _ColorSet colors) {
+  // ── Opens ProfilePostFeedScreen (vertical swipe feed) starting at the
+  //    tapped post. The feed receives the already-loaded grid posts as its
+  //    initial batch and fetches subsequent pages via _loadMorePostsForFeed.
+  //    onPostDeleted refreshes the grid so the deleted post disappears.
+  Widget _buildPostItem(
+      Map<String, dynamic> post, _ColorSet colors, int postIndex) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
     final editResult = _parseEditResult(post);
 
+    // Shape the userData map to match what ProfilePostFeedScreen expects.
+    final Map<String, dynamic> feedUserData = {
+      'uid': widget.uid,
+      'username': userData['username'] ?? '',
+      'photoUrl': userData['photoUrl'] ?? '',
+      'isVerified': userData['isVerified'] ?? false,
+      'country': userData['country'] ?? '',
+    };
+
     return GestureDetector(
       onTap: () {
-        for (final c in _videoControllers.values) {
-          if (c.value.isPlaying) c.pause();
-        }
+        // Pause all grid video thumbnails so they don't bleed audio into
+        // the feed's own video player.
+        _pauseAllGridVideos();
         _muteProfileVideo();
+
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => ImageViewScreen(
-              imageUrl: postUrl,
-              postId: post['postId']?.toString() ?? '',
-              description: post['description']?.toString() ?? '',
-              userId: post['uid']?.toString() ?? '',
-              username: userData['username']?.toString() ?? '',
-              profImage: userData['photoUrl']?.toString() ?? '',
+            builder: (_) => ProfilePostFeedScreen(
+              // Hand the feed the posts already loaded in the grid so there
+              // is no perceptible delay before the first post is visible.
+              initialPosts: List<Map<String, dynamic>>.from(_displayedPosts),
+              initialIndex: postIndex,
+              userData: feedUserData,
+              // Called when the user swipes within 3 posts of the end.
+              // Uses the same Supabase query + sort order as the grid so
+              // the post sequence is always consistent.
+              onLoadMore: _loadMorePostsForFeed,
+              // Let the feed know whether more pages exist.
+              initialHasMore: _hasMorePosts,
+              // Refresh the grid when the owner deletes a post from the feed.
               onPostDeleted: () async => getData(),
-              datePublished: post['datePublished']?.toString() ?? '',
-              videoEditMetadata:
-                  _extractEditMetadata(post['video_edit_metadata']),
             ),
           ),
         ).then((_) {
+          // Resume grid video thumbnails after returning from the feed.
           Future.delayed(const Duration(milliseconds: 300), () {
-            if (mounted) _unmuteProfileVideo();
+            if (mounted) {
+              _resumeAllGridVideos();
+              _unmuteProfileVideo();
+            }
           });
         });
       },
