@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:Ratedly/utils/utils.dart';
-import 'package:Ratedly/screens/Profile_page/image_screen.dart';
 import 'package:Ratedly/screens/messaging_screen.dart';
 import 'package:Ratedly/screens/Profile_page/blocked_profile_screen.dart';
 import 'package:Ratedly/resources/block_firestore_methods.dart';
@@ -18,6 +17,7 @@ import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:country_flags/country_flags.dart';
 import 'package:Ratedly/screens/Profile_page/gallery_post_view_screen.dart';
 import 'package:Ratedly/providers/user_provider.dart';
+import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INLINE DEFINITIONS (normally from edit_shared.dart)
@@ -988,6 +988,30 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       if (mounted) showSnackBar(context, 'Failed to load more posts');
     } finally {
       if (mounted) setState(() => _isLoadingMore = false);
+    }
+  }
+
+  // ── Loads the next batch of posts for ProfilePostFeedScreen ──────────────
+  // Mirrors _loadMorePosts() but is a standalone Future so the feed screen
+  // can call it via its onLoadMore callback without touching state fields.
+  Future<List<Map<String, dynamic>>> _loadMorePostsForFeed(
+      int currentCount) async {
+    try {
+      final newPosts = await _supabase
+          .from('posts')
+          .select(
+              'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
+          .eq('uid', widget.uid)
+          .order('datePublished', ascending: false)
+          .range(currentCount, currentCount + _subsequentPostsLimit - 1);
+
+      // Pre-spin up video controllers for the incoming batch so thumbnails
+      // are ready before the user swipes to them in the grid on return.
+      _preInitializeVideoControllers(newPosts);
+
+      return List<Map<String, dynamic>>.from(newPosts);
+    } catch (_) {
+      return [];
     }
   }
 
@@ -2052,10 +2076,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── No FutureBuilder — block status is resolved once at load time and
-  //    stored in _isBlocked. All posts on this profile belong to widget.uid
-  //    so the per-post check was redundant and caused 75+ DB queries per
-  //    rebuild, producing the black-thumbnail and reload-flash symptoms.
+  // ── Opens ProfilePostFeedScreen (vertical swipe feed) starting at the
+  //    tapped post. The feed receives the already-loaded grid posts as its
+  //    initial batch and fetches subsequent pages via _loadMorePostsForFeed.
   Widget _buildOtherPostItem(
       Map<String, dynamic> post, _OtherProfileColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
@@ -2074,26 +2097,48 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       );
     }
 
+    // Find this post's position in the displayed list so the feed opens on
+    // the correct page. Falls back to 0 if not found.
+    final int tappedIndex = _displayedPosts.indexWhere(
+        (p) => p['postId']?.toString() == post['postId']?.toString());
+    final int startIndex = tappedIndex < 0 ? 0 : tappedIndex;
+
+    // Shape the userData map to match what ProfilePostFeedScreen expects.
+    final Map<String, dynamic> feedUserData = {
+      'uid': widget.uid,
+      'username': userData['username'] ?? '',
+      'photoUrl': userData['photoUrl'] ?? '',
+      'isVerified': userData['isVerified'] ?? false,
+      'country': userData['country'] ?? '',
+    };
+
     return GestureDetector(
       onTap: () {
+        // Pause grid video thumbnails so they don't bleed audio into the feed.
         _pauseAllVideos();
         _muteProfileVideo();
+
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => ImageViewScreen(
-              imageUrl: postUrl,
-              postId: post['postId'] ?? '',
-              description: post['description'] ?? '',
-              userId: post['uid'] ?? '',
-              username: userData['username'] ?? '',
-              profImage: userData['photoUrl'] ?? '',
-              datePublished: post['datePublished'],
-              videoEditMetadata:
-                  _extractEditMetadata(post['video_edit_metadata']),
+            builder: (_) => ProfilePostFeedScreen(
+              // Hand the feed the posts already loaded in the grid so there
+              // is no perceptible delay before the first post is visible.
+              initialPosts: List<Map<String, dynamic>>.from(_displayedPosts),
+              initialIndex: startIndex,
+              userData: feedUserData,
+              // Called when the user swipes within 3 posts of the end.
+              // Uses the same Supabase query + sort order as the grid so
+              // the post sequence is always consistent.
+              onLoadMore: _loadMorePostsForFeed,
+              // Let the feed know whether more pages exist.
+              initialHasMore: _hasMorePosts,
+              // Other users cannot delete each other's posts.
+              onPostDeleted: null,
             ),
           ),
         ).then((_) {
+          // Resume grid video thumbnails after returning from the feed.
           Future.delayed(const Duration(milliseconds: 300), () {
             if (mounted) {
               _resumeAllVideos();
@@ -2186,8 +2231,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             });
           }
         } catch (e) {
-          if (mounted)
+          if (mounted) {
             showSnackBar(context, 'Failed to load gallery posts: $e');
+          }
         }
       },
       child: Container(
