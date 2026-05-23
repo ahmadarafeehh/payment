@@ -20,7 +20,7 @@ import 'package:Ratedly/screens/Profile_page/gallery_post_view_screen.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INLINE DEFINITIONS (normally from edit_shared.dart) to guarantee availability
+// INLINE DEFINITIONS (normally from edit_shared.dart)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class FilterAdjustments {
@@ -35,15 +35,9 @@ class FilterAdjustments {
   });
 
   List<double> combinedMatrix(List<double> baseMatrix) {
-    // Simplified implementation – adjust if your actual version differs
     final b = brightness;
     final c = contrast;
     final s = saturation;
-
-    // Brightness adds to RGB
-    // Contrast scales around 0.5
-    // Saturation uses luminance weights
-    // This is a basic approximation; replace with exact logic if needed.
     return [
       c * s,
       0,
@@ -111,7 +105,6 @@ const List<FilterInfo> kFilters = [
     1,
     0,
   ]),
-  // Add other filters as needed; at minimum include the one used.
 ];
 
 class DrawStroke {
@@ -456,8 +449,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   int following = 0;
   bool _isMutualFollow = false;
 
+  // ── Video controllers ───────────────────────────────────────────────────
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
+
+  // Debounce timer: collapses multiple concurrent controller-ready callbacks
+  // into a single setState instead of one per controller.
+  Timer? _videoInitDebounce;
 
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
@@ -521,7 +519,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     return er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix);
   }
 
-  // ── Shared edit overlay layer (strokes + text) scaled to the preview cell ──
+  // ── Shared edit overlay layer (strokes + text) scaled to preview cell ────
   Widget _buildEditOverlayLayer(
       VideoEditResult editResult, BoxConstraints constraints) {
     if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
@@ -630,6 +628,19 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
+  // ========== SCROLL ==========
+  void _scrollListener() {
+    if (_scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent - 50 &&
+        !_isLoadingMore &&
+        _hasMorePosts &&
+        _selectedTabIndex == 0) {
+      Future.delayed(const Duration(milliseconds: 15), () {
+        if (mounted) _loadMorePosts();
+      });
+    }
+  }
+
   // ========== PROFILE VIDEO ==========
   Future<void> _initializeProfileVideo(String videoUrl) async {
     if (_profileVideoController != null) {
@@ -728,19 +739,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ========== SCROLL ==========
-  void _scrollListener() {
-    if (_scrollController.position.pixels >=
-            _scrollController.position.maxScrollExtent - 50 &&
-        !_isLoadingMore &&
-        _hasMorePosts &&
-        _selectedTabIndex == 0) {
-      Future.delayed(const Duration(milliseconds: 15), () {
-        if (mounted) _loadMorePosts();
-      });
-    }
-  }
-
   // ========== LOAD DATA ==========
   Future<void> _loadDataInParallel() async {
     setState(() => isLoading = true);
@@ -792,11 +790,16 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
+  // ── Uses Supabase count option — no row data transferred for the total ───
   Future<void> _loadPostsCountAndFirstBatch() async {
     try {
-      final totalPostsResponse =
-          await _supabase.from('posts').select('postId').eq('uid', widget.uid);
-      final totalPostCount = totalPostsResponse.length;
+      final countResponse = await _supabase
+          .from('posts')
+          .select('postId')
+          .eq('uid', widget.uid)
+          .count(CountOption.exact);
+      final totalPostCount = countResponse.count;
+
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
 
@@ -989,6 +992,10 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // ========== VIDEO HELPERS ==========
+
+  // ── Initializes a video controller and debounces the setState so that N
+  //    concurrent controller-ready callbacks collapse into a single rebuild
+  //    instead of triggering one full rebuild per controller. ───────────────
   Future<void> _initializeVideoController(String videoUrl) async {
     if (_videoControllers.containsKey(videoUrl) ||
         _videoControllersInitialized[videoUrl] == true) return;
@@ -999,13 +1006,18 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       );
       _videoControllers[videoUrl] = controller;
       _videoControllersInitialized[videoUrl] = false;
+
       controller.initialize().then((_) {
-        if (mounted && _videoControllers.containsKey(videoUrl)) {
-          _videoControllersInitialized[videoUrl] = true;
-          _configureVideoLoop(controller);
-          controller.setVolume(0.0);
-          setState(() {});
-        }
+        if (!mounted || !_videoControllers.containsKey(videoUrl)) return;
+        _videoControllersInitialized[videoUrl] = true;
+        _configureVideoLoop(controller);
+        controller.setVolume(0.0);
+
+        // Debounce: collapse all concurrent init callbacks into one rebuild.
+        _videoInitDebounce?.cancel();
+        _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
+          if (mounted) setState(() {});
+        });
       });
     } catch (_) {
       _videoControllers.remove(videoUrl)?.dispose();
@@ -1026,6 +1038,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   VideoPlayerController? _getVideoController(String url) =>
       _videoControllers[url];
+
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
@@ -1052,7 +1065,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         l.contains('video=true');
   }
 
-  // ── Gallery cover video player with filter & rotation ───────────
+  // ── Gallery cover video player with filter & rotation ────────────────────
   Widget _buildGalleryVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
     if (!_videoControllers.containsKey(videoUrl)) {
@@ -1094,7 +1107,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── Post thumbnail video player with filter, rotation, overlays ─
+  // ── Post thumbnail video player with filter, rotation, overlays ──────────
   Widget _buildPostVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
     if (!_videoControllers.containsKey(videoUrl)) {
@@ -1138,7 +1151,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── Static image thumbnail with filter, rotation, overlays ─────────
+  // ── Static image thumbnail with filter, rotation, overlays ───────────────
   Widget _buildPostImage(String imageUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -1225,7 +1238,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── Gallery cover static image with filter & rotation ───────────
+  // ── Gallery cover static image with filter & rotation ────────────────────
   Widget _buildGalleryCoverImage(String imageUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -1432,11 +1445,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       final isPrivate = userData['isPrivate'] ?? false;
       if (isFollowing) {
         await SupabaseProfileMethods().unfollowUser(currentUserId, widget.uid);
-        if (mounted)
+        if (mounted) {
           setState(() {
             isFollowing = false;
             _isMutualFollow = false;
           });
+        }
       } else if (hasPendingRequest) {
         await SupabaseProfileMethods()
             .declineFollowRequest(widget.uid, currentUserId);
@@ -1444,9 +1458,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       } else {
         await SupabaseProfileMethods().followUser(currentUserId, widget.uid);
         if (isPrivate) {
-          setState(() => hasPendingRequest = true);
+          if (mounted) setState(() => hasPendingRequest = true);
         } else {
-          setState(() => isFollowing = true);
+          if (mounted) setState(() => isFollowing = true);
           _checkMutualFollowAfterFollow();
         }
       }
@@ -2038,76 +2052,70 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
+  // ── No FutureBuilder — block status is resolved once at load time and
+  //    stored in _isBlocked. All posts on this profile belong to widget.uid
+  //    so the per-post check was redundant and caused 75+ DB queries per
+  //    rebuild, producing the black-thumbnail and reload-flash symptoms.
   Widget _buildOtherPostItem(
       Map<String, dynamic> post, _OtherProfileColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
     final editResult = _parseEditResult(post);
 
-    return FutureBuilder<bool>(
-      future: SupabaseBlockMethods().isMutuallyBlocked(
-        (Provider.of<UserProvider>(context, listen: false).firebaseUid ??
-                Provider.of<UserProvider>(context, listen: false)
-                    .supabaseUid) ??
-            '',
-        post['uid'] ?? '',
-      ),
-      builder: (context, snapshot) {
-        if (snapshot.hasData && snapshot.data!) {
-          return Container(
-            margin: const EdgeInsets.all(1),
-            decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(4),
-                color: colors.avatarBackgroundColor),
-            child: const Center(
-                child: Icon(Icons.block, color: Colors.red, size: 24)),
-          );
-        }
+    // Reuse the screen-level block flag — already fetched during init.
+    if (_isBlocked) {
+      return Container(
+        margin: const EdgeInsets.all(1),
+        decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(4),
+            color: colors.avatarBackgroundColor),
+        child:
+            const Center(child: Icon(Icons.block, color: Colors.red, size: 24)),
+      );
+    }
 
-        return GestureDetector(
-          onTap: () {
-            _pauseAllVideos();
-            _muteProfileVideo();
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => ImageViewScreen(
-                  imageUrl: postUrl,
-                  postId: post['postId'] ?? '',
-                  description: post['description'] ?? '',
-                  userId: post['uid'] ?? '',
-                  username: userData['username'] ?? '',
-                  profImage: userData['photoUrl'] ?? '',
-                  datePublished: post['datePublished'],
-                  videoEditMetadata:
-                      _extractEditMetadata(post['video_edit_metadata']),
-                ),
-              ),
-            ).then((_) {
-              Future.delayed(const Duration(milliseconds: 300), () {
-                if (mounted) {
-                  _resumeAllVideos();
-                  _unmuteProfileVideo();
-                }
-              });
-            });
-          },
-          child: Container(
-            margin: const EdgeInsets.all(1),
-            decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(4),
-                color: isVideo ? colors.avatarBackgroundColor : null),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                isVideo
-                    ? _buildPostVideoPlayer(postUrl, colors, editResult)
-                    : _buildPostImage(postUrl, colors, editResult),
-              ],
+    return GestureDetector(
+      onTap: () {
+        _pauseAllVideos();
+        _muteProfileVideo();
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ImageViewScreen(
+              imageUrl: postUrl,
+              postId: post['postId'] ?? '',
+              description: post['description'] ?? '',
+              userId: post['uid'] ?? '',
+              username: userData['username'] ?? '',
+              profImage: userData['photoUrl'] ?? '',
+              datePublished: post['datePublished'],
+              videoEditMetadata:
+                  _extractEditMetadata(post['video_edit_metadata']),
             ),
           ),
-        );
+        ).then((_) {
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (mounted) {
+              _resumeAllVideos();
+              _unmuteProfileVideo();
+            }
+          });
+        });
       },
+      child: Container(
+        margin: const EdgeInsets.all(1),
+        decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(4),
+            color: isVideo ? colors.avatarBackgroundColor : null),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            isVideo
+                ? _buildPostVideoPlayer(postUrl, colors, editResult)
+                : _buildPostImage(postUrl, colors, editResult),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2261,6 +2269,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   @override
   void dispose() {
+    _videoInitDebounce?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_scrollListener);
     _scrollController.dispose();
