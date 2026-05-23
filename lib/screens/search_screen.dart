@@ -963,21 +963,16 @@ class _SearchScreenState extends State<SearchScreen>
 
   // ========== SKELETONS ==========
   Widget _buildPostsGridSkeleton(_SearchColorSet colors) {
-    return ListView(
+    return GridView.builder(
       padding: const EdgeInsets.all(8.0),
-      children: [
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 8.0,
-              mainAxisSpacing: 8.0,
-              childAspectRatio: 0.75),
-          itemCount: _initialPostsToShow,
-          itemBuilder: (_, __) => _buildPostSkeleton(colors),
-        ),
-      ],
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 8.0,
+        mainAxisSpacing: 8.0,
+        childAspectRatio: 0.75,
+      ),
+      itemCount: 12,
+      itemBuilder: (_, __) => _buildPostSkeleton(colors),
     );
   }
 
@@ -1131,7 +1126,7 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  // ========== SIMPLIFIED POSTS GRID - NO TOP POSTS SECTION ==========
+  // ========== MODIFIED: No top posts section ==========
   Widget _buildPostsGrid(_SearchColorSet colors) {
     if (_allPosts.isEmpty) {
       return Center(
@@ -1150,20 +1145,27 @@ class _SearchScreenState extends State<SearchScreen>
           }
           return false;
         },
-        child: GridView.builder(
+        child: ListView(
           controller: _scrollController,
           padding: const EdgeInsets.all(8.0),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              childAspectRatio: 0.75,
-              crossAxisSpacing: 8.0,
-              mainAxisSpacing: 8.0),
-          itemCount: _allPosts.length,
-          itemBuilder: (context, index) {
-            final post = _allPosts[index];
-            final postUrl = post['postUrl']?.toString() ?? '';
-            return _buildPostItem(post, postUrl, colors);
-          },
+          children: [
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                childAspectRatio: 0.75,
+                crossAxisSpacing: 8.0,
+                mainAxisSpacing: 8.0,
+              ),
+              itemCount: _allPosts.length,
+              itemBuilder: (context, index) {
+                final post = _allPosts[index];
+                return _buildPostItem(
+                    post, post['postUrl']?.toString() ?? '', colors);
+              },
+            ),
+          ],
         ),
       ),
       if (_isLoadingMore)
@@ -1186,6 +1188,7 @@ class _SearchScreenState extends State<SearchScreen>
     ]);
   }
 
+  // ========== MODIFIED: No top‑post border/trophy ==========
   Widget _buildPostItem(Map<String, dynamic> post, String postUrl,
       _SearchColorSet colors) {
     final isVideo = _isVideoFile(postUrl);
@@ -1222,14 +1225,17 @@ class _SearchScreenState extends State<SearchScreen>
           borderRadius: BorderRadius.circular(8),
         ),
         clipBehavior: Clip.hardEdge,
-        child: postUrl.isNotEmpty
-            ? (isVideo
+        child: Stack(children: [
+          if (postUrl.isNotEmpty)
+            isVideo
                 ? _buildVideoPlayer(postUrl, colors, editResult)
-                : _buildPostImage(postUrl, colors, editResult))
-            : Container(
-                color: colors.gridItemBackgroundColor,
-                child: Icon(Icons.broken_image, color: colors.iconColor),
-              ),
+                : _buildPostImage(postUrl, colors, editResult)
+          else
+            Container(
+              color: colors.gridItemBackgroundColor,
+              child: Icon(Icons.broken_image, color: colors.iconColor),
+            ),
+        ]),
       ),
     );
   }
