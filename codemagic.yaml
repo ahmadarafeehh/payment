@@ -1,0 +1,76 @@
+workflows:
+  ios-release:
+    name: iOS Release
+    max_build_duration: 59
+    instance_type: mac_mini_m2
+
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.ios.ratedly
+      groups:
+        - app_store_credentials          # Stores APP_STORE_CONNECT_PRIVATE_KEY, KEY_ID, ISSUER_ID
+      vars:
+        BUNDLE_ID: "com.ios.ratedly"
+      flutter: 3.27.4
+      xcode: latest
+      cocoapods: default
+
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+
+    scripts:
+      - name: Disable Swift Package Manager
+        script: |
+          flutter config --no-enable-swift-package-manager
+
+      - name: Get Flutter packages
+        script: |
+          flutter packages pub get
+
+      # --- NEW: Patch AppFrameworkInfo.plist before building ---
+      - name: Ensure MinimumOSVersion in AppFrameworkInfo.plist
+        script: |
+          PLIST_PATH="ios/Flutter/AppFrameworkInfo.plist"
+          if [ -f "$PLIST_PATH" ]; then
+            /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string 13.0" "$PLIST_PATH" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 13.0" "$PLIST_PATH"
+            echo "✅ Patched $PLIST_PATH with MinimumOSVersion=13.0"
+          else
+            echo "⚠️ $PLIST_PATH not found – skipping patch"
+          fi
+
+      - name: Set up code signing
+        script: |
+          xcode-project use-profiles
+
+      - name: Pod repo update
+        script: |
+          cd ios && pod repo update
+
+      - name: Build iOS IPA
+        script: |
+          flutter build ipa --release \
+            --build-number=$BUILD_NUMBER \
+            --export-options-plist=/Users/builder/export_options.plist
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: true
+      email:
+        recipients:
+          - ahmadarafeh9@gmail.com
+        notify:
+          success: true
+          failure: true
