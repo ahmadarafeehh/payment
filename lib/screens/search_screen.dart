@@ -966,40 +966,6 @@ class _SearchScreenState extends State<SearchScreen>
     return ListView(
       padding: const EdgeInsets.all(8.0),
       children: [
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16.0),
-            child: Row(children: [
-              Expanded(child: Divider(color: colors.dividerColor)),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                child: Container(
-                  height: 20,
-                  width: 180,
-                  decoration: BoxDecoration(
-                      color: colors.skeletonColor,
-                      borderRadius: BorderRadius.circular(4)),
-                ),
-              ),
-              Expanded(child: Divider(color: colors.dividerColor)),
-            ]),
-          ),
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 8.0,
-                mainAxisSpacing: 8.0,
-                childAspectRatio: 0.75),
-            itemCount: 3,
-            itemBuilder: (_, __) => _buildPostSkeleton(colors),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16.0),
-            child: Divider(color: colors.dividerColor),
-          ),
-        ]),
         GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
@@ -1008,7 +974,7 @@ class _SearchScreenState extends State<SearchScreen>
               crossAxisSpacing: 8.0,
               mainAxisSpacing: 8.0,
               childAspectRatio: 0.75),
-          itemCount: _initialPostsToShow - 3,
+          itemCount: _initialPostsToShow,
           itemBuilder: (_, __) => _buildPostSkeleton(colors),
         ),
       ],
@@ -1165,17 +1131,13 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
+  // ========== SIMPLIFIED POSTS GRID - NO TOP POSTS SECTION ==========
   Widget _buildPostsGrid(_SearchColorSet colors) {
     if (_allPosts.isEmpty) {
       return Center(
           child: Text('No posts found.',
               style: TextStyle(color: colors.textColor)));
     }
-
-    final topPosts =
-        _allPosts.length >= 3 ? _allPosts.sublist(0, 3) : _allPosts;
-    final remainingPosts =
-        _allPosts.length > 3 ? _allPosts.sublist(3) : <Map<String, dynamic>>[];
 
     return Stack(children: [
       NotificationListener<ScrollNotification>(
@@ -1188,67 +1150,20 @@ class _SearchScreenState extends State<SearchScreen>
           }
           return false;
         },
-        child: ListView(
+        child: GridView.builder(
           controller: _scrollController,
           padding: const EdgeInsets.all(8.0),
-          children: [
-            if (topPosts.isNotEmpty)
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16.0),
-                  child: Row(children: [
-                    Expanded(child: Divider(color: colors.dividerColor)),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                      child: Text(
-                        'Top posts for this week 🏆',
-                        style: TextStyle(
-                            color: colors.textColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16),
-                      ),
-                    ),
-                    Expanded(child: Divider(color: colors.dividerColor)),
-                  ]),
-                ),
-                GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      childAspectRatio: 0.75,
-                      crossAxisSpacing: 8.0,
-                      mainAxisSpacing: 8.0),
-                  itemCount: topPosts.length,
-                  itemBuilder: (context, index) {
-                    final post = topPosts[index];
-                    return _buildPostItem(
-                        post, post['postUrl']?.toString() ?? '', colors, true);
-                  },
-                ),
-                if (remainingPosts.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16.0),
-                    child: Divider(color: colors.dividerColor),
-                  ),
-              ]),
-            if (remainingPosts.isNotEmpty)
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    childAspectRatio: 0.75,
-                    crossAxisSpacing: 8.0,
-                    mainAxisSpacing: 8.0),
-                itemCount: remainingPosts.length,
-                itemBuilder: (context, index) {
-                  final post = remainingPosts[index];
-                  return _buildPostItem(
-                      post, post['postUrl']?.toString() ?? '', colors, false);
-                },
-              ),
-          ],
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              childAspectRatio: 0.75,
+              crossAxisSpacing: 8.0,
+              mainAxisSpacing: 8.0),
+          itemCount: _allPosts.length,
+          itemBuilder: (context, index) {
+            final post = _allPosts[index];
+            final postUrl = post['postUrl']?.toString() ?? '';
+            return _buildPostItem(post, postUrl, colors);
+          },
         ),
       ),
       if (_isLoadingMore)
@@ -1272,7 +1187,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildPostItem(Map<String, dynamic> post, String postUrl,
-      _SearchColorSet colors, bool isTopPost) {
+      _SearchColorSet colors) {
     final isVideo = _isVideoFile(postUrl);
     if (isVideo) _initializeVideoController(postUrl);
 
@@ -1305,33 +1220,16 @@ class _SearchScreenState extends State<SearchScreen>
         decoration: BoxDecoration(
           color: isVideo ? colors.gridItemBackgroundColor : Colors.transparent,
           borderRadius: BorderRadius.circular(8),
-          border: isTopPost ? Border.all(color: Colors.amber, width: 2) : null,
         ),
         clipBehavior: Clip.hardEdge,
-        child: Stack(children: [
-          if (postUrl.isNotEmpty)
-            isVideo
+        child: postUrl.isNotEmpty
+            ? (isVideo
                 ? _buildVideoPlayer(postUrl, colors, editResult)
-                : _buildPostImage(postUrl, colors, editResult)
-          else
-            Container(
-              color: colors.gridItemBackgroundColor,
-              child: Icon(Icons.broken_image, color: colors.iconColor),
-            ),
-          if (isTopPost)
-            Positioned(
-              top: 4,
-              right: 4,
-              child: Container(
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
-                    shape: BoxShape.circle),
-                child: const Icon(Icons.emoji_events,
-                    color: Colors.amber, size: 16),
+                : _buildPostImage(postUrl, colors, editResult))
+            : Container(
+                color: colors.gridItemBackgroundColor,
+                child: Icon(Icons.broken_image, color: colors.iconColor),
               ),
-            ),
-        ]),
       ),
     );
   }
