@@ -436,7 +436,8 @@ class SupabasePostsMethods {
             final likerData = _unwrap(likerSel) ?? likerSel;
             final String likerUsername = likerData?['username'] ?? 'Someone';
 
-            _notificationService.triggerServerNotification(
+            // FIX: awaited + type matches DB type 'comment_like'
+            await _notificationService.triggerServerNotification(
               type: 'comment_like',
               targetUserId: commentOwnerId,
               title: 'New Like',
@@ -500,7 +501,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Create reaction notification (previously rating)
+  // Create reaction notification
   // ----------------------
   Future<void> createNotification({
     required String postId,
@@ -511,6 +512,7 @@ class SupabasePostsMethods {
     try {
       if (raterUid == postOwnerUid) return;
 
+      // FIX: DB insert type is 'post_reaction' — kept consistent
       await _supabase.from('notifications').insert({
         'type': 'post_reaction',
         'target_user_id': postOwnerUid,
@@ -530,8 +532,11 @@ class SupabasePostsMethods {
       final raterData = _unwrap(raterSel) ?? raterSel;
       final String raterUsername = raterData?['username'] ?? 'Someone';
 
-      _notificationService.triggerServerNotification(
-        type: 'reaction',
+      // FIX 1: awaited so the push actually completes before returning
+      // FIX 2: type changed from 'reaction' → 'post_reaction' to match DB and
+      //        whatever handler your backend/push server uses to route by type
+      await _notificationService.triggerServerNotification(
+        type: 'post_reaction',
         targetUserId: postOwnerUid,
         title: 'New Reaction',
         body: '$raterUsername reacted to your post',
@@ -650,7 +655,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Rate a post (now: react to a post)
+  // Rate a post (react to a post)
   // ----------------------
   Future<String> ratePost(String postId, String uid, double rating) async {
     String res = "Some error occurred";
@@ -687,6 +692,7 @@ class SupabasePostsMethods {
         if (isUpdate) {
           await _deletePreviousReactionNotification(postId, uid);
         }
+        // FIX: awaited so errors surface and the push completes before ratePost returns
         await createNotification(
           postId: postId,
           postOwnerUid: postOwnerUid,
@@ -741,7 +747,8 @@ class SupabasePostsMethods {
       if (uid != postOwnerUid && postOwnerUid.isNotEmpty) {
         await createCommentNotification(postId, uid, text, commentId);
 
-        _notificationService.triggerServerNotification(
+        // FIX: awaited + type matches DB type 'comment'
+        await _notificationService.triggerServerNotification(
           type: 'comment',
           targetUserId: postOwnerUid,
           title: 'New Comment',
@@ -1230,7 +1237,8 @@ class SupabasePostsMethods {
       final replierData = _unwrap(replierSel) ?? replierSel;
       final String replierName = replierData?['username'] ?? 'Someone';
 
-      _notificationService.triggerServerNotification(
+      // FIX: awaited + type matches DB type 'reply'
+      await _notificationService.triggerServerNotification(
         type: 'reply',
         targetUserId: replyOwnerUid,
         title: 'New Reply',
@@ -1289,7 +1297,8 @@ class SupabasePostsMethods {
       final likerData = _unwrap(likerSel) ?? likerSel;
       final String likerName = likerData?['username'] ?? 'Someone';
 
-      _notificationService.triggerServerNotification(
+      // FIX: awaited + type matches DB type 'reply_like'
+      await _notificationService.triggerServerNotification(
         type: 'reply_like',
         targetUserId: replyOwnerUid,
         title: 'Reply Liked',
