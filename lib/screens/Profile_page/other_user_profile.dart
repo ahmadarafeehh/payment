@@ -39,26 +39,10 @@ class FilterAdjustments {
     final c = contrast;
     final s = saturation;
     return [
-      c * s,
-      0,
-      0,
-      0,
-      b,
-      0,
-      c * s,
-      0,
-      0,
-      b,
-      0,
-      0,
-      c * s,
-      0,
-      b,
-      0,
-      0,
-      0,
-      1,
-      0,
+      c * s, 0, 0, 0, b,
+      0, c * s, 0, 0, b,
+      0, 0, c * s, 0, b,
+      0, 0, 0, 1, 0,
     ];
   }
 
@@ -84,26 +68,10 @@ class FilterInfo {
 
 const List<FilterInfo> kFilters = [
   FilterInfo(name: 'Original', matrix: [
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
+    1, 0, 0, 0, 0,
+    0, 1, 0, 0, 0,
+    0, 0, 1, 0, 0,
+    0, 0, 0, 1, 0,
   ]),
 ];
 
@@ -449,11 +417,14 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   int following = 0;
   bool _isMutualFollow = false;
 
-  // ── Video controllers ───────────────────────────────────────────────────
+  // ── Video controllers ────────────────────────────────────────────────────
   final Map<String, VideoPlayerController> _videoControllers = {};
+
+  // true = controller initialized AND first frame decoded (safe to display).
+  // false = controller exists but not yet ready to paint (show spinner).
   final Map<String, bool> _videoControllersInitialized = {};
 
-  // Debounce timer: collapses multiple concurrent controller-ready callbacks
+  // Debounce timer: collapses multiple concurrent first-frame callbacks
   // into a single setState instead of one per controller.
   Timer? _videoInitDebounce;
 
@@ -486,37 +457,22 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   bool _hasLoaded = false;
 
-  // ── Logging ─────────────────────────────────────────────────────────────
-  // Each visit to this screen gets a unique session ID that groups all
-  // log rows together, making it easy to reconstruct the full timeline
-  // for a single load. Lazy-initialised on first use via _sendLog().
+  // ── Logging ──────────────────────────────────────────────────────────────
   String? _currentSessionId;
-
-  // Wall-clock reference point set at screen_open. Used to compute
-  // elapsed_ms for every subsequent event in this session.
   DateTime? _screenOpenAt;
-
-  // Tracks how many video controller init calls are currently in-flight
-  // so we can log a meaningful total when all have resolved.
   int _pendingVideoInits = 0;
 
-  /// Inserts one row into `profile_screen_logs`.
-  ///
-  /// Never throws – logging must never crash the screen.
-  /// Always call this with `unawaited()` from UI code paths so it
-  /// doesn't block rendering.
+  // Tracks post IDs that have already been logged for post_render so we
+  // don't spam the DB with one row per rebuild. Flipped true on first render.
+  final Set<String> _loggedPostRenders = {};
+
   Future<void> _sendLog(Map<String, dynamic> payload) async {
     try {
-      // Lazy-initialise session ID on the very first log of the session.
       _currentSessionId ??= DateTime.now().microsecondsSinceEpoch.toString();
-
-      // Compute elapsed_ms from screen open unless the caller already
-      // provided it (e.g. screen_open itself, which sends 0).
       final int elapsedMs =
           _screenOpenAt != null && !payload.containsKey('elapsed_ms')
               ? DateTime.now().difference(_screenOpenAt!).inMilliseconds
               : (payload['elapsed_ms'] as int? ?? 0);
-
       await _supabase.from('profile_screen_logs').insert({
         'session_id': _currentSessionId,
         'user_id': widget.uid,
@@ -525,19 +481,17 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         'elapsed_ms': elapsedMs,
         ...payload,
       });
-    } catch (_) {
-      // Intentionally swallowed – logging must never affect the user.
-    }
+    } catch (_) {}
   }
 
-  // ── Color helpers ────────────────────────────────────────────────────────
+  // ── Color helpers ─────────────────────────────────────────────────────────
   _OtherProfileColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
         ? _OtherProfileDarkColors()
         : _OtherProfileLightColors();
   }
 
-  // ── Safely extract video_edit_metadata as Map<String,dynamic>? ──────────
+  // ── Safely extract video_edit_metadata as Map<String,dynamic>? ───────────
   Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
     if (raw == null) return null;
     if (raw is Map<String, dynamic>) return raw;
@@ -545,7 +499,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     return null;
   }
 
-  // ── Parse VideoEditResult from a post map, returns null on failure ───────
+  // ── Parse VideoEditResult from a post map, returns null on failure ────────
   VideoEditResult? _parseEditResult(Map<String, dynamic> post) {
     final meta = _extractEditMetadata(post['video_edit_metadata']);
     if (meta == null) return null;
@@ -556,7 +510,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  // ── Build the combined colour-filter matrix for a VideoEditResult ────────
+  // ── Build the combined colour-filter matrix for a VideoEditResult ─────────
   List<double> _buildColorMatrix(VideoEditResult? er) {
     if (er == null) {
       return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
@@ -564,7 +518,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     return er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix);
   }
 
-  // ── Shared edit overlay layer (strokes + text) scaled to preview cell ────
+  // ── Shared edit overlay layer (strokes + text) scaled to preview cell ─────
   Widget _buildEditOverlayLayer(
       VideoEditResult editResult, BoxConstraints constraints) {
     if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
@@ -674,11 +628,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // ========== SCROLL ==========
-
-  // NOTE: Both _scrollController.addListener and the NotificationListener
-  // in build() call _loadMorePosts(). The load_more_triggered log will
-  // expose if they are racing. The guard (_isLoadingMore / _hasMorePosts)
-  // prevents a double-fetch, but the log will still record both firings.
   void _scrollListener() {
     if (_scrollController.position.pixels >=
             _scrollController.position.maxScrollExtent - 50 &&
@@ -791,8 +740,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   // ========== LOAD DATA ==========
   Future<void> _loadDataInParallel() async {
-    // ── LOG: screen_open ────────────────────────────────────────────────
-    // Capture the wall-clock start before any async work begins.
     _screenOpenAt = DateTime.now();
     await _sendLog({
       'event_type': 'screen_open',
@@ -810,7 +757,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       ]);
       if (!_isBlocked && mounted) await _loadRelationshipData();
     } catch (e) {
-      // ── LOG: load_error ───────────────────────────────────────────────
       unawaited(_sendLog({
         'event_type': 'load_error',
         'error_message': e.toString(),
@@ -823,8 +769,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       if (mounted) setState(() => isLoading = false);
     }
 
-    // ── LOG: screen_ready ─────────────────────────────────────────────
-    // Logged right after all parallel loads finish regardless of errors.
     unawaited(_sendLog({
       'event_type': 'screen_ready',
       'post_count': postLen,
@@ -868,9 +812,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  // ── Uses Supabase count option — no row data transferred for the total ───
   Future<void> _loadPostsCountAndFirstBatch() async {
-    // ── LOG: api_request — posts count ──────────────────────────────────
     final countStart = DateTime.now();
     unawaited(_sendLog({
       'event_type': 'api_request',
@@ -886,7 +828,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .count(CountOption.exact);
       final totalPostCount = countResponse.count;
 
-      // ── LOG: api_response — posts count ─────────────────────────────
       unawaited(_sendLog({
         'event_type': 'api_response',
         'post_count': totalPostCount,
@@ -898,7 +839,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
 
-      // ── LOG: api_request — initial batch ────────────────────────────
       final batchStart = DateTime.now();
       unawaited(_sendLog({
         'event_type': 'api_request',
@@ -918,9 +858,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(0, postsLimit - 1);
 
-      // ── LOG: batch_fetched — initial batch ───────────────────────────
-      // Count how many of the returned posts are classified as video
-      // so we can spot misclassification in the first batch immediately.
       final int videoCount =
           initialPosts.where((p) => _isVideoFile(p['postUrl'] ?? '')).length;
       final int imageCount = initialPosts.length - videoCount;
@@ -950,7 +887,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         });
       }
     } catch (e) {
-      // ── LOG: api_error — posts fetch ─────────────────────────────────
       unawaited(_sendLog({
         'event_type': 'api_error',
         'error_message': e.toString(),
@@ -1096,9 +1032,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   Future<void> _loadMorePosts() async {
-    // ── LOG: load_more_triggered ─────────────────────────────────────────
-    // Logged BEFORE the guard so we can detect double-trigger races between
-    // _scrollController.addListener() and NotificationListener.
     unawaited(_sendLog({
       'event_type': 'load_more_triggered',
       'batch_index': (_postsOffset ~/ _subsequentPostsLimit),
@@ -1113,7 +1046,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     if (!_hasMorePosts || _isLoadingMore) return;
     setState(() => _isLoadingMore = true);
 
-    // ── LOG: api_request — pagination batch ──────────────────────────────
     final batchStart = DateTime.now();
     final int batchIndex = _postsOffset ~/ _subsequentPostsLimit;
     unawaited(_sendLog({
@@ -1136,7 +1068,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(_postsOffset, _postsOffset + _subsequentPostsLimit - 1);
 
-      // ── LOG: batch_fetched — pagination ──────────────────────────────
       final int videoCount =
           newPosts.where((p) => _isVideoFile(p['postUrl'] ?? '')).length;
       final int imageCount = newPosts.length - videoCount;
@@ -1164,8 +1095,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         });
       } else {
         if (mounted) setState(() => _hasMorePosts = false);
-
-        // ── LOG: all_posts_loaded ─────────────────────────────────────
         unawaited(_sendLog({
           'event_type': 'all_posts_loaded',
           'post_count': postLen,
@@ -1173,7 +1102,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         }));
       }
     } catch (e) {
-      // ── LOG: api_error — load more ───────────────────────────────────
       unawaited(_sendLog({
         'event_type': 'api_error',
         'batch_index': batchIndex,
@@ -1187,7 +1115,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  // ── Loads the next batch of posts for ProfilePostFeedScreen ──────────────
   Future<List<Map<String, dynamic>>> _loadMorePostsForFeed(
       int currentCount) async {
     try {
@@ -1200,7 +1127,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .range(currentCount, currentCount + _subsequentPostsLimit - 1);
 
       _preInitializeVideoControllers(newPosts);
-
       return List<Map<String, dynamic>>.from(newPosts);
     } catch (_) {
       return [];
@@ -1209,20 +1135,16 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   // ========== VIDEO HELPERS ==========
 
-  /// Initialises a video controller for a thumbnail and logs the outcome.
+  /// Initialises a video controller for a thumbnail.
   ///
-  /// Key instrumentation points:
-  ///  - thumbnail_fetch_start  : controller created, network request begins
-  ///  - thumbnail_fetch_success: controller.initialize() resolved OK
-  ///  - thumbnail_fetch_error  : controller.initialize() threw or was disposed
-  ///
-  /// _pendingVideoInits tracks how many are still in-flight at any moment,
-  /// which surfaces congestion / throttling when 67 videos fire concurrently.
+  /// FIX: The display flag (_videoControllersInitialized) is only set to true
+  /// AFTER the first decoded frame is confirmed via a position listener.
+  /// This eliminates the black-frame window that existed when the flag was set
+  /// immediately after initialize() resolved.
   Future<void> _initializeVideoController(String videoUrl) async {
     if (_videoControllers.containsKey(videoUrl) ||
         _videoControllersInitialized[videoUrl] == true) return;
 
-    // ── LOG: thumbnail_fetch_start ───────────────────────────────────────
     final initStart = DateTime.now();
     _pendingVideoInits++;
     unawaited(_sendLog({
@@ -1240,6 +1162,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         Uri.parse(videoUrl),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
+
+      // Register the controller immediately so duplicate calls are blocked,
+      // but keep the display flag false until a real frame is decoded.
       _videoControllers[videoUrl] = controller;
       _videoControllersInitialized[videoUrl] = false;
 
@@ -1247,7 +1172,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
 
         if (!mounted || !_videoControllers.containsKey(videoUrl)) {
-          // Controller was disposed before init finished — count as error.
           unawaited(_sendLog({
             'event_type': 'thumbnail_fetch_error',
             'thumbnail_url': videoUrl,
@@ -1258,29 +1182,76 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           return;
         }
 
-        _videoControllersInitialized[videoUrl] = true;
+        // Start playback and configure the loop BEFORE attaching the
+        // first-frame listener, so the decoder starts producing frames.
         _configureVideoLoop(controller);
         controller.setVolume(0.0);
 
-        // ── LOG: thumbnail_fetch_success ─────────────────────────────
-        unawaited(_sendLog({
-          'event_type': 'thumbnail_fetch_success',
-          'thumbnail_url': videoUrl,
-          'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
-          'extra': {
-            'pending_inits': _pendingVideoInits,
-            'video_width': controller.value.size.width.toInt(),
-            'video_height': controller.value.size.height.toInt(),
-          },
-        }));
+        // ── First-frame listener ───────────────────────────────────────
+        // Keep the spinner visible until the GPU has pixel data.
+        // position > zero means at least one frame has been decoded.
+        // The duration == zero guard handles malformed/empty files so
+        // the listener doesn't hang on a broken video indefinitely.
+        void firstFrameListener() {
+          if (!mounted || !_videoControllers.containsKey(videoUrl)) {
+            controller.removeListener(firstFrameListener);
+            return;
+          }
 
-        // Debounce: collapse all concurrent init callbacks into one rebuild.
-        _videoInitDebounce?.cancel();
-        _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
-          if (mounted) setState(() {});
-        });
+          final hasFrame = controller.value.position > Duration.zero;
+          final isBroken = controller.value.duration == Duration.zero;
+
+          if (hasFrame || isBroken) {
+            controller.removeListener(firstFrameListener);
+
+            // Mark as display-ready only now — no more black frames.
+            _videoControllersInitialized[videoUrl] = true;
+
+            unawaited(_sendLog({
+              'event_type': 'thumbnail_fetch_success',
+              'thumbnail_url': videoUrl,
+              'duration_ms':
+                  DateTime.now().difference(initStart).inMilliseconds,
+              'extra': {
+                'pending_inits': _pendingVideoInits,
+                'video_width': controller.value.size.width.toInt(),
+                'video_height': controller.value.size.height.toInt(),
+                'first_frame_position_ms':
+                    controller.value.position.inMilliseconds,
+              },
+            }));
+
+            // Debounce: collapse all concurrent first-frame callbacks into
+            // a single setState to avoid one rebuild per controller.
+            _videoInitDebounce?.cancel();
+            _videoInitDebounce =
+                Timer(const Duration(milliseconds: 80), () {
+              if (!mounted) return;
+
+              // Log a single event when all visible video posts are ready.
+              final allReady = _displayedPosts
+                  .where((p) => _isVideoFile(p['postUrl'] ?? ''))
+                  .every((p) =>
+                      _isVideoControllerInitialized(p['postUrl'] ?? ''));
+              if (allReady) {
+                unawaited(_sendLog({
+                  'event_type': 'thumbnails_all_ready',
+                  'extra': {
+                    'total_video_posts': _displayedPosts
+                        .where((p) => _isVideoFile(p['postUrl'] ?? ''))
+                        .length,
+                  },
+                }));
+              }
+
+              setState(() {});
+            });
+          }
+        }
+
+        controller.addListener(firstFrameListener);
+
       }).catchError((Object e) {
-        // ── LOG: thumbnail_fetch_error (async) ───────────────────────
         _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
         _videoControllers.remove(videoUrl)?.dispose();
         _videoControllersInitialized.remove(videoUrl);
@@ -1294,7 +1265,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         }));
       });
     } catch (e) {
-      // ── LOG: thumbnail_fetch_error (sync) ────────────────────────────
       _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
       _videoControllers.remove(videoUrl)?.dispose();
       _videoControllersInitialized.remove(videoUrl);
@@ -1309,14 +1279,32 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
+  /// FIX: Previously used a hardcoded 1-second loop end which would cause
+  /// videos shorter than 1 second to freeze on the last frame because the
+  /// seek condition (`position >= 1s`) was never met.
+  /// Now uses the actual duration or 1 second, whichever is shorter.
   void _configureVideoLoop(VideoPlayerController controller) {
     final duration = controller.value.duration;
-    final end = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
+
+    // Malformed / zero-duration file — just play, nothing to loop.
+    if (duration == Duration.zero) {
+      controller.play();
+      return;
+    }
+
+    // Loop within the first second, or the full clip if it's shorter.
+    final loopEnd = duration < const Duration(seconds: 1)
+        ? duration
+        : const Duration(seconds: 1);
+
     controller.addListener(() {
-      if (controller.value.isInitialized && controller.value.isPlaying) {
-        if (controller.value.position >= end) controller.seekTo(Duration.zero);
+      if (controller.value.isInitialized &&
+          controller.value.isPlaying &&
+          controller.value.position >= loopEnd) {
+        controller.seekTo(Duration.zero);
       }
     });
+
     controller.play();
   }
 
@@ -1326,19 +1314,22 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
+  /// Staggers controller inits by 150ms each to avoid iOS throttling
+  /// all 9 concurrent streams and causing the 3-second last-controller lag.
   void _preInitializeVideoControllers(List<dynamic> posts) {
+    int delayMs = 0;
     for (final p in posts) {
       final url = p['postUrl'] ?? '';
-      if (_isVideoFile(url)) _initializeVideoController(url);
+      if (_isVideoFile(url)) {
+        final capturedUrl = url;
+        Future.delayed(Duration(milliseconds: delayMs), () {
+          if (mounted) _initializeVideoController(capturedUrl);
+        });
+        delayMs += 150;
+      }
     }
   }
 
-  // ── _isVideoFile ──────────────────────────────────────────────────────────
-  // KNOWN RISK: `.contains('/video/')` will match any Supabase storage path
-  // that includes the word "video", including image buckets named "video".
-  // The post_render log (in _buildOtherPostItem) will expose any false
-  // positives — look for classified_as == 'video' on posts that display
-  // a broken thumbnail.
   bool _isVideoFile(String url) {
     if (url.isEmpty) return false;
     final l = url.toLowerCase();
@@ -2342,33 +2333,30 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── Opens ProfilePostFeedScreen (vertical swipe feed) starting at the
-  //    tapped post. Logs the tap so we can correlate which post triggered
-  //    the feed open with what was visible in the grid at that moment.
   Widget _buildOtherPostItem(
       Map<String, dynamic> post, _OtherProfileColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
     final editResult = _parseEditResult(post);
+    final postId = post['postId']?.toString() ?? '';
 
-    // ── LOG: post_render ─────────────────────────────────────────────────
-    // Fires every time a grid cell is built/rebuilt.
-    // classified_as: tells us if a URL is being treated as video when it
-    // shouldn't be — the most likely cause of missing thumbnails.
-    // controller_ready: false means the cell is still showing a spinner.
-    unawaited(_sendLog({
-      'event_type': 'post_render',
-      'post_id': post['postId']?.toString(),
-      'thumbnail_url': postUrl,
-      'extra': {
-        'classified_as': isVideo ? 'video' : 'image',
-        'controller_ready':
-            isVideo ? _isVideoControllerInitialized(postUrl) : true,
-        'has_edit_metadata': editResult != null,
-        'grid_index': _displayedPosts.indexWhere(
-            (p) => p['postId']?.toString() == post['postId']?.toString()),
-      },
-    }));
+    // ── LOG: post_render — only once per post_id, not once per rebuild ──
+    if (postId.isNotEmpty && !_loggedPostRenders.contains(postId)) {
+      _loggedPostRenders.add(postId);
+      unawaited(_sendLog({
+        'event_type': 'post_render',
+        'post_id': postId,
+        'thumbnail_url': postUrl,
+        'extra': {
+          'classified_as': isVideo ? 'video' : 'image',
+          'controller_ready':
+              isVideo ? _isVideoControllerInitialized(postUrl) : true,
+          'has_edit_metadata': editResult != null,
+          'grid_index': _displayedPosts.indexWhere(
+              (p) => p['postId']?.toString() == postId),
+        },
+      }));
+    }
 
     if (_isBlocked) {
       return Container(
@@ -2381,8 +2369,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       );
     }
 
-    final int tappedIndex = _displayedPosts.indexWhere(
-        (p) => p['postId']?.toString() == post['postId']?.toString());
+    final int tappedIndex = _displayedPosts
+        .indexWhere((p) => p['postId']?.toString() == postId);
     final int startIndex = tappedIndex < 0 ? 0 : tappedIndex;
 
     final Map<String, dynamic> feedUserData = {
