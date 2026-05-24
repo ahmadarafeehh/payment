@@ -1,14 +1,14 @@
-import 'dart:io'; // For File class used in VideoEditResult.fromJson
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
-import 'package:Ratedly/screens/Profile_page/image_screen.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/providers/user_provider.dart';
+import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INLINE DEFINITIONS (normally from edit_shared.dart)
@@ -29,28 +29,11 @@ class FilterAdjustments {
     final b = brightness;
     final c = contrast;
     final s = saturation;
-
     return [
-      c * s,
-      0,
-      0,
-      0,
-      b,
-      0,
-      c * s,
-      0,
-      0,
-      b,
-      0,
-      0,
-      c * s,
-      0,
-      b,
-      0,
-      0,
-      0,
-      1,
-      0,
+      c * s, 0, 0, 0, b,
+      0, c * s, 0, 0, b,
+      0, 0, c * s, 0, b,
+      0, 0, 0, 1, 0,
     ];
   }
 
@@ -76,26 +59,10 @@ class FilterInfo {
 
 const List<FilterInfo> kFilters = [
   FilterInfo(name: 'Original', matrix: [
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
+    1, 0, 0, 0, 0,
+    0, 1, 0, 0, 0,
+    0, 0, 1, 0, 0,
+    0, 0, 0, 1, 0,
   ]),
 ];
 
@@ -377,6 +344,10 @@ class _SearchScreenState extends State<SearchScreen>
 
   final Map<String, VideoPlayerController> _avatarVideoControllers = {};
   final Map<String, bool> _avatarVideoControllersInitialized = {};
+
+  // ── Cache of uid → {username, photoUrl, isVerified, country} so we don't
+  //    re-fetch the same user data every time a post is tapped.
+  final Map<String, Map<String, dynamic>> _userDataCache = {};
 
   _SearchColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
@@ -818,6 +789,14 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
+  // ── Converts the raw RPC response row to a typed map and enriches it with
+  //    username/photoUrl if the RPC already returns those fields.
+  Map<String, dynamic> _normalisePost(dynamic raw) {
+    final Map<String, dynamic> post = {};
+    (raw as Map).forEach((k, v) => post[k.toString()] = v);
+    return post;
+  }
+
   Future<void> _fetchPosts() async {
     if (currentUserId == null) {
       _allPosts = [];
@@ -838,12 +817,10 @@ class _SearchScreenState extends State<SearchScreen>
       });
 
       if (response is List && response.isNotEmpty) {
-        _allPosts = response.map<Map<String, dynamic>>((post) {
-          final Map<String, dynamic> converted = {};
-          (post as Map).forEach((k, v) => converted[k.toString()] = v);
-          return converted;
-        }).toList();
+        _allPosts = response.map<Map<String, dynamic>>(_normalisePost).toList();
 
+        // Pre-init video thumbnails and warm the user-data cache.
+        await _enrichPostsWithUserData(_allPosts);
         for (final post in _allPosts) {
           final url = post['postUrl']?.toString() ?? '';
           if (_isVideoFile(url)) _initializeVideoController(url);
@@ -880,12 +857,10 @@ class _SearchScreenState extends State<SearchScreen>
       });
 
       if (response is List && response.isNotEmpty) {
-        final newPosts = response.map<Map<String, dynamic>>((post) {
-          final Map<String, dynamic> converted = {};
-          (post as Map).forEach((k, v) => converted[k.toString()] = v);
-          return converted;
-        }).toList();
+        final newPosts =
+            response.map<Map<String, dynamic>>(_normalisePost).toList();
 
+        await _enrichPostsWithUserData(newPosts);
         for (final post in newPosts) {
           final url = post['postUrl']?.toString() ?? '';
           if (_isVideoFile(url)) _initializeVideoController(url);
@@ -904,6 +879,141 @@ class _SearchScreenState extends State<SearchScreen>
     } finally {
       setState(() => _isLoadingMore = false);
     }
+  }
+
+  // ── Fetches the load-more batch for ProfilePostFeedScreen.
+  //    Because the search feed is a mixed multi-user feed we simply return
+  //    the next page of _allPosts that are already in memory, and if the feed
+  //    needs more we fetch from Supabase exactly the same way _loadMorePosts
+  //    does.  The returned posts already carry username/photoUrl so the feed
+  //    can show the correct header for each post individually.
+  Future<List<Map<String, dynamic>>> _loadMorePostsForFeed(
+      int currentCount) async {
+    // If we already have enough posts in memory, slice from there.
+    if (currentCount < _allPosts.length) {
+      return List<Map<String, dynamic>>.from(
+          _allPosts.sublist(currentCount));
+    }
+
+    // Otherwise fetch the next RPC page.
+    if (!_hasMorePosts) return [];
+    try {
+      final excludedUsers = [...blockedUsersSet, currentUserId!];
+      final pageNumber = currentCount ~/ _subsequentPostsLimit;
+
+      final response = await _supabase.rpc('get_search_feed', params: {
+        'current_user_id': currentUserId!,
+        'excluded_users': excludedUsers,
+        'page_offset': pageNumber,
+        'page_limit': _subsequentPostsLimit,
+      });
+
+      if (response is List && response.isNotEmpty) {
+        final newPosts =
+            response.map<Map<String, dynamic>>(_normalisePost).toList();
+        await _enrichPostsWithUserData(newPosts);
+        for (final post in newPosts) {
+          final url = post['postUrl']?.toString() ?? '';
+          if (_isVideoFile(url)) _initializeVideoController(url);
+        }
+        // Merge into the local list so future taps can find them.
+        if (mounted) {
+          setState(() {
+            _allPosts.addAll(newPosts);
+            _offset += newPosts.length;
+            _hasMorePosts = newPosts.length == _subsequentPostsLimit;
+          });
+        }
+        return newPosts;
+      }
+      return [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // ── Looks up username/photoUrl/isVerified for each post's uid.
+  //    Results are stored in _userDataCache so repeated taps / pages never
+  //    hit the DB twice for the same user.  The values are also written back
+  //    into the post map so ProfilePostFeedScreen can read them directly.
+  Future<void> _enrichPostsWithUserData(
+      List<Map<String, dynamic>> posts) async {
+    // Collect uids that are not yet cached.
+    final missing = posts
+        .map((p) => p['uid']?.toString() ?? '')
+        .where((uid) => uid.isNotEmpty && !_userDataCache.containsKey(uid))
+        .toSet()
+        .toList();
+
+    if (missing.isNotEmpty) {
+      try {
+        final rows = await _supabase
+            .from('users')
+            .select('uid, username, photoUrl, isVerified, country')
+            .inFilter('uid', missing);
+        for (final row in rows) {
+          final uid = row['uid']?.toString() ?? '';
+          if (uid.isNotEmpty) {
+            _userDataCache[uid] = {
+              'uid': uid,
+              'username': row['username']?.toString() ?? '',
+              'photoUrl': row['photoUrl']?.toString() ?? '',
+              'isVerified': row['isVerified'] ?? false,
+              'country': row['country']?.toString() ?? '',
+            };
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Write cached values into each post map so the feed can read them
+    // without an extra DB call.
+    for (final post in posts) {
+      final uid = post['uid']?.toString() ?? '';
+      final cached = _userDataCache[uid];
+      if (cached != null) {
+        post['username'] ??= cached['username'];
+        post['photoUrl'] ??= cached['photoUrl'];
+        post['isVerified'] ??= cached['isVerified'];
+        post['country'] ??= cached['country'];
+      }
+    }
+  }
+
+  // ── Returns the userData map for a given post, falling back to fetching
+  //    live if the cache missed (e.g. very first tap before enrichment ran).
+  Future<Map<String, dynamic>> _resolveUserData(
+      Map<String, dynamic> post) async {
+    final uid = post['uid']?.toString() ?? '';
+
+    // Fast path: data was already embedded in the post map.
+    if ((post['username'] ?? '').toString().isNotEmpty) {
+      return {
+        'uid': uid,
+        'username': post['username']?.toString() ?? '',
+        'photoUrl': post['photoUrl']?.toString() ?? '',
+        'isVerified': post['isVerified'] ?? false,
+        'country': post['country']?.toString() ?? '',
+      };
+    }
+
+    // Cache hit.
+    if (_userDataCache.containsKey(uid)) return _userDataCache[uid]!;
+
+    // Slow path: fetch from Supabase.
+    final user = await _fetchUserById(uid);
+    if (user != null) {
+      final data = {
+        'uid': uid,
+        'username': user['username']?.toString() ?? '',
+        'photoUrl': user['photoUrl']?.toString() ?? '',
+        'isVerified': user['isVerified'] ?? false,
+        'country': user['country']?.toString() ?? '',
+      };
+      _userDataCache[uid] = data;
+      return data;
+    }
+    return {'uid': uid, 'username': '', 'photoUrl': '', 'isVerified': false, 'country': ''};
   }
 
   void _rotateSuggestedUsers() {
@@ -956,7 +1066,6 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  // ========== USER SEARCH DISABLED ==========
   Future<List<Map<String, dynamic>>> _searchUsers(String query) async {
     return [];
   }
@@ -1110,13 +1219,10 @@ class _SearchScreenState extends State<SearchScreen>
 
   Widget _buildEnhancedSkeletonLoading(_SearchColorSet colors) {
     return Column(children: [
-      Expanded(
-        child: _buildPostsGridSkeleton(colors),
-      ),
+      Expanded(child: _buildPostsGridSkeleton(colors)),
     ]);
   }
 
-  // ========== USER SEARCH DISABLED - returns no results ==========
   Widget _buildUserSearch(_SearchColorSet colors) {
     return Center(
       child: Text(
@@ -1126,7 +1232,6 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  // ========== MODIFIED: No top posts section ==========
   Widget _buildPostsGrid(_SearchColorSet colors) {
     if (_allPosts.isEmpty) {
       return Center(
@@ -1162,7 +1267,7 @@ class _SearchScreenState extends State<SearchScreen>
               itemBuilder: (context, index) {
                 final post = _allPosts[index];
                 return _buildPostItem(
-                    post, post['postUrl']?.toString() ?? '', colors);
+                    post, post['postUrl']?.toString() ?? '', index, colors);
               },
             ),
           ],
@@ -1188,8 +1293,13 @@ class _SearchScreenState extends State<SearchScreen>
     ]);
   }
 
-  // ========== MODIFIED: No top‑post border/trophy ==========
-  Widget _buildPostItem(Map<String, dynamic> post, String postUrl,
+  // ── Tapping a post opens ProfilePostFeedScreen starting at [index].
+  //    Because this is a mixed feed (each post belongs to a different user),
+  //    ProfilePostFeedScreen reads per-post user data from the post map itself
+  //    (username / photoUrl keys written by _enrichPostsWithUserData) rather
+  //    than from the top-level userData field.  We pass a minimal userData
+  //    placeholder that the feed uses only as a fallback for the AppBar title.
+  Widget _buildPostItem(Map<String, dynamic> post, String postUrl, int index,
       _SearchColorSet colors) {
     final isVideo = _isVideoFile(postUrl);
     if (isVideo) _initializeVideoController(postUrl);
@@ -1198,26 +1308,42 @@ class _SearchScreenState extends State<SearchScreen>
 
     return InkWell(
       onTap: () async {
-        final userId = post['uid']?.toString() ?? '';
-        if (userId.isEmpty) return;
         _pauseAllVideos();
-        final user = await _fetchUserById(userId);
+
+        // Resolve user data for the tapped post's owner (usually instant
+        // because _enrichPostsWithUserData ran during fetch).
+        final userData = await _resolveUserData(post);
+
+        if (!mounted) return;
+
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => ImageViewScreen(
-              imageUrl: postUrl,
-              postId: post['postId']?.toString() ?? '',
-              description: post['description']?.toString() ?? '',
-              userId: userId,
-              username: user?['username']?.toString() ?? '',
-              profImage: user?['photoUrl']?.toString() ?? '',
-              datePublished: post['datePublished']?.toString() ?? '',
-              videoEditMetadata:
-                  _extractEditMetadata(post['video_edit_metadata']),
+            builder: (_) => ProfilePostFeedScreen(
+              // Pass a snapshot of the full loaded list so the feed starts
+              // with everything already on screen — no loading flash.
+              initialPosts: List<Map<String, dynamic>>.from(_allPosts),
+              initialIndex: index,
+              // Use the tapped post's owner as the header identity.
+              // For a mixed feed the feed widget will display the per-post
+              // owner in each page's header via widget.post keys.
+              userData: userData,
+              // Fetch the next page of the mixed feed when the user swipes
+              // near the end.
+              onLoadMore: _loadMorePostsForFeed,
+              initialHasMore: _hasMorePosts,
+              // Search feed posts belong to other users — no delete allowed.
+              onPostDeleted: null,
             ),
           ),
-        );
+        ).then((_) {
+          // Resume grid video thumbnails on return.
+          if (mounted) {
+            for (final c in _videoControllers.values) {
+              if (c.value.isInitialized && !c.value.isPlaying) c.play();
+            }
+          }
+        });
       },
       child: Container(
         decoration: BoxDecoration(
