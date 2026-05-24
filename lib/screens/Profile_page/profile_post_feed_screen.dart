@@ -559,6 +559,13 @@ class _FeedPostPageState extends State<_FeedPostPage>
             ),
 
           // ── Rating bar ───────────────────────────────────────────────────
+          // hasUserRated drives two things inside RatingBar:
+          //   1. Whether the thumb snaps to the community average or stays
+          //      at the neutral centre (5.0) so unrated viewers can't infer
+          //      the score before they rate.
+          //   2. Whether the "Average Reaction" tooltip is shown after rating.
+          // _userRating is non-null exactly when the current user has already
+          // submitted a rating for this post, making it the correct signal.
           if (!_isLoadingRatings)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -568,6 +575,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
                 initialThumbPosition:
                     _userRating == null ? 5.0 : _averageRating,
                 onRatingEnd: _handleRatingSubmitted,
+                hasUserRated: _userRating != null,
               ),
             )
           else
