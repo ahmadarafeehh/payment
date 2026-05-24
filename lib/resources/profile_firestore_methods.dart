@@ -168,7 +168,8 @@ class SupabaseProfileMethods {
             'created_at': DateTime.now().toUtc().toIso8601String(),
           });
 
-          _notificationService.triggerServerNotification(
+          // FIX: awaited so each push completes before moving to next request
+          await _notificationService.triggerServerNotification(
             type: 'follow',
             targetUserId: userId,
             title: 'New Follower',
@@ -385,21 +386,22 @@ class SupabaseProfileMethods {
 
         print('[PROFILE:follow] Requester username: $requesterUsername');
         print(
-            '[PROFILE:follow] ▶ Calling triggerServerNotification(follow_request)...');
+            '[PROFILE:follow] ▶ Writing follow_request to Supabase notifications...');
+        await _createFollowRequestNotification(uid, followId);
+        print(
+            '[PROFILE:follow] ✅ follow_request notification saved to Supabase');
 
-        _notificationService.triggerServerNotification(
+        // FIX: awaited + moved after DB write so it doesn't race
+        print(
+            '[PROFILE:follow] ▶ Calling triggerServerNotification(follow_request)...');
+        await _notificationService.triggerServerNotification(
           type: 'follow_request',
           targetUserId: followId,
           title: 'New Follow Request',
           body: '$requesterUsername wants to follow you',
           customData: {'requesterId': uid},
         );
-
-        print(
-            '[PROFILE:follow] ▶ Writing follow_request to Supabase notifications...');
-        await _createFollowRequestNotification(uid, followId);
-        print(
-            '[PROFILE:follow] ✅ follow_request notification saved to Supabase');
+        print('[PROFILE:follow] ✅ follow_request push sent');
       } else {
         print('[PROFILE:follow] ▶ Public account — following directly');
 
@@ -426,20 +428,21 @@ class SupabaseProfileMethods {
         final String followerUsername = followerData?['username'] ?? 'Someone';
 
         print('[PROFILE:follow] Follower username: $followerUsername');
+        print('[PROFILE:follow] ▶ Writing follow notification to Supabase...');
+        await createFollowNotification(uid, followId);
+        print('[PROFILE:follow] ✅ Follow notification saved to Supabase');
+
+        // FIX: awaited + moved after DB write so it doesn't race
         print(
             '[PROFILE:follow] ▶ Calling triggerServerNotification(follow)...');
-
-        _notificationService.triggerServerNotification(
+        await _notificationService.triggerServerNotification(
           type: 'follow',
           targetUserId: followId,
           title: 'New Follower',
           body: '$followerUsername started following you',
           customData: {'followerId': uid},
         );
-
-        print('[PROFILE:follow] ▶ Writing follow notification to Supabase...');
-        await createFollowNotification(uid, followId);
-        print('[PROFILE:follow] ✅ Follow notification saved to Supabase');
+        print('[PROFILE:follow] ✅ follow push sent');
       }
     } catch (e) {
       print('[PROFILE:follow] ❌ EXCEPTION in followUser(): $e');
@@ -514,17 +517,20 @@ class SupabaseProfileMethods {
       print(
           '[PROFILE:accept] ✅ follow_request_accepted written to Supabase notifications');
 
+      await createFollowNotification(requesterUid, targetUid);
+      print('[PROFILE:accept] ✅ follow notification written to Supabase');
+
+      // FIX: awaited + moved after all DB writes
       print(
           '[PROFILE:accept] ▶ Calling triggerServerNotification(follow_request_accepted)...');
-      _notificationService.triggerServerNotification(
+      await _notificationService.triggerServerNotification(
         type: 'follow_request_accepted',
         targetUserId: requesterUid,
         title: 'Follow Request Approved',
         body: '$username approved your follow request',
         customData: {'approverId': targetUid},
       );
-
-      await createFollowNotification(requesterUid, targetUid);
+      print('[PROFILE:accept] ✅ follow_request_accepted push sent');
       print('[PROFILE:accept] ✅ acceptFollowRequest() complete');
     } catch (e) {
       print('[PROFILE:accept] ❌ EXCEPTION in acceptFollowRequest(): $e');
