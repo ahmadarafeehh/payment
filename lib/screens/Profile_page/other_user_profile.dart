@@ -486,6 +486,51 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   bool _hasLoaded = false;
 
+  // ── Logging ─────────────────────────────────────────────────────────────
+  // Each visit to this screen gets a unique session ID that groups all
+  // log rows together, making it easy to reconstruct the full timeline
+  // for a single load. Lazy-initialised on first use via _sendLog().
+  String? _currentSessionId;
+
+  // Wall-clock reference point set at screen_open. Used to compute
+  // elapsed_ms for every subsequent event in this session.
+  DateTime? _screenOpenAt;
+
+  // Tracks how many video controller init calls are currently in-flight
+  // so we can log a meaningful total when all have resolved.
+  int _pendingVideoInits = 0;
+
+  /// Inserts one row into `profile_screen_logs`.
+  ///
+  /// Never throws – logging must never crash the screen.
+  /// Always call this with `unawaited()` from UI code paths so it
+  /// doesn't block rendering.
+  Future<void> _sendLog(Map<String, dynamic> payload) async {
+    try {
+      // Lazy-initialise session ID on the very first log of the session.
+      _currentSessionId ??= DateTime.now().microsecondsSinceEpoch.toString();
+
+      // Compute elapsed_ms from screen open unless the caller already
+      // provided it (e.g. screen_open itself, which sends 0).
+      final int elapsedMs =
+          _screenOpenAt != null && !payload.containsKey('elapsed_ms')
+              ? DateTime.now().difference(_screenOpenAt!).inMilliseconds
+              : (payload['elapsed_ms'] as int? ?? 0);
+
+      await _supabase.from('profile_screen_logs').insert({
+        'session_id': _currentSessionId,
+        'user_id': widget.uid,
+        'platform': Platform.isIOS ? 'ios' : 'android',
+        'created_at': DateTime.now().toIso8601String(),
+        'elapsed_ms': elapsedMs,
+        ...payload,
+      });
+    } catch (_) {
+      // Intentionally swallowed – logging must never affect the user.
+    }
+  }
+
+  // ── Color helpers ────────────────────────────────────────────────────────
   _OtherProfileColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
         ? _OtherProfileDarkColors()
@@ -629,6 +674,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // ========== SCROLL ==========
+
+  // NOTE: Both _scrollController.addListener and the NotificationListener
+  // in build() call _loadMorePosts(). The load_more_triggered log will
+  // expose if they are racing. The guard (_isLoadingMore / _hasMorePosts)
+  // prevents a double-fetch, but the log will still record both firings.
   void _scrollListener() {
     if (_scrollController.position.pixels >=
             _scrollController.position.maxScrollExtent - 50 &&
@@ -741,6 +791,15 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   // ========== LOAD DATA ==========
   Future<void> _loadDataInParallel() async {
+    // ── LOG: screen_open ────────────────────────────────────────────────
+    // Capture the wall-clock start before any async work begins.
+    _screenOpenAt = DateTime.now();
+    await _sendLog({
+      'event_type': 'screen_open',
+      'client_timestamp': _screenOpenAt!.toIso8601String(),
+      'elapsed_ms': 0,
+    });
+
     setState(() => isLoading = true);
     try {
       await Future.wait([
@@ -750,7 +809,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         _loadBlockStatus(),
       ]);
       if (!_isBlocked && mounted) await _loadRelationshipData();
-    } catch (_) {
+    } catch (e) {
+      // ── LOG: load_error ───────────────────────────────────────────────
+      unawaited(_sendLog({
+        'event_type': 'load_error',
+        'error_message': e.toString(),
+      }));
       if (mounted) {
         showSnackBar(
             context, "Please try again or contact us at ratedly9@gmail.com");
@@ -758,6 +822,20 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
+
+    // ── LOG: screen_ready ─────────────────────────────────────────────
+    // Logged right after all parallel loads finish regardless of errors.
+    unawaited(_sendLog({
+      'event_type': 'screen_ready',
+      'post_count': postLen,
+      'extra': {
+        'displayed_posts': _displayedPosts.length,
+        'has_more_posts': _hasMorePosts,
+        'galleries_count': _galleries.length,
+        'is_blocked': _isBlocked,
+        'is_following': isFollowing,
+      },
+    }));
   }
 
   Future<void> _loadUserData() async {
@@ -792,6 +870,14 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   // ── Uses Supabase count option — no row data transferred for the total ───
   Future<void> _loadPostsCountAndFirstBatch() async {
+    // ── LOG: api_request — posts count ──────────────────────────────────
+    final countStart = DateTime.now();
+    unawaited(_sendLog({
+      'event_type': 'api_request',
+      'client_timestamp': countStart.toIso8601String(),
+      'extra': {'query': 'posts_count', 'uid': widget.uid},
+    }));
+
     try {
       final countResponse = await _supabase
           .from('posts')
@@ -800,8 +886,29 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .count(CountOption.exact);
       final totalPostCount = countResponse.count;
 
+      // ── LOG: api_response — posts count ─────────────────────────────
+      unawaited(_sendLog({
+        'event_type': 'api_response',
+        'post_count': totalPostCount,
+        'duration_ms': DateTime.now().difference(countStart).inMilliseconds,
+        'status_code': 200,
+        'extra': {'query': 'posts_count'},
+      }));
+
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
+
+      // ── LOG: api_request — initial batch ────────────────────────────
+      final batchStart = DateTime.now();
+      unawaited(_sendLog({
+        'event_type': 'api_request',
+        'client_timestamp': batchStart.toIso8601String(),
+        'extra': {
+          'query': 'initial_posts_batch',
+          'limit': postsLimit,
+          'uid': widget.uid,
+        },
+      }));
 
       final initialPosts = await _supabase
           .from('posts')
@@ -810,6 +917,26 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .eq('uid', widget.uid)
           .order('datePublished', ascending: false)
           .range(0, postsLimit - 1);
+
+      // ── LOG: batch_fetched — initial batch ───────────────────────────
+      // Count how many of the returned posts are classified as video
+      // so we can spot misclassification in the first batch immediately.
+      final int videoCount =
+          initialPosts.where((p) => _isVideoFile(p['postUrl'] ?? '')).length;
+      final int imageCount = initialPosts.length - videoCount;
+
+      unawaited(_sendLog({
+        'event_type': 'batch_fetched',
+        'batch_index': 0,
+        'post_count': initialPosts.length,
+        'duration_ms': DateTime.now().difference(batchStart).inMilliseconds,
+        'status_code': 200,
+        'extra': {
+          'total_posts_on_profile': totalPostCount,
+          'video_count': videoCount,
+          'image_count': imageCount,
+        },
+      }));
 
       _preInitializeVideoControllers(initialPosts);
 
@@ -822,7 +949,14 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           _isFirstLoad = false;
         });
       }
-    } catch (_) {
+    } catch (e) {
+      // ── LOG: api_error — posts fetch ─────────────────────────────────
+      unawaited(_sendLog({
+        'event_type': 'api_error',
+        'error_message': e.toString(),
+        'duration_ms': DateTime.now().difference(countStart).inMilliseconds,
+        'extra': {'query': 'posts_count_or_initial_batch'},
+      }));
       if (mounted) {
         setState(() {
           _displayedPosts = [];
@@ -962,8 +1096,37 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   Future<void> _loadMorePosts() async {
+    // ── LOG: load_more_triggered ─────────────────────────────────────────
+    // Logged BEFORE the guard so we can detect double-trigger races between
+    // _scrollController.addListener() and NotificationListener.
+    unawaited(_sendLog({
+      'event_type': 'load_more_triggered',
+      'batch_index': (_postsOffset ~/ _subsequentPostsLimit),
+      'extra': {
+        'already_loading': _isLoadingMore,
+        'has_more': _hasMorePosts,
+        'posts_offset': _postsOffset,
+        'displayed_count': _displayedPosts.length,
+      },
+    }));
+
     if (!_hasMorePosts || _isLoadingMore) return;
     setState(() => _isLoadingMore = true);
+
+    // ── LOG: api_request — pagination batch ──────────────────────────────
+    final batchStart = DateTime.now();
+    final int batchIndex = _postsOffset ~/ _subsequentPostsLimit;
+    unawaited(_sendLog({
+      'event_type': 'api_request',
+      'batch_index': batchIndex,
+      'client_timestamp': batchStart.toIso8601String(),
+      'extra': {
+        'query': 'load_more_posts',
+        'range_start': _postsOffset,
+        'range_end': _postsOffset + _subsequentPostsLimit - 1,
+      },
+    }));
+
     try {
       final newPosts = await _supabase
           .from('posts')
@@ -972,6 +1135,24 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .eq('uid', widget.uid)
           .order('datePublished', ascending: false)
           .range(_postsOffset, _postsOffset + _subsequentPostsLimit - 1);
+
+      // ── LOG: batch_fetched — pagination ──────────────────────────────
+      final int videoCount =
+          newPosts.where((p) => _isVideoFile(p['postUrl'] ?? '')).length;
+      final int imageCount = newPosts.length - videoCount;
+
+      unawaited(_sendLog({
+        'event_type': 'batch_fetched',
+        'batch_index': batchIndex,
+        'post_count': newPosts.length,
+        'duration_ms': DateTime.now().difference(batchStart).inMilliseconds,
+        'status_code': 200,
+        'extra': {
+          'video_count': videoCount,
+          'image_count': imageCount,
+          'new_total_displayed': _displayedPosts.length + newPosts.length,
+        },
+      }));
 
       _preInitializeVideoControllers(newPosts);
 
@@ -983,8 +1164,23 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         });
       } else {
         if (mounted) setState(() => _hasMorePosts = false);
+
+        // ── LOG: all_posts_loaded ─────────────────────────────────────
+        unawaited(_sendLog({
+          'event_type': 'all_posts_loaded',
+          'post_count': postLen,
+          'extra': {'final_displayed_count': _displayedPosts.length},
+        }));
       }
-    } catch (_) {
+    } catch (e) {
+      // ── LOG: api_error — load more ───────────────────────────────────
+      unawaited(_sendLog({
+        'event_type': 'api_error',
+        'batch_index': batchIndex,
+        'error_message': e.toString(),
+        'duration_ms': DateTime.now().difference(batchStart).inMilliseconds,
+        'extra': {'query': 'load_more_posts'},
+      }));
       if (mounted) showSnackBar(context, 'Failed to load more posts');
     } finally {
       if (mounted) setState(() => _isLoadingMore = false);
@@ -992,8 +1188,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // ── Loads the next batch of posts for ProfilePostFeedScreen ──────────────
-  // Mirrors _loadMorePosts() but is a standalone Future so the feed screen
-  // can call it via its onLoadMore callback without touching state fields.
   Future<List<Map<String, dynamic>>> _loadMorePostsForFeed(
       int currentCount) async {
     try {
@@ -1005,8 +1199,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(currentCount, currentCount + _subsequentPostsLimit - 1);
 
-      // Pre-spin up video controllers for the incoming batch so thumbnails
-      // are ready before the user swipes to them in the grid on return.
       _preInitializeVideoControllers(newPosts);
 
       return List<Map<String, dynamic>>.from(newPosts);
@@ -1017,12 +1209,32 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   // ========== VIDEO HELPERS ==========
 
-  // ── Initializes a video controller and debounces the setState so that N
-  //    concurrent controller-ready callbacks collapse into a single rebuild
-  //    instead of triggering one full rebuild per controller. ───────────────
+  /// Initialises a video controller for a thumbnail and logs the outcome.
+  ///
+  /// Key instrumentation points:
+  ///  - thumbnail_fetch_start  : controller created, network request begins
+  ///  - thumbnail_fetch_success: controller.initialize() resolved OK
+  ///  - thumbnail_fetch_error  : controller.initialize() threw or was disposed
+  ///
+  /// _pendingVideoInits tracks how many are still in-flight at any moment,
+  /// which surfaces congestion / throttling when 67 videos fire concurrently.
   Future<void> _initializeVideoController(String videoUrl) async {
     if (_videoControllers.containsKey(videoUrl) ||
         _videoControllersInitialized[videoUrl] == true) return;
+
+    // ── LOG: thumbnail_fetch_start ───────────────────────────────────────
+    final initStart = DateTime.now();
+    _pendingVideoInits++;
+    unawaited(_sendLog({
+      'event_type': 'thumbnail_fetch_start',
+      'thumbnail_url': videoUrl,
+      'client_timestamp': initStart.toIso8601String(),
+      'extra': {
+        'pending_inits': _pendingVideoInits,
+        'total_controllers': _videoControllers.length,
+      },
+    }));
+
     try {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(videoUrl),
@@ -1032,20 +1244,68 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       _videoControllersInitialized[videoUrl] = false;
 
       controller.initialize().then((_) {
-        if (!mounted || !_videoControllers.containsKey(videoUrl)) return;
+        _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
+
+        if (!mounted || !_videoControllers.containsKey(videoUrl)) {
+          // Controller was disposed before init finished — count as error.
+          unawaited(_sendLog({
+            'event_type': 'thumbnail_fetch_error',
+            'thumbnail_url': videoUrl,
+            'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
+            'error_message': 'widget_unmounted_or_controller_removed',
+            'extra': {'pending_inits': _pendingVideoInits},
+          }));
+          return;
+        }
+
         _videoControllersInitialized[videoUrl] = true;
         _configureVideoLoop(controller);
         controller.setVolume(0.0);
+
+        // ── LOG: thumbnail_fetch_success ─────────────────────────────
+        unawaited(_sendLog({
+          'event_type': 'thumbnail_fetch_success',
+          'thumbnail_url': videoUrl,
+          'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
+          'extra': {
+            'pending_inits': _pendingVideoInits,
+            'video_width': controller.value.size.width.toInt(),
+            'video_height': controller.value.size.height.toInt(),
+          },
+        }));
 
         // Debounce: collapse all concurrent init callbacks into one rebuild.
         _videoInitDebounce?.cancel();
         _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
           if (mounted) setState(() {});
         });
+      }).catchError((Object e) {
+        // ── LOG: thumbnail_fetch_error (async) ───────────────────────
+        _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
+        _videoControllers.remove(videoUrl)?.dispose();
+        _videoControllersInitialized.remove(videoUrl);
+
+        unawaited(_sendLog({
+          'event_type': 'thumbnail_fetch_error',
+          'thumbnail_url': videoUrl,
+          'error_message': e.toString(),
+          'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
+          'extra': {'pending_inits': _pendingVideoInits},
+        }));
       });
-    } catch (_) {
+    } catch (e) {
+      // ── LOG: thumbnail_fetch_error (sync) ────────────────────────────
+      _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
       _videoControllers.remove(videoUrl)?.dispose();
       _videoControllersInitialized.remove(videoUrl);
+
+      unawaited(_sendLog({
+        'event_type': 'thumbnail_fetch_error',
+        'thumbnail_url': videoUrl,
+        'error_message': e.toString(),
+        'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
+        'extra': {'pending_inits': _pendingVideoInits, 'sync_error': true},
+      }));
     }
   }
 
@@ -1073,6 +1333,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
+  // ── _isVideoFile ──────────────────────────────────────────────────────────
+  // KNOWN RISK: `.contains('/video/')` will match any Supabase storage path
+  // that includes the word "video", including image buckets named "video".
+  // The post_render log (in _buildOtherPostItem) will expose any false
+  // positives — look for classified_as == 'video' on posts that display
+  // a broken thumbnail.
   bool _isVideoFile(String url) {
     if (url.isEmpty) return false;
     final l = url.toLowerCase();
@@ -2077,15 +2343,33 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // ── Opens ProfilePostFeedScreen (vertical swipe feed) starting at the
-  //    tapped post. The feed receives the already-loaded grid posts as its
-  //    initial batch and fetches subsequent pages via _loadMorePostsForFeed.
+  //    tapped post. Logs the tap so we can correlate which post triggered
+  //    the feed open with what was visible in the grid at that moment.
   Widget _buildOtherPostItem(
       Map<String, dynamic> post, _OtherProfileColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
     final editResult = _parseEditResult(post);
 
-    // Reuse the screen-level block flag — already fetched during init.
+    // ── LOG: post_render ─────────────────────────────────────────────────
+    // Fires every time a grid cell is built/rebuilt.
+    // classified_as: tells us if a URL is being treated as video when it
+    // shouldn't be — the most likely cause of missing thumbnails.
+    // controller_ready: false means the cell is still showing a spinner.
+    unawaited(_sendLog({
+      'event_type': 'post_render',
+      'post_id': post['postId']?.toString(),
+      'thumbnail_url': postUrl,
+      'extra': {
+        'classified_as': isVideo ? 'video' : 'image',
+        'controller_ready':
+            isVideo ? _isVideoControllerInitialized(postUrl) : true,
+        'has_edit_metadata': editResult != null,
+        'grid_index': _displayedPosts.indexWhere(
+            (p) => p['postId']?.toString() == post['postId']?.toString()),
+      },
+    }));
+
     if (_isBlocked) {
       return Container(
         margin: const EdgeInsets.all(1),
@@ -2097,13 +2381,10 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       );
     }
 
-    // Find this post's position in the displayed list so the feed opens on
-    // the correct page. Falls back to 0 if not found.
     final int tappedIndex = _displayedPosts.indexWhere(
         (p) => p['postId']?.toString() == post['postId']?.toString());
     final int startIndex = tappedIndex < 0 ? 0 : tappedIndex;
 
-    // Shape the userData map to match what ProfilePostFeedScreen expects.
     final Map<String, dynamic> feedUserData = {
       'uid': widget.uid,
       'username': userData['username'] ?? '',
@@ -2114,7 +2395,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
     return GestureDetector(
       onTap: () {
-        // Pause grid video thumbnails so they don't bleed audio into the feed.
         _pauseAllVideos();
         _muteProfileVideo();
 
@@ -2122,23 +2402,15 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           context,
           MaterialPageRoute(
             builder: (_) => ProfilePostFeedScreen(
-              // Hand the feed the posts already loaded in the grid so there
-              // is no perceptible delay before the first post is visible.
               initialPosts: List<Map<String, dynamic>>.from(_displayedPosts),
               initialIndex: startIndex,
               userData: feedUserData,
-              // Called when the user swipes within 3 posts of the end.
-              // Uses the same Supabase query + sort order as the grid so
-              // the post sequence is always consistent.
               onLoadMore: _loadMorePostsForFeed,
-              // Let the feed know whether more pages exist.
               initialHasMore: _hasMorePosts,
-              // Other users cannot delete each other's posts.
               onPostDeleted: null,
             ),
           ),
         ).then((_) {
-          // Resume grid video thumbnails after returning from the feed.
           Future.delayed(const Duration(milliseconds: 300), () {
             if (mounted) {
               _resumeAllVideos();
