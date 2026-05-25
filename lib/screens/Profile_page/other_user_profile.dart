@@ -419,14 +419,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   // ── Video controllers ────────────────────────────────────────────────────
   final Map<String, VideoPlayerController> _videoControllers = {};
-
-  // true = controller initialized AND first frame decoded (safe to display).
-  // false = controller exists but not yet ready to paint (show spinner).
   final Map<String, bool> _videoControllersInitialized = {};
-
-  // Debounce timer: collapses multiple concurrent first-frame callbacks
-  // into a single setState instead of one per controller.
   Timer? _videoInitDebounce;
+
+  // ── NEW: Global concurrency control & failure tracking ──────────────────
+  static const int _maxConcurrentVideoInits = 4;
+  int _activeVideoInits = 0;
+  final Set<String> _failedVideoUrls = {};
 
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
@@ -461,10 +460,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   String? _currentSessionId;
   DateTime? _screenOpenAt;
   int _pendingVideoInits = 0;
-
-  // Tracks post IDs that have already been logged for post_render so we
-  // don't spam the DB with one row per rebuild. Flipped true on first render.
   final Set<String> _loggedPostRenders = {};
+
+  // ── Cooldown for load more ──────────────────────────────────────────────
+  DateTime? _lastLoadMoreTime;
+  static const Duration _loadMoreCooldown = Duration(milliseconds: 500);
 
   Future<void> _sendLog(Map<String, dynamic> payload) async {
     try {
@@ -1031,19 +1031,26 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
+  // ========== LOAD MORE (FIXED with cooldown) ==========
   Future<void> _loadMorePosts() async {
-    unawaited(_sendLog({
-      'event_type': 'load_more_triggered',
-      'batch_index': (_postsOffset ~/ _subsequentPostsLimit),
-      'extra': {
-        'already_loading': _isLoadingMore,
-        'has_more': _hasMorePosts,
-        'posts_offset': _postsOffset,
-        'displayed_count': _displayedPosts.length,
-      },
-    }));
+    // Cooldown check
+    if (_lastLoadMoreTime != null) {
+      final elapsed = DateTime.now().difference(_lastLoadMoreTime!);
+      if (elapsed < _loadMoreCooldown) {
+        unawaited(_sendLog({
+          'event_type': 'load_more_throttled',
+          'extra': {
+            'elapsed_ms': elapsed.inMilliseconds,
+            'cooldown_ms': _loadMoreCooldown.inMilliseconds,
+          },
+        }));
+        return;
+      }
+    }
 
     if (!_hasMorePosts || _isLoadingMore) return;
+
+    _lastLoadMoreTime = DateTime.now();
     setState(() => _isLoadingMore = true);
 
     final batchStart = DateTime.now();
@@ -1095,11 +1102,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         });
       } else {
         if (mounted) setState(() => _hasMorePosts = false);
-        unawaited(_sendLog({
-          'event_type': 'all_posts_loaded',
-          'post_count': postLen,
-          'extra': {'final_displayed_count': _displayedPosts.length},
-        }));
       }
     } catch (e) {
       unawaited(_sendLog({
@@ -1135,15 +1137,21 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   // ========== VIDEO HELPERS ==========
 
-  /// Initialises a video controller for a thumbnail.
-  ///
-  /// FIX: The display flag (_videoControllersInitialized) is only set to true
-  /// AFTER the first decoded frame is confirmed via a position listener.
-  /// This eliminates the black-frame window that existed when the flag was set
-  /// immediately after initialize() resolved.
+  /// FIXED: _initializeVideoController with global concurrency limiter,
+  /// proper first-frame detection, no broken shortcut, and failure tracking.
   Future<void> _initializeVideoController(String videoUrl) async {
+    // Already initialized, initializing, or failed? Skip.
     if (_videoControllers.containsKey(videoUrl) ||
-        _videoControllersInitialized[videoUrl] == true) return;
+        _videoControllersInitialized.containsKey(videoUrl) ||
+        _failedVideoUrls.contains(videoUrl)) {
+      return;
+    }
+
+    // Wait for a concurrency slot (busy loop, but simple)
+    while (_activeVideoInits >= _maxConcurrentVideoInits) {
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+    _activeVideoInits++;
 
     final initStart = DateTime.now();
     _pendingVideoInits++;
@@ -1154,6 +1162,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       'extra': {
         'pending_inits': _pendingVideoInits,
         'total_controllers': _videoControllers.length,
+        'active_inits': _activeVideoInits,
       },
     }));
 
@@ -1163,140 +1172,103 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
 
-      // Register the controller immediately so duplicate calls are blocked,
-      // but keep the display flag false until a real frame is decoded.
+      // Register controller placeholder immediately to block duplicates.
       _videoControllers[videoUrl] = controller;
-      _videoControllersInitialized[videoUrl] = false;
 
-      controller.initialize().then((_) {
-        _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
+      // Step 1: Initialize (with timeout)
+      await controller.initialize().timeout(
+            const Duration(seconds: 8),
+            onTimeout: () {
+              throw TimeoutException('Initialization timed out');
+            },
+          );
 
-        if (!mounted || !_videoControllers.containsKey(videoUrl)) {
-          unawaited(_sendLog({
-            'event_type': 'thumbnail_fetch_error',
-            'thumbnail_url': videoUrl,
-            'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
-            'error_message': 'widget_unmounted_or_controller_removed',
-            'extra': {'pending_inits': _pendingVideoInits},
-          }));
-          return;
+      // FIX 1: Zero duration means corrupted or empty file → treat as error.
+      if (controller.value.duration == Duration.zero) {
+        throw Exception('Video has zero duration – corrupted or empty');
+      }
+
+      // Step 2: Configure loop & volume.
+      _configureVideoLoop(controller);
+      controller.setVolume(0.0);
+
+      // Step 3: Wait for first frame using Completer + timeout.
+      final frameCompleter = Completer<bool>();
+      void firstFrameListener() {
+        if (controller.value.position > Duration.zero) {
+          frameCompleter.complete(true);
+          controller.removeListener(firstFrameListener);
+        } else if (controller.value.duration == Duration.zero) {
+          // Safety – should have been caught above.
+          frameCompleter.completeError(Exception('Zero duration after init'));
+          controller.removeListener(firstFrameListener);
         }
+      }
+      controller.addListener(firstFrameListener);
 
-        // Start playback and configure the loop BEFORE attaching the
-        // first-frame listener, so the decoder starts producing frames.
-        _configureVideoLoop(controller);
-        controller.setVolume(0.0);
+      final hasFrame = await frameCompleter.future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => false,
+      );
 
-        // ── First-frame listener ───────────────────────────────────────
-        // Keep the spinner visible until the GPU has pixel data.
-        // position > zero means at least one frame has been decoded.
-        // The duration == zero guard handles malformed/empty files so
-        // the listener doesn't hang on a broken video indefinitely.
-        void firstFrameListener() {
-          if (!mounted || !_videoControllers.containsKey(videoUrl)) {
-            controller.removeListener(firstFrameListener);
-            return;
-          }
+      if (!hasFrame) {
+        throw Exception('No video frame decoded within 5 seconds');
+      }
 
-          final hasFrame = controller.value.position > Duration.zero;
-          final isBroken = controller.value.duration == Duration.zero;
+      // SUCCESS: first frame is ready.
+      _videoControllersInitialized[videoUrl] = true;
+      _failedVideoUrls.remove(videoUrl);
 
-          if (hasFrame || isBroken) {
-            controller.removeListener(firstFrameListener);
-
-            // Mark as display-ready only now — no more black frames.
-            _videoControllersInitialized[videoUrl] = true;
-
-            unawaited(_sendLog({
-              'event_type': 'thumbnail_fetch_success',
-              'thumbnail_url': videoUrl,
-              'duration_ms':
-                  DateTime.now().difference(initStart).inMilliseconds,
-              'extra': {
-                'pending_inits': _pendingVideoInits,
-                'video_width': controller.value.size.width.toInt(),
-                'video_height': controller.value.size.height.toInt(),
-                'first_frame_position_ms':
-                    controller.value.position.inMilliseconds,
-              },
-            }));
-
-            // Debounce: collapse all concurrent first-frame callbacks into
-            // a single setState to avoid one rebuild per controller.
-            _videoInitDebounce?.cancel();
-            _videoInitDebounce =
-                Timer(const Duration(milliseconds: 80), () {
-              if (!mounted) return;
-
-              // Log a single event when all visible video posts are ready.
-              final allReady = _displayedPosts
-                  .where((p) => _isVideoFile(p['postUrl'] ?? ''))
-                  .every((p) =>
-                      _isVideoControllerInitialized(p['postUrl'] ?? ''));
-              if (allReady) {
-                unawaited(_sendLog({
-                  'event_type': 'thumbnails_all_ready',
-                  'extra': {
-                    'total_video_posts': _displayedPosts
-                        .where((p) => _isVideoFile(p['postUrl'] ?? ''))
-                        .length,
-                  },
-                }));
-              }
-
-              setState(() {});
-            });
-          }
-        }
-
-        controller.addListener(firstFrameListener);
-
-      }).catchError((Object e) {
-        _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
-        _videoControllers.remove(videoUrl)?.dispose();
-        _videoControllersInitialized.remove(videoUrl);
-
-        unawaited(_sendLog({
-          'event_type': 'thumbnail_fetch_error',
-          'thumbnail_url': videoUrl,
-          'error_message': e.toString(),
-          'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
-          'extra': {'pending_inits': _pendingVideoInits},
-        }));
-      });
+      unawaited(_sendLog({
+        'event_type': 'thumbnail_fetch_success',
+        'thumbnail_url': videoUrl,
+        'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
+        'extra': {
+          'pending_inits': _pendingVideoInits,
+          'video_width': controller.value.size.width.toInt(),
+          'video_height': controller.value.size.height.toInt(),
+          'first_frame_position_ms': controller.value.position.inMilliseconds,
+          'active_inits': _activeVideoInits,
+        },
+      }));
     } catch (e) {
-      _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
+      // FAILURE: clean up and mark as failed.
       _videoControllers.remove(videoUrl)?.dispose();
       _videoControllersInitialized.remove(videoUrl);
+      _failedVideoUrls.add(videoUrl);
 
       unawaited(_sendLog({
         'event_type': 'thumbnail_fetch_error',
         'thumbnail_url': videoUrl,
         'error_message': e.toString(),
         'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
-        'extra': {'pending_inits': _pendingVideoInits, 'sync_error': true},
+        'extra': {
+          'pending_inits': _pendingVideoInits,
+          'sync_error': false,
+          'active_inits': _activeVideoInits,
+        },
       }));
+    } finally {
+      _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
+      _activeVideoInits--;
     }
+
+    // Debounced rebuild
+    _videoInitDebounce?.cancel();
+    _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
+      if (mounted) setState(() {});
+    });
   }
 
-  /// FIX: Previously used a hardcoded 1-second loop end which would cause
-  /// videos shorter than 1 second to freeze on the last frame because the
-  /// seek condition (`position >= 1s`) was never met.
-  /// Now uses the actual duration or 1 second, whichever is shorter.
   void _configureVideoLoop(VideoPlayerController controller) {
     final duration = controller.value.duration;
-
-    // Malformed / zero-duration file — just play, nothing to loop.
     if (duration == Duration.zero) {
       controller.play();
       return;
     }
-
-    // Loop within the first second, or the full clip if it's shorter.
     final loopEnd = duration < const Duration(seconds: 1)
         ? duration
         : const Duration(seconds: 1);
-
     controller.addListener(() {
       if (controller.value.isInitialized &&
           controller.value.isPlaying &&
@@ -1304,7 +1276,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         controller.seekTo(Duration.zero);
       }
     });
-
     controller.play();
   }
 
@@ -1314,18 +1285,20 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
-  /// Staggers controller inits by 150ms each to avoid iOS throttling
-  /// all 9 concurrent streams and causing the 3-second last-controller lag.
+  /// FIXED: Stagger is minimal (10ms) because concurrency limiter handles the rest.
   void _preInitializeVideoControllers(List<dynamic> posts) {
     int delayMs = 0;
     for (final p in posts) {
       final url = p['postUrl'] ?? '';
-      if (_isVideoFile(url)) {
+      if (_isVideoFile(url) &&
+          !_videoControllers.containsKey(url) &&
+          !_videoControllersInitialized.containsKey(url) &&
+          !_failedVideoUrls.contains(url)) {
         final capturedUrl = url;
         Future.delayed(Duration(milliseconds: delayMs), () {
           if (mounted) _initializeVideoController(capturedUrl);
         });
-        delayMs += 150;
+        delayMs += 10; // tiny delay only to avoid microtask batch, concurrency limiter does main job
       }
     }
   }
@@ -1349,18 +1322,22 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   // ── Gallery cover video player with filter & rotation ────────────────────
   Widget _buildGalleryVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
+    if (_failedVideoUrls.contains(videoUrl)) {
+      return Container(
+        color: colors.avatarBackgroundColor,
+        child: Center(
+          child: Icon(Icons.broken_image, color: colors.errorTextColor, size: 24),
+        ),
+      );
+    }
     if (!_videoControllers.containsKey(videoUrl)) {
       _initializeVideoController(videoUrl);
+      return _buildVideoLoading(colors);
     }
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
     if (!isInitialized || controller == null) {
-      return Container(
-        color: colors.avatarBackgroundColor,
-        child: Center(
-            child: CircularProgressIndicator(
-                color: colors.progressIndicatorColor, strokeWidth: 1.5)),
-      );
+      return _buildVideoLoading(colors);
     }
 
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -1388,15 +1365,26 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── Post thumbnail video player with filter, rotation, overlays ──────────
+  // ── Post thumbnail video player (FIXED: shows error on failure) ──────────
   Widget _buildPostVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
+    if (_failedVideoUrls.contains(videoUrl)) {
+      return Container(
+        color: colors.avatarBackgroundColor,
+        child: Center(
+          child: Icon(Icons.broken_image, color: colors.errorTextColor, size: 24),
+        ),
+      );
+    }
     if (!_videoControllers.containsKey(videoUrl)) {
       _initializeVideoController(videoUrl);
+      return _buildVideoLoading(colors);
     }
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
-    if (!isInitialized || controller == null) return _buildVideoLoading(colors);
+    if (!isInitialized || controller == null) {
+      return _buildVideoLoading(colors);
+    }
 
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
@@ -2340,7 +2328,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     final editResult = _parseEditResult(post);
     final postId = post['postId']?.toString() ?? '';
 
-    // ── LOG: post_render — only once per post_id, not once per rebuild ──
+    // Log post render once
     if (postId.isNotEmpty && !_loggedPostRenders.contains(postId)) {
       _loggedPostRenders.add(postId);
       unawaited(_sendLog({
