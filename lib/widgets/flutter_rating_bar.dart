@@ -9,7 +9,7 @@ import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 // =============================================================================
-// EMOJI THUMB SHAPE – scales only after 0.5 (rating 5.5) up to 1.5x at 10
+// EMOJI THUMB SHAPE – continuous scaling from rating 1 (smallest) to 10 (largest)
 // =============================================================================
 
 class _EmojiThumbShape extends SliderComponentShape {
@@ -27,14 +27,12 @@ class _EmojiThumbShape extends SliderComponentShape {
     this.showArrow = false,
   });
 
-  // value is normalized rating 1..10 mapped to 0..1
+  // value is normalized rating 1..10 mapped to 0..1 (0=rating1, 1=rating10)
   static double _scaleForValue(double value) {
-    // value is in range 0..1 (0=rating1, 1=rating10)
-    if (value <= 0.5) return 1.0;
-    // Linear 1.0 -> 1.5 as value goes 0.5 -> 1.0
-    final t = (value - 0.5) / 0.5; // 0..1
-    final scale = 1.0 + t * 0.5; // max 1.5
-    return scale;
+    // Continuous scale: at value 0.0 -> scale 0.7, at value 1.0 -> scale 1.5
+    // Linear interpolation: scale = 0.7 + (1.5 - 0.7) * value = 0.7 + 0.8 * value
+    // Clamp between 0.7 and 1.5 for safety
+    return 0.7 + 0.8 * value.clamp(0.0, 1.0);
   }
 
   @override
@@ -161,7 +159,7 @@ class _TooltipPainter extends CustomPainter {
 }
 
 // =============================================================================
-// RATING BAR – with scaling thumb, tooltip, and user's own reaction avatar
+// RATING BAR – with smooth continuous scaling, optimized for performance
 // =============================================================================
 
 class RatingBar extends StatefulWidget {
@@ -172,8 +170,8 @@ class RatingBar extends StatefulWidget {
   final ValueChanged<double> onRatingEnd;
   final bool? showGuidance;
   final bool hasUserRated;
-  final double? userRating; // user's own rating (1..10)
-  final String? userProfilePhoto; // user's profile picture URL
+  final double? userRating;
+  final String? userProfilePhoto;
 
   const RatingBar({
     Key? key,
@@ -431,10 +429,15 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
 
   void _onRatingChanged(double newRating) {
     if (_isNudging) _stopNudge();
-    setState(() {
-      _currentRating = newRating;
-      _isDragging = true;
-    });
+    // Only call setState if the value actually changed to avoid unnecessary rebuilds
+    if (_currentRating != newRating) {
+      setState(() {
+        _currentRating = newRating;
+        _isDragging = true;
+      });
+    } else if (!_isDragging) {
+      setState(() => _isDragging = true);
+    }
     widget.onRatingUpdate?.call(newRating);
     _pulseController.forward(from: 0.0).then((_) => _pulseController.reverse());
   }
@@ -472,191 +475,193 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     final themeProvider = Provider.of<ThemeProvider>(context);
     _updateCachedColors(themeProvider);
 
-    return AnimatedBuilder(
-      animation: _sliderEntranceController,
-      builder: (context, child) {
-        return Transform.translate(
-          offset: Offset(0, _sliderSlide.value),
-          child:
-              Opacity(opacity: _sliderFade.value.clamp(0.0, 1.0), child: child),
-        );
-      },
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final double t = (_currentRating - 1) / 9.0;
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _sliderEntranceController,
+        builder: (context, child) {
+          return Transform.translate(
+            offset: Offset(0, _sliderSlide.value),
+            child: Opacity(
+                opacity: _sliderFade.value.clamp(0.0, 1.0), child: child),
+          );
+        },
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final double t = (_currentRating - 1) / 9.0;
 
-          const double thumbHalfWidth =
-              30.0 * 1.5 / 2; // baseSize * maxScale / 2 = 22.5
-          final double trackWidth = constraints.maxWidth - 2 * thumbHalfWidth;
-          final double thumbCenterX = thumbHalfWidth + t * trackWidth;
+            const double thumbHalfWidth =
+                30.0 * 1.5 / 2; // baseSize * maxScale / 2 = 22.5
+            final double trackWidth = constraints.maxWidth - 2 * thumbHalfWidth;
+            final double thumbCenterX = thumbHalfWidth + t * trackWidth;
 
-          final bool effectiveShowTooltip = _showTooltip &&
-              !_isDragging &&
-              !_isNudging &&
-              widget.hasUserRated &&
-              widget.averageRating >= 1.0;
+            final bool effectiveShowTooltip = _showTooltip &&
+                !_isDragging &&
+                !_isNudging &&
+                widget.hasUserRated &&
+                widget.averageRating >= 1.0;
 
-          const double tooltipWidth = 110;
-          const double tooltipHeight = 32;
-          final double left = (thumbCenterX - tooltipWidth / 2)
-              .clamp(8.0, constraints.maxWidth - tooltipWidth - 8.0);
-          final double arrowCenterX =
-              (thumbCenterX - left).clamp(12.0, tooltipWidth - 12.0);
+            const double tooltipWidth = 110;
+            const double tooltipHeight = 32;
+            final double left = (thumbCenterX - tooltipWidth / 2)
+                .clamp(8.0, constraints.maxWidth - tooltipWidth - 8.0);
+            final double arrowCenterX =
+                (thumbCenterX - left).clamp(12.0, tooltipWidth - 12.0);
 
-          return Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    AnimatedOpacity(
-                      opacity: _isNudging ? 1.0 : 0.0,
-                      duration: const Duration(milliseconds: 200),
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 4.0, bottom: 6.0),
-                        child: AnimatedBuilder(
-                          animation: _nudgeGlow,
-                          builder: (context, _) {
-                            final glow = _nudgeGlow.value;
-                            return Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 5),
-                              decoration: BoxDecoration(
-                                color:
-                                    Colors.white.withOpacity(0.9 + 0.1 * glow),
-                                borderRadius: BorderRadius.circular(20),
-                                boxShadow: [
-                                  BoxShadow(
-                                      color:
-                                          Colors.white.withOpacity(0.35 * glow),
-                                      blurRadius: 10,
-                                      spreadRadius: 1)
-                                ],
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Container(
-                                    width: 7,
-                                    height: 7,
-                                    margin: const EdgeInsets.only(right: 7),
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: Colors.black
-                                          .withOpacity(0.5 + 0.5 * glow),
-                                      boxShadow: [
-                                        BoxShadow(
-                                            color: Colors.black
-                                                .withOpacity(0.2 * glow),
-                                            blurRadius: 4,
-                                            spreadRadius: 1)
-                                      ],
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AnimatedOpacity(
+                        opacity: _isNudging ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 200),
+                        child: Padding(
+                          padding:
+                              const EdgeInsets.only(left: 4.0, bottom: 6.0),
+                          child: AnimatedBuilder(
+                            animation: _nudgeGlow,
+                            builder: (context, _) {
+                              final glow = _nudgeGlow.value;
+                              return Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.9 + 0.1 * glow),
+                                  borderRadius: BorderRadius.circular(20),
+                                  boxShadow: [
+                                    BoxShadow(
+                                        color: Colors.white
+                                            .withOpacity(0.35 * glow),
+                                        blurRadius: 10,
+                                        spreadRadius: 1)
+                                  ],
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      width: 7,
+                                      height: 7,
+                                      margin:
+                                          const EdgeInsets.only(right: 7),
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: Colors.black
+                                            .withOpacity(0.5 + 0.5 * glow),
+                                        boxShadow: [
+                                          BoxShadow(
+                                              color: Colors.black
+                                                  .withOpacity(0.2 * glow),
+                                              blurRadius: 4,
+                                              spreadRadius: 1)
+                                        ],
+                                      ),
                                     ),
-                                  ),
-                                  Text(
-                                    'Slide to rate',
-                                    style: TextStyle(
-                                      color: Colors.black
-                                          .withOpacity(0.75 + 0.25 * glow),
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      fontFamily: 'Inter',
-                                      letterSpacing: 0.2,
+                                    Text(
+                                      'Slide to rate',
+                                      style: TextStyle(
+                                        color: Colors.black
+                                            .withOpacity(0.75 + 0.25 * glow),
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        fontFamily: 'Inter',
+                                        letterSpacing: 0.2,
+                                      ),
                                     ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
                         ),
                       ),
-                    ),
-                    SliderTheme(
-                      data: SliderTheme.of(context).copyWith(
-                        thumbShape: _EmojiThumbShape(
-                          emoji: widget.reactionEmoji,
-                          baseSize: 30.0,
-                          showArrow: _isNudging && _effectiveShowGuidance,
-                          arrowBounce: _arrowBounce.value,
-                          arrowOpacity: (_isNudging && _effectiveShowGuidance)
-                              ? 0.6 + 0.4 * _nudgeGlow.value
-                              : 0.0,
-                        ),
-                        overlayShape: SliderComponentShape.noOverlay,
-                        trackHeight: 3.0,
-                        activeTrackColor: _isNudging
-                            ? (_cachedSliderActiveColor ?? Colors.white)
-                                .withOpacity(0.85)
-                            : _cachedSliderActiveColor,
-                        inactiveTrackColor: _cachedSliderInactiveColor,
-                      ),
-                      child: Container(
-                        decoration: _isNudging
-                            ? BoxDecoration(
-                                borderRadius: BorderRadius.circular(12),
-                                boxShadow: [
-                                  BoxShadow(
-                                      color: Colors.white
-                                          .withOpacity(0.07 * _nudgeGlow.value),
-                                      blurRadius: 12,
-                                      spreadRadius: 2)
-                                ],
-                              )
-                            : const BoxDecoration(),
-                        child: Slider(
-                          value: _isNudging
-                              ? _nudgeRating.value.clamp(1.0, 10.0)
-                              : _currentRating,
-                          min: 1,
-                          max: 10,
-                          divisions: 100,
-                          activeColor: _isNudging
+                      SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          thumbShape: _EmojiThumbShape(
+                            emoji: widget.reactionEmoji,
+                            baseSize: 30.0,
+                            showArrow: _isNudging && _effectiveShowGuidance,
+                            arrowBounce: _arrowBounce.value,
+                            arrowOpacity:
+                                (_isNudging && _effectiveShowGuidance)
+                                    ? 0.6 + 0.4 * _nudgeGlow.value
+                                    : 0.0,
+                          ),
+                          overlayShape: SliderComponentShape.noOverlay,
+                          trackHeight: 3.0,
+                          activeTrackColor: _isNudging
                               ? (_cachedSliderActiveColor ?? Colors.white)
                                   .withOpacity(0.85)
                               : _cachedSliderActiveColor,
-                          inactiveColor: _cachedSliderInactiveColor,
-                          onChanged: _onRatingChanged,
-                          onChangeEnd: _onRatingEnd,
+                          inactiveTrackColor: _cachedSliderInactiveColor,
+                        ),
+                        child: Container(
+                          decoration: _isNudging
+                              ? BoxDecoration(
+                                  borderRadius: BorderRadius.circular(12),
+                                  boxShadow: [
+                                    BoxShadow(
+                                        color: Colors.white.withOpacity(
+                                            0.07 * _nudgeGlow.value),
+                                        blurRadius: 12,
+                                        spreadRadius: 2)
+                                  ],
+                                )
+                              : const BoxDecoration(),
+                          child: Slider(
+                            value: _isNudging
+                                ? _nudgeRating.value.clamp(1.0, 10.0)
+                                : _currentRating,
+                            min: 1,
+                            max: 10,
+                            divisions: 100,
+                            activeColor: _isNudging
+                                ? (_cachedSliderActiveColor ?? Colors.white)
+                                    .withOpacity(0.85)
+                                : _cachedSliderActiveColor,
+                            inactiveColor: _cachedSliderInactiveColor,
+                            onChanged: _onRatingChanged,
+                            onChangeEnd: _onRatingEnd,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (effectiveShowTooltip)
+                  Positioned(
+                    left: left,
+                    bottom: 65,
+                    child: AnimatedOpacity(
+                      opacity: _showTooltip ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 200),
+                      child: SizedBox(
+                        width: tooltipWidth,
+                        height: tooltipHeight,
+                        child: CustomPaint(
+                          painter: _TooltipPainter(
+                              arrowCenterX: arrowCenterX,
+                              text: 'Average Reaction'),
                         ),
                       ),
                     ),
-                  ],
-                ),
-              ),
-              if (effectiveShowTooltip)
-                Positioned(
-                  left: left,
-                  bottom: 65,
-                  child: AnimatedOpacity(
-                    opacity: _showTooltip ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 200),
-                    child: SizedBox(
-                      width: tooltipWidth,
-                      height: tooltipHeight,
-                      child: CustomPaint(
-                        painter: _TooltipPainter(
-                            arrowCenterX: arrowCenterX,
-                            text: 'Average Reaction'),
-                      ),
-                    ),
                   ),
-                ),
-              // =================================================================
-              // NEW: User's own reaction – profile picture at their rating position
-              // =================================================================
-              if (widget.userRating != null && widget.userProfilePhoto != null)
-                _buildUserReactionAvatar(
-                  constraints: constraints,
-                  thumbHalfWidth: thumbHalfWidth,
-                  trackWidth: trackWidth,
-                  userRating: widget.userRating!,
-                  photoUrl: widget.userProfilePhoto!,
-                ),
-            ],
-          );
-        },
+                // User's own reaction – profile picture at their rating position
+                if (widget.userRating != null && widget.userProfilePhoto != null)
+                  _buildUserReactionAvatar(
+                    constraints: constraints,
+                    thumbHalfWidth: thumbHalfWidth,
+                    trackWidth: trackWidth,
+                    userRating: widget.userRating!,
+                    photoUrl: widget.userProfilePhoto!,
+                  ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -676,7 +681,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
 
     return Positioned(
       left: leftPos,
-      bottom: 38, // vertical offset – adjust as needed
+      top: 10.5, // aligns with the track center
       child: Container(
         width: avatarSize,
         height: avatarSize,
@@ -685,7 +690,9 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
           border: Border.all(color: Colors.white, width: 2),
           boxShadow: [
             BoxShadow(
-                color: Colors.black26, blurRadius: 4, offset: const Offset(0, 2)),
+                color: Colors.black26,
+                blurRadius: 4,
+                offset: const Offset(0, 2)),
           ],
         ),
         child: ClipOval(
