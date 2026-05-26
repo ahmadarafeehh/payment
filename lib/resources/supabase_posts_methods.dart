@@ -524,7 +524,7 @@ class SupabasePostsMethods {
     // ── Step 1: DB write (best-effort — failure must NOT block the push) ────
     try {
       await _supabase.from('notifications').insert({
-        'type': 'post_reaction',
+        'type': 'post_rating', // ✅ FIXED: was 'post_reaction'
         'target_user_id': postOwnerUid,
         'custom_data': {
           'postId': postId,
@@ -560,7 +560,7 @@ class SupabasePostsMethods {
     // ── Step 3: Push notification (always attempted, independent of above) ───
     try {
       await _notificationService.triggerServerNotification(
-        type: 'post_reaction',
+        type: 'post_rating',
         targetUserId: postOwnerUid,
         title: 'New Reaction',
         body: '$raterUsername reacted to your post',
@@ -585,7 +585,7 @@ class SupabasePostsMethods {
       await _supabase
           .from('notifications')
           .delete()
-          .eq('type', 'post_reaction')
+          .eq('type', 'post_rating') // ✅ FIXED: was 'post_reaction'
           .eq('custom_data->>postId', postId)
           .eq('custom_data->>raterUid', raterUid);
     } catch (e) {
