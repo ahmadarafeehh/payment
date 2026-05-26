@@ -371,7 +371,6 @@ class _PostCardState extends State<PostCard>
   // FETCH REACTION EMOJI FROM DATABASE
   // =========================================================================
   Future<void> _fetchReactionEmoji() async {
-    // If snap already contains a non‑default emoji, trust it
     final existing = widget.snap['reaction_emoji']?.toString();
     if (existing != null && existing.isNotEmpty && existing != '❤️') {
       setState(() => _reactionEmoji = existing);
@@ -1357,8 +1356,9 @@ class _PostCardState extends State<PostCard>
             reactionEmoji: _reactionEmoji,
             initialThumbPosition: initialPos,
             onRatingEnd: _handleRatingSubmitted,
-            hasUserRated:
-                _userRating != null, // <-- CHANGED: pass whether user has rated
+            hasUserRated: _userRating != null,
+            userRating: _userRating,
+            userProfilePhoto: user.photoUrl,
           ),
           const SizedBox(height: 8),
           Row(
