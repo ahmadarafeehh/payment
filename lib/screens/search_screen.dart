@@ -641,6 +641,35 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
+  // ADDED MISSING METHOD
+  Widget _buildAvatarVideoPlayer(String videoUrl, _SearchColorSet colors) {
+    final controller = _getAvatarVideoController(videoUrl);
+    final isInitialized = _isAvatarVideoControllerInitialized(videoUrl);
+    if (!isInitialized || controller == null) {
+      return Container(
+        decoration: BoxDecoration(
+            shape: BoxShape.circle, color: colors.avatarBackgroundColor),
+        child: Center(
+            child: CircularProgressIndicator(
+                color: colors.progressIndicatorColor, strokeWidth: 2.0)),
+      );
+    }
+    return ClipOval(
+      child: SizedBox(
+        width: 40,
+        height: 40,
+        child: FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            width: controller.value.size.width,
+            height: controller.value.size.height,
+            child: VideoPlayer(controller),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPostImage(String imageUrl, _SearchColorSet colors,
       [VideoEditResult? editResult]) {
     final List<double> matrix = _buildColorMatrix(editResult);
