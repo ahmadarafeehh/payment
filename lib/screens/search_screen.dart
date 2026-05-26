@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -321,6 +322,11 @@ class _SearchScreenState extends State<SearchScreen>
   bool _isSearchFocused = false;
   String? currentUserId;
 
+  // Search related state
+  List<Map<String, dynamic>> _searchResults = [];
+  bool _isSearching = false;
+  Timer? _debounceTimer;
+
   List<Map<String, dynamic>> _allPosts = [];
   Set<String> blockedUsersSet = {};
   bool _isLoading = true;
@@ -345,8 +351,7 @@ class _SearchScreenState extends State<SearchScreen>
   final Map<String, VideoPlayerController> _avatarVideoControllers = {};
   final Map<String, bool> _avatarVideoControllersInitialized = {};
 
-  // ── Cache of uid → {username, photoUrl, isVerified, country} so we don't
-  //    re-fetch the same user data every time a post is tapped.
+  // Cache of uid → {username, photoUrl, isVerified, country}
   final Map<String, Map<String, dynamic>> _userDataCache = {};
 
   _SearchColorSet _getColors(ThemeProvider themeProvider) {
@@ -473,6 +478,7 @@ class _SearchScreenState extends State<SearchScreen>
 
   @override
   void dispose() {
+    _debounceTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     searchController.dispose();
     _scrollController.dispose();
@@ -702,34 +708,6 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildAvatarVideoPlayer(String videoUrl, _SearchColorSet colors) {
-    final controller = _getAvatarVideoController(videoUrl);
-    final isInitialized = _isAvatarVideoControllerInitialized(videoUrl);
-    if (!isInitialized || controller == null) {
-      return Container(
-        decoration: BoxDecoration(
-            shape: BoxShape.circle, color: colors.avatarBackgroundColor),
-        child: Center(
-            child: CircularProgressIndicator(
-                color: colors.progressIndicatorColor, strokeWidth: 2.0)),
-      );
-    }
-    return ClipOval(
-      child: SizedBox(
-        width: 40,
-        height: 40,
-        child: FittedBox(
-          fit: BoxFit.cover,
-          child: SizedBox(
-            width: controller.value.size.width,
-            height: controller.value.size.height,
-            child: VideoPlayer(controller),
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildUserAvatar(String? photoUrl, _SearchColorSet colors) {
     final url = photoUrl?.toString() ?? '';
     final isDefault = url.isEmpty || url == 'default';
@@ -789,8 +767,6 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  // ── Converts the raw RPC response row to a typed map and enriches it with
-  //    username/photoUrl if the RPC already returns those fields.
   Map<String, dynamic> _normalisePost(dynamic raw) {
     final Map<String, dynamic> post = {};
     (raw as Map).forEach((k, v) => post[k.toString()] = v);
@@ -819,7 +795,6 @@ class _SearchScreenState extends State<SearchScreen>
       if (response is List && response.isNotEmpty) {
         _allPosts = response.map<Map<String, dynamic>>(_normalisePost).toList();
 
-        // Pre-init video thumbnails and warm the user-data cache.
         await _enrichPostsWithUserData(_allPosts);
         for (final post in _allPosts) {
           final url = post['postUrl']?.toString() ?? '';
@@ -881,21 +856,13 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  // ── Fetches the load-more batch for ProfilePostFeedScreen.
-  //    Because the search feed is a mixed multi-user feed we simply return
-  //    the next page of _allPosts that are already in memory, and if the feed
-  //    needs more we fetch from Supabase exactly the same way _loadMorePosts
-  //    does.  The returned posts already carry username/photoUrl so the feed
-  //    can show the correct header for each post individually.
   Future<List<Map<String, dynamic>>> _loadMorePostsForFeed(
       int currentCount) async {
-    // If we already have enough posts in memory, slice from there.
     if (currentCount < _allPosts.length) {
       return List<Map<String, dynamic>>.from(
           _allPosts.sublist(currentCount));
     }
 
-    // Otherwise fetch the next RPC page.
     if (!_hasMorePosts) return [];
     try {
       final excludedUsers = [...blockedUsersSet, currentUserId!];
@@ -916,7 +883,6 @@ class _SearchScreenState extends State<SearchScreen>
           final url = post['postUrl']?.toString() ?? '';
           if (_isVideoFile(url)) _initializeVideoController(url);
         }
-        // Merge into the local list so future taps can find them.
         if (mounted) {
           setState(() {
             _allPosts.addAll(newPosts);
@@ -932,13 +898,8 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  // ── Looks up username/photoUrl/isVerified for each post's uid.
-  //    Results are stored in _userDataCache so repeated taps / pages never
-  //    hit the DB twice for the same user.  The values are also written back
-  //    into the post map so ProfilePostFeedScreen can read them directly.
   Future<void> _enrichPostsWithUserData(
       List<Map<String, dynamic>> posts) async {
-    // Collect uids that are not yet cached.
     final missing = posts
         .map((p) => p['uid']?.toString() ?? '')
         .where((uid) => uid.isNotEmpty && !_userDataCache.containsKey(uid))
@@ -966,8 +927,6 @@ class _SearchScreenState extends State<SearchScreen>
       } catch (_) {}
     }
 
-    // Write cached values into each post map so the feed can read them
-    // without an extra DB call.
     for (final post in posts) {
       final uid = post['uid']?.toString() ?? '';
       final cached = _userDataCache[uid];
@@ -980,13 +939,10 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  // ── Returns the userData map for a given post, falling back to fetching
-  //    live if the cache missed (e.g. very first tap before enrichment ran).
   Future<Map<String, dynamic>> _resolveUserData(
       Map<String, dynamic> post) async {
     final uid = post['uid']?.toString() ?? '';
 
-    // Fast path: data was already embedded in the post map.
     if ((post['username'] ?? '').toString().isNotEmpty) {
       return {
         'uid': uid,
@@ -997,10 +953,8 @@ class _SearchScreenState extends State<SearchScreen>
       };
     }
 
-    // Cache hit.
     if (_userDataCache.containsKey(uid)) return _userDataCache[uid]!;
 
-    // Slow path: fetch from Supabase.
     final user = await _fetchUserById(uid);
     if (user != null) {
       final data = {
@@ -1046,28 +1000,78 @@ class _SearchScreenState extends State<SearchScreen>
         setState(() {
           isShowUsers = false;
           searchController.clear();
+          _searchResults = [];
         });
       }
     });
   }
 
-  Future<List<Map<String, dynamic>>> _fetchUsersByIds(
-      List<String> userIds) async {
-    if (userIds.isEmpty) return [];
+  // ========== USER SEARCH IMPLEMENTATION ==========
+  Future<List<Map<String, dynamic>>> _searchUsers(String query) async {
+    if (query.trim().isEmpty || currentUserId == null) return [];
+
     try {
-      final response =
-          await _supabase.from('users').select().inFilter('uid', userIds);
-      return List<Map<String, dynamic>>.from(response).where((u) {
-        final id = u['uid']?.toString() ?? '';
-        return !blockedUsersSet.contains(id) && id != currentUserId;
+      final response = await _supabase
+          .from('users')
+          .select('uid, username, photoUrl, isVerified, country')
+          .ilike('username', '%$query%')
+          .limit(20);
+
+      final List<Map<String, dynamic>> users =
+          List<Map<String, dynamic>>.from(response);
+
+      return users.where((user) {
+        final uid = user['uid']?.toString() ?? '';
+        return !blockedUsersSet.contains(uid) && uid != currentUserId;
       }).toList();
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Error searching users: $e');
       return [];
     }
   }
 
-  Future<List<Map<String, dynamic>>> _searchUsers(String query) async {
-    return [];
+  void _onSearchChanged(String value) {
+    setState(() {
+      isShowUsers = value.trim().isNotEmpty;
+      _isSearchFocused = false;
+    });
+
+    if (_debounceTimer?.isActive ?? false) _debounceTimer!.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () {
+      if (value.trim().isNotEmpty) {
+        _performSearch(value.trim());
+      } else {
+        setState(() {
+          _searchResults = [];
+          _isSearching = false;
+        });
+      }
+    });
+  }
+
+  Future<void> _performSearch(String query) async {
+    setState(() => _isSearching = true);
+    final results = await _searchUsers(query);
+    if (mounted) {
+      setState(() {
+        _searchResults = results;
+        _isSearching = false;
+      });
+    }
+  }
+
+  Future<Map<String, dynamic>?> _fetchUserById(String userId) async {
+    if (userId.isEmpty) return null;
+    try {
+      final response = await _supabase
+          .from('users')
+          .select()
+          .eq('uid', userId)
+          .maybeSingle();
+      return response as Map<String, dynamic>?;
+    } catch (_) {
+      return null;
+    }
   }
 
   // ========== SKELETONS ==========
@@ -1187,17 +1191,13 @@ class _SearchScreenState extends State<SearchScreen>
                   });
                 }
               },
-              onChanged: (value) {
-                setState(() {
-                  isShowUsers = value.trim().isNotEmpty;
-                  _isSearchFocused = false;
-                });
-              },
+              onChanged: _onSearchChanged,
               onFieldSubmitted: (_) {
                 setState(() {
                   isShowUsers = true;
                   _isSearchFocused = false;
                 });
+                _performSearch(searchController.text.trim());
               },
             ),
           ),
@@ -1224,11 +1224,59 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildUserSearch(_SearchColorSet colors) {
-    return Center(
-      child: Text(
-        'No users found.',
-        style: TextStyle(color: colors.textColor),
-      ),
+    if (_isSearching) {
+      return _buildUserSearchSkeleton(colors);
+    }
+
+    if (_searchResults.isEmpty) {
+      return Center(
+        child: Text(
+          'No users found.',
+          style: TextStyle(color: colors.textColor),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.only(top: 8),
+      itemCount: _searchResults.length,
+      itemBuilder: (context, index) {
+        final user = _searchResults[index];
+        final uid = user['uid']?.toString() ?? '';
+        final username = user['username']?.toString() ?? '';
+        final photoUrl = user['photoUrl']?.toString() ?? '';
+        final isVerified = user['isVerified'] ?? false;
+        final country = user['country']?.toString() ?? '';
+
+        return ListTile(
+          leading: _buildUserAvatar(photoUrl, colors),
+          title: Row(
+            children: [
+              Flexible(
+                child: Text(
+                  username,
+                  style: TextStyle(
+                    color: colors.textColor,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (isVerified) ...[
+                const SizedBox(width: 4),
+                const Icon(Icons.verified, color: Colors.blue, size: 16),
+              ],
+            ],
+          ),
+          subtitle: country.isNotEmpty
+              ? Text(
+                  country,
+                  style: TextStyle(color: colors.hintTextColor, fontSize: 12),
+                )
+              : null,
+          onTap: () => _navigateToProfile(uid),
+        );
+      },
     );
   }
 
@@ -1293,12 +1341,6 @@ class _SearchScreenState extends State<SearchScreen>
     ]);
   }
 
-  // ── Tapping a post opens ProfilePostFeedScreen starting at [index].
-  //    Because this is a mixed feed (each post belongs to a different user),
-  //    ProfilePostFeedScreen reads per-post user data from the post map itself
-  //    (username / photoUrl keys written by _enrichPostsWithUserData) rather
-  //    than from the top-level userData field.  We pass a minimal userData
-  //    placeholder that the feed uses only as a fallback for the AppBar title.
   Widget _buildPostItem(Map<String, dynamic> post, String postUrl, int index,
       _SearchColorSet colors) {
     final isVideo = _isVideoFile(postUrl);
@@ -1309,35 +1351,22 @@ class _SearchScreenState extends State<SearchScreen>
     return InkWell(
       onTap: () async {
         _pauseAllVideos();
-
-        // Resolve user data for the tapped post's owner (usually instant
-        // because _enrichPostsWithUserData ran during fetch).
         final userData = await _resolveUserData(post);
-
         if (!mounted) return;
 
         Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => ProfilePostFeedScreen(
-              // Pass a snapshot of the full loaded list so the feed starts
-              // with everything already on screen — no loading flash.
               initialPosts: List<Map<String, dynamic>>.from(_allPosts),
               initialIndex: index,
-              // Use the tapped post's owner as the header identity.
-              // For a mixed feed the feed widget will display the per-post
-              // owner in each page's header via widget.post keys.
               userData: userData,
-              // Fetch the next page of the mixed feed when the user swipes
-              // near the end.
               onLoadMore: _loadMorePostsForFeed,
               initialHasMore: _hasMorePosts,
-              // Search feed posts belong to other users — no delete allowed.
               onPostDeleted: null,
             ),
           ),
         ).then((_) {
-          // Resume grid video thumbnails on return.
           if (mounted) {
             for (final c in _videoControllers.values) {
               if (c.value.isInitialized && !c.value.isPlaying) c.play();
@@ -1364,20 +1393,6 @@ class _SearchScreenState extends State<SearchScreen>
         ]),
       ),
     );
-  }
-
-  Future<Map<String, dynamic>?> _fetchUserById(String userId) async {
-    if (userId.isEmpty) return null;
-    try {
-      final response = await _supabase
-          .from('users')
-          .select()
-          .eq('uid', userId)
-          .maybeSingle();
-      return response as Map<String, dynamic>?;
-    } catch (_) {
-      return null;
-    }
   }
 }
 
