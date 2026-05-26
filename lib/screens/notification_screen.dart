@@ -117,7 +117,7 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
 }
 
 // =============================================================================
-// TikTok-style follow badge
+// TikTok-style follow badge (FIXED to avoid duplicate notifications)
 // =============================================================================
 class _FollowBadge extends StatefulWidget {
   final String ownerUid;
@@ -288,35 +288,12 @@ class _FollowBadgeState extends State<_FollowBadge>
     } catch (_) {}
   }
 
-  // ── Normal follow push — all other notification types ────────────────────
-  Future<void> _sendNormalFollowNotification() async {
-    try {
-      final followerRow = await _supabase
-          .from('users')
-          .select('username')
-          .eq('uid', widget.currentUserId)
-          .maybeSingle();
-
-      final followerUsername =
-          followerRow?['username']?.toString() ?? 'Someone';
-
-      await _supabase.from('notifications').insert({
-        'target_user_id': widget.ownerUid,
-        'type': 'follow',
-        'custom_data': {'followerId': widget.currentUserId},
-        'created_at': DateTime.now().toUtc().toIso8601String(),
-      });
-
-      NotificationService().triggerServerNotification(
-        type: 'follow',
-        targetUserId: widget.ownerUid,
-        title: 'New Follower',
-        body: '$followerUsername started following you.',
-        customData: {'followerId': widget.currentUserId},
-      );
-    } catch (_) {}
-  }
-
+  // ========================================================================
+  // FIXED: _handleTap – no longer calls any generic method; relies on
+  // followUser's sendNotification flag to decide whether to create the
+  // generic notification. For contextual follows (comment/rating) we
+  // suppress followUser's generic and then send the contextual one.
+  // ========================================================================
   Future<void> _handleTap() async {
     if (_isLoadingFollow) return;
     setState(() => _isLoadingFollow = true);
@@ -353,48 +330,54 @@ class _FollowBadgeState extends State<_FollowBadge>
           }
         });
 
-        SupabaseProfileMethods()
-            .followUser(widget.currentUserId, widget.ownerUid)
-            .then((_) async {
-          // Check if it turned into a pending request (private account)
-          final pending = await _supabase
-              .from('user_follow_request')
-              .select()
-              .eq('user_id', widget.ownerUid)
-              .eq('requester_id', widget.currentUserId)
-              .maybeSingle();
+        // Determine if we need a contextual notification
+        final bool hasContextualNotification =
+            widget.notificationType == 'post_rating' ||
+                widget.notificationType == 'comment';
 
-          if (mounted && pending != null) {
-            // Private account — became a request, no contextual push
-            setState(() {
-              _isFollowing = false;
-              _hasPendingRequest = true;
-              _showBadge = true;
-            });
-            _scaleController.forward(from: 0.0);
-          } else {
-            // Follow succeeded — send the right push based on notification context
-            if (widget.notificationType == 'post_rating') {
-              _sendRatingFollowNotification();
-            } else if (widget.notificationType == 'comment') {
-              _sendCommentFollowNotification();
-            } else {
-              _sendNormalFollowNotification();
-            }
+        // Call followUser – suppress generic notification when contextual will be sent
+        await SupabaseProfileMethods().followUser(
+          widget.currentUserId,
+          widget.ownerUid,
+          sendNotification: !hasContextualNotification,
+        );
+
+        // After follow, check if it turned into a pending request (private account)
+        final pending = await _supabase
+            .from('user_follow_request')
+            .select()
+            .eq('user_id', widget.ownerUid)
+            .eq('requester_id', widget.currentUserId)
+            .maybeSingle();
+
+        if (mounted && pending != null) {
+          // Private account → became a follow request, no notification at all
+          setState(() {
+            _isFollowing = false;
+            _hasPendingRequest = true;
+            _showBadge = true;
+          });
+          _scaleController.forward(from: 0.0);
+        } else {
+          // Public account follow succeeded – send contextual notification if needed
+          if (widget.notificationType == 'post_rating') {
+            await _sendRatingFollowNotification();
+          } else if (widget.notificationType == 'comment') {
+            await _sendCommentFollowNotification();
           }
-        }).catchError((_) {
-          if (mounted) {
-            setState(() {
-              _isFollowing = false;
-              _showBadge = true;
-            });
-            _tickController.reset();
-            _scaleController.forward(from: 0.0);
-          }
-        });
+          // Generic case: followUser already sent the notification because
+          // sendNotification was true (hasContextualNotification == false)
+        }
       }
     } catch (_) {
-      // silent
+      if (mounted) {
+        setState(() {
+          _isFollowing = false;
+          _showBadge = true;
+        });
+        _tickController.reset();
+        _scaleController.forward(from: 0.0);
+      }
     } finally {
       if (mounted) setState(() => _isLoadingFollow = false);
     }
@@ -453,7 +436,7 @@ class _FollowBadgeState extends State<_FollowBadge>
   }
 }
 
-// Stacks avatar + badge
+// Stacks avatar + follow badge (unchanged)
 Widget _buildAvatarWithFollow({
   required Widget avatar,
   required double avatarDiameter,
