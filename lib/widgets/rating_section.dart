@@ -9,6 +9,8 @@ class RatingSection extends StatefulWidget {
   final String userId;
   final List<Map<String, dynamic>> ratings;
   final ValueChanged<double> onRatingEnd;
+  final double? userRating; // user's own rating (if any)
+  final String? userProfilePhoto; // user's profile photo URL
 
   const RatingSection({
     Key? key,
@@ -16,6 +18,8 @@ class RatingSection extends StatefulWidget {
     required this.userId,
     required this.ratings,
     required this.onRatingEnd,
+    this.userRating,
+    this.userProfilePhoto,
   }) : super(key: key);
 
   @override
@@ -26,12 +30,12 @@ class _RatingSectionState extends State<RatingSection> {
   double _averageRating = 0.0;
   String _reactionEmoji = '❤️';
   bool _isLoading = true;
-  bool _hasUserRated = false; // NEW: track if current user has rated
+  bool _hasUserRated = false; // whether current user has rated
 
   @override
   void initState() {
     super.initState();
-    _computeAverageRatingAndUserRating(); // computes both
+    _computeAverageRatingAndUserRating();
     _fetchReactionEmoji();
   }
 
@@ -45,7 +49,6 @@ class _RatingSectionState extends State<RatingSection> {
     int count = 0;
     bool userFound = false;
     for (final rating in widget.ratings) {
-      // Check if this rating belongs to the current user
       final dynamic rUid =
           rating['userId'] ?? rating['userid'] ?? rating['user_id'];
       if (rUid != null && rUid.toString() == widget.userId) {
@@ -83,7 +86,7 @@ class _RatingSectionState extends State<RatingSection> {
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const SizedBox.shrink(); // or a loading indicator
+      return const SizedBox.shrink();
     }
 
     // If user has already rated, start thumb at community average.
@@ -111,6 +114,9 @@ class _RatingSectionState extends State<RatingSection> {
               widget.onRatingEnd(rating);
             }
           },
+          hasUserRated: _hasUserRated,
+          userRating: widget.userRating,
+          userProfilePhoto: widget.userProfilePhoto,
         ),
       ],
     );
