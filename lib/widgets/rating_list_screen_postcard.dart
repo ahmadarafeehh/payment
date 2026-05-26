@@ -7,7 +7,9 @@ import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:video_player/video_player.dart';
 
-// VIDEO UTILS CLASS - Add this at the top
+// ============================================================================
+// Video utilities (unchanged)
+// ============================================================================
 class VideoUtils {
   static bool isVideoFile(String url) {
     if (url.isEmpty) return false;
@@ -22,7 +24,6 @@ class VideoUtils {
   }
 }
 
-// VIDEO PROFILE AVATAR WIDGET - Add this after VideoUtils
 class VideoProfileAvatar extends StatefulWidget {
   final String videoUrl;
   final double radius;
@@ -60,16 +61,12 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
     try {
       _videoController = VideoPlayerController.networkUrl(
         Uri.parse(widget.videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: true,
-        ),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
-
       await _videoController!.initialize();
       await _videoController!.setVolume(0.0);
       await _videoController!.setLooping(true);
       await _videoController!.play();
-
       if (mounted) {
         setState(() {
           _isVideoInitialized = true;
@@ -77,11 +74,7 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isVideoInitialized = false;
-        });
-      }
+      if (mounted) setState(() => _isVideoInitialized = false);
     }
   }
 
@@ -109,7 +102,6 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
         ),
       );
     }
-
     return ClipOval(
       child: SizedBox(
         width: widget.radius * 2,
@@ -127,6 +119,96 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
   }
 }
 
+// ============================================================================
+// NEW: Read-only reaction display (track + emoji thumb)
+// ============================================================================
+class ReadOnlyRatingDisplay extends StatelessWidget {
+  final double rating;          // 1.0 – 10.0
+  final String reactionEmoji;   // e.g. '❤️', '🔥', etc.
+  final double width;           // total width of the widget
+  final double trackHeight;
+  final double emojiSize;
+
+  const ReadOnlyRatingDisplay({
+    Key? key,
+    required this.rating,
+    required this.reactionEmoji,
+    this.width = 80.0,
+    this.trackHeight = 3.0,
+    this.emojiSize = 20.0,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final bool isDark = themeProvider.themeMode == ThemeMode.dark;
+    final Color trackColor = isDark ? Colors.grey[700]! : Colors.grey[400]!;
+    final Color activeTrackColor = isDark ? Colors.white70 : Colors.black54;
+    final double normalized = (rating - 1.0) / 9.0; // 0..1
+    // Emoji thumb width ~ emojiSize, track has padding on both sides equal to half of thumb width
+    final double thumbHalf = emojiSize / 2;
+    final double trackWidth = width - emojiSize;
+    final double thumbLeft = thumbHalf + normalized * trackWidth;
+
+    return SizedBox(
+      width: width,
+      height: emojiSize + 4,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          // Full track (inactive)
+          Positioned(
+            left: thumbHalf,
+            top: (emojiSize / 2) - (trackHeight / 2),
+            right: thumbHalf,
+            child: Container(
+              height: trackHeight,
+              decoration: BoxDecoration(
+                color: trackColor,
+                borderRadius: BorderRadius.circular(trackHeight / 2),
+              ),
+            ),
+          ),
+          // Active part of track (from start to thumb)
+          Positioned(
+            left: thumbHalf,
+            top: (emojiSize / 2) - (trackHeight / 2),
+            width: thumbLeft - thumbHalf,
+            child: Container(
+              height: trackHeight,
+              decoration: BoxDecoration(
+                color: activeTrackColor,
+                borderRadius: BorderRadius.horizontal(
+                  left: Radius.circular(trackHeight / 2),
+                ),
+              ),
+            ),
+          ),
+          // Emoji thumb
+          Positioned(
+            left: thumbLeft - (emojiSize / 2),
+            top: 0,
+            child: SizedBox(
+              width: emojiSize,
+              height: emojiSize,
+              child: FittedBox(
+                fit: BoxFit.contain,
+                child: Text(
+                  reactionEmoji,
+                  style: const TextStyle(fontSize: 100),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// Rating List Screen (updated to use ReadOnlyRatingDisplay)
+// ============================================================================
 class RatingListScreen extends StatefulWidget {
   final String postId;
 
@@ -154,7 +236,11 @@ class _RatingListScreenState extends State<RatingListScreen> {
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
 
-  // Helper method to get the appropriate color scheme
+  // Cache for reaction emoji (per post, but same for all entries)
+  String _reactionEmoji = '❤️';
+  bool _emojiLoaded = false;
+
+  // Helper methods for colors
   Color _getTextColor(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
         ? const Color(0xFFd9d9d9)
@@ -183,6 +269,7 @@ class _RatingListScreenState extends State<RatingListScreen> {
   void initState() {
     super.initState();
     _setupRealtime();
+    _fetchReactionEmoji();
     _fetchInitialRatings();
 
     _scrollController.addListener(() {
@@ -197,7 +284,6 @@ class _RatingListScreenState extends State<RatingListScreen> {
   void dispose() {
     _ratingsChannel.unsubscribe();
     _scrollController.dispose();
-    // Dispose all video controllers
     for (final controller in _videoControllers.values) {
       controller.dispose();
     }
@@ -227,6 +313,31 @@ class _RatingListScreenState extends State<RatingListScreen> {
         .subscribe();
   }
 
+  Future<void> _fetchReactionEmoji() async {
+    try {
+      final response = await Supabase.instance.client
+          .from('posts')
+          .select('reaction_emoji')
+          .eq('postId', widget.postId)
+          .maybeSingle();
+      if (mounted && response != null) {
+        final emoji = response['reaction_emoji']?.toString();
+        if (emoji != null && emoji.isNotEmpty) {
+          setState(() {
+            _reactionEmoji = emoji;
+            _emojiLoaded = true;
+          });
+        } else {
+          setState(() => _emojiLoaded = true);
+        }
+      } else {
+        setState(() => _emojiLoaded = true);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _emojiLoaded = true);
+    }
+  }
+
   Future<void> _initializeVideoController(
       String userId, String videoUrl) async {
     if (_videoControllers.containsKey(userId) ||
@@ -237,9 +348,7 @@ class _RatingListScreenState extends State<RatingListScreen> {
     try {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: true,
-        ),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
 
       _videoControllers[userId] = controller;
@@ -286,7 +395,6 @@ class _RatingListScreenState extends State<RatingListScreen> {
           _page = 1;
           _hasMore = _ratings.length == _limit;
 
-          // Cache user info and initialize video controllers
           for (var rating in _ratings) {
             final userId = rating['userid'] as String?;
             if (userId != null) {
@@ -294,7 +402,6 @@ class _RatingListScreenState extends State<RatingListScreen> {
               if (userData != null) {
                 _userCache[userId] = userData;
 
-                // Initialize video controller if profile picture is a video
                 final photoUrl = userData['photoUrl'] ?? '';
                 if (VideoUtils.isVideoFile(photoUrl)) {
                   _initializeVideoController(userId, photoUrl);
@@ -339,7 +446,6 @@ class _RatingListScreenState extends State<RatingListScreen> {
           _page++;
           _hasMore = newRatings.length == _limit;
 
-          // Cache user info and initialize video controllers for new ratings
           for (var rating in newRatings) {
             final userId = rating['userid'] as String?;
             if (userId != null) {
@@ -347,7 +453,6 @@ class _RatingListScreenState extends State<RatingListScreen> {
               if (userData != null) {
                 _userCache[userId] = userData;
 
-                // Initialize video controller if profile picture is a video
                 final photoUrl = userData['photoUrl'] ?? '';
                 if (VideoUtils.isVideoFile(photoUrl)) {
                   _initializeVideoController(userId, photoUrl);
@@ -373,13 +478,9 @@ class _RatingListScreenState extends State<RatingListScreen> {
       switch (eventType) {
         case PostgresChangeEvent.insert:
           if (newRecord != null) {
-            // Insert at top for new ratings
             _ratings.insert(0, newRecord);
-
-            // Initialize video controller if needed
             final userId = newRecord['userid'] as String?;
             if (userId != null) {
-              // Try to get user data from the record or fetch it
               final userData = newRecord['users'] as Map<String, dynamic>?;
               if (userData != null) {
                 _userCache[userId] = userData;
@@ -398,7 +499,6 @@ class _RatingListScreenState extends State<RatingListScreen> {
             );
             if (index != -1) _ratings[index] = newRecord;
 
-            // Update video controller if needed
             final userId = newRecord['userid'] as String?;
             if (userId != null) {
               final userData = newRecord['users'] as Map<String, dynamic>?;
@@ -417,8 +517,6 @@ class _RatingListScreenState extends State<RatingListScreen> {
             _ratings.removeWhere(
               (r) => r['userid'] == oldRecord['userid'],
             );
-
-            // Dispose video controller for deleted user
             final userId = oldRecord['userid'] as String?;
             if (userId != null && _videoControllers.containsKey(userId)) {
               _videoControllers[userId]?.dispose();
@@ -491,7 +589,6 @@ class _RatingListScreenState extends State<RatingListScreen> {
       );
     }
 
-    // Regular image
     return CircleAvatar(
       radius: 21,
       backgroundColor: cardColor,
@@ -513,7 +610,6 @@ class _RatingListScreenState extends State<RatingListScreen> {
         : DateTime.now();
     final timeText = timeago.format(timestamp);
 
-    // Get user info from cache or use fallback
     final userData = _userCache[userId] ?? {};
     final photoUrl = userData['photoUrl'] as String? ?? '';
     final username = userData['username'] as String? ?? 'Deleted user';
@@ -538,13 +634,25 @@ class _RatingListScreenState extends State<RatingListScreen> {
           timeText,
           style: TextStyle(color: textColor.withOpacity(0.6)),
         ),
-        trailing: Chip(
-          label: Text(
-            userRating.toStringAsFixed(1),
-            style: TextStyle(color: textColor),
-          ),
-          backgroundColor: cardColor,
-        ),
+        // Replace the numeric Chip with the read‑only reaction display
+        trailing: _emojiLoaded
+            ? ReadOnlyRatingDisplay(
+                rating: userRating,
+                reactionEmoji: _reactionEmoji,
+                width: 80,
+                emojiSize: 24,
+                trackHeight: 3,
+              )
+            : const SizedBox(
+                width: 80,
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              ),
         onTap: username == 'Deleted user'
             ? null
             : () => Navigator.push(
@@ -568,7 +676,7 @@ class _RatingListScreenState extends State<RatingListScreen> {
     return Scaffold(
       backgroundColor: backgroundColor,
       appBar: AppBar(
-        title: Text('Ratings', style: TextStyle(color: textColor)),
+        title: Text('Reactions', style: TextStyle(color: textColor)),
         backgroundColor: backgroundColor,
         iconTheme: IconThemeData(color: textColor),
       ),
@@ -577,7 +685,7 @@ class _RatingListScreenState extends State<RatingListScreen> {
               child: CircularProgressIndicator(color: progressIndicatorColor))
           : _ratings.isEmpty
               ? Center(
-                  child: Text('No ratings yet',
+                  child: Text('No reactions yet',
                       style: TextStyle(color: textColor)))
               : ListView.separated(
                   controller: _scrollController,
