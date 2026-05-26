@@ -1,4 +1,3 @@
-// lib/widgets/flutter_rating_bar.dart
 import 'dart:math' as math;
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -7,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 // =============================================================================
 // EMOJI THUMB SHAPE – scales only after 0.5 (rating 5.5) up to 1.5x at 10
@@ -161,7 +161,7 @@ class _TooltipPainter extends CustomPainter {
 }
 
 // =============================================================================
-// RATING BAR – with scaling thumb, tooltip, etc.
+// RATING BAR – with scaling thumb, tooltip, and user's own reaction avatar
 // =============================================================================
 
 class RatingBar extends StatefulWidget {
@@ -171,7 +171,9 @@ class RatingBar extends StatefulWidget {
   final ValueChanged<double>? onRatingUpdate;
   final ValueChanged<double> onRatingEnd;
   final bool? showGuidance;
-  final bool hasUserRated; // whether the current user has already rated
+  final bool hasUserRated;
+  final double? userRating; // user's own rating (1..10)
+  final String? userProfilePhoto; // user's profile picture URL
 
   const RatingBar({
     Key? key,
@@ -182,6 +184,8 @@ class RatingBar extends StatefulWidget {
     required this.onRatingEnd,
     this.showGuidance,
     this.hasUserRated = false,
+    this.userRating,
+    this.userProfilePhoto,
   }) : super(key: key);
 
   @override
@@ -227,7 +231,6 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
 
   void _showTooltipWithTimer() {
     if (!mounted) return;
-    // Only show tooltip if user has already rated this post
     final bool shouldShow = widget.hasUserRated &&
         !_isDragging &&
         !_isNudging &&
@@ -249,7 +252,6 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   void initState() {
     super.initState();
 
-    // If user has already rated, start at the average; otherwise neutral centre.
     _currentRating = widget.hasUserRated
         ? widget.averageRating.clamp(1.0, 10.0)
         : widget.initialThumbPosition.clamp(1.0, 10.0);
@@ -406,32 +408,21 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     if (mounted) setState(() => _isNudging = false);
   }
 
-  // ---------------------------------------------------------------------------
-  // FIX: only move the thumb to the community average when the user has rated.
-  // ---------------------------------------------------------------------------
   @override
   void didUpdateWidget(covariant RatingBar oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    // ── Average rating changed ───────────────────────────────────────────────
     if (widget.averageRating != oldWidget.averageRating && !_isDragging) {
-      // Only snap the thumb to the community average when the current user
-      // has already submitted a rating.  Before rating, the thumb must stay
-      // at the neutral centre (5.0 / initialThumbPosition) so the bar never
-      // reveals the community average to an unrated viewer.
       if (widget.hasUserRated) {
         setState(() => _currentRating = widget.averageRating.clamp(1.0, 10.0));
       }
       _showTooltipWithTimer();
     }
 
-    // ── hasUserRated flipped ─────────────────────────────────────────────────
     if (widget.hasUserRated != oldWidget.hasUserRated) {
       if (widget.hasUserRated) {
-        // User just submitted their first rating – move thumb to community avg.
         setState(() => _currentRating = widget.averageRating.clamp(1.0, 10.0));
       } else {
-        // Rating was removed – reset thumb to neutral centre.
         setState(() => _currentRating = 5.0);
       }
       _showTooltipWithTimer();
@@ -494,10 +485,6 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         builder: (context, constraints) {
           final double t = (_currentRating - 1) / 9.0;
 
-          // Flutter's Slider reserves padding on each side equal to the thumb's
-          // preferred half-width so the thumb never overflows the widget edges.
-          // We must mirror that same offset here so the tooltip centres exactly
-          // over the middle of the emoji, not over the raw normalised position.
           const double thumbHalfWidth =
               30.0 * 1.5 / 2; // baseSize * maxScale / 2 = 22.5
           final double trackWidth = constraints.maxWidth - 2 * thumbHalfWidth;
@@ -506,7 +493,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
           final bool effectiveShowTooltip = _showTooltip &&
               !_isDragging &&
               !_isNudging &&
-              widget.hasUserRated && // extra guard: never show without a rating
+              widget.hasUserRated &&
               widget.averageRating >= 1.0;
 
           const double tooltipWidth = 110;
@@ -656,9 +643,59 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                     ),
                   ),
                 ),
+              // =================================================================
+              // NEW: User's own reaction – profile picture at their rating position
+              // =================================================================
+              if (widget.userRating != null && widget.userProfilePhoto != null)
+                _buildUserReactionAvatar(
+                  constraints: constraints,
+                  thumbHalfWidth: thumbHalfWidth,
+                  trackWidth: trackWidth,
+                  userRating: widget.userRating!,
+                  photoUrl: widget.userProfilePhoto!,
+                ),
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildUserReactionAvatar({
+    required BoxConstraints constraints,
+    required double thumbHalfWidth,
+    required double trackWidth,
+    required double userRating,
+    required String photoUrl,
+  }) {
+    final double userT = (userRating - 1) / 9.0;
+    final double userCenterX = thumbHalfWidth + userT * trackWidth;
+    const double avatarSize = 32.0;
+    double leftPos = userCenterX - avatarSize / 2;
+    leftPos = leftPos.clamp(0.0, constraints.maxWidth - avatarSize);
+
+    return Positioned(
+      left: leftPos,
+      bottom: 38, // vertical offset – adjust as needed
+      child: Container(
+        width: avatarSize,
+        height: avatarSize,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 2),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black26, blurRadius: 4, offset: const Offset(0, 2)),
+          ],
+        ),
+        child: ClipOval(
+          child: CachedNetworkImage(
+            imageUrl: photoUrl,
+            fit: BoxFit.cover,
+            errorWidget: (_, __, ___) =>
+                const Icon(Icons.person, size: 32, color: Colors.grey),
+          ),
+        ),
       ),
     );
   }
