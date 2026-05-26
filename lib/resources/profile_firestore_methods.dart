@@ -315,16 +315,12 @@ class SupabaseProfileMethods {
     }
   }
 
-  // ==========================================================================
-  // Updated followUser – with sendNotification flag (no print statements)
-  // ==========================================================================
   Future<void> followUser(
     String uid,
     String followId, {
     bool sendNotification = true,
   }) async {
     try {
-      // Check if already following
       final existingFollowing = await _supabase
           .from('user_following')
           .select()
@@ -337,7 +333,6 @@ class SupabaseProfileMethods {
         return;
       }
 
-      // Check if target account is private
       final targetSel = await _supabase
           .from('users')
           .select('isPrivate')
@@ -396,7 +391,6 @@ class SupabaseProfileMethods {
           'followed_at': timestamp.toIso8601String(),
         });
 
-        // Only create generic follow notification if sendNotification is true
         if (sendNotification) {
           final followerSel = await _supabase
               .from('users')
@@ -591,13 +585,19 @@ class SupabaseProfileMethods {
     } catch (e) {}
   }
 
+  // ==========================================================================
+  // FIXED: Complete account deletion (all data, no Supabase Auth admin deletion)
+  // ==========================================================================
   Future<String> deleteEntireUserAccount(
       String uid, firebase_auth.AuthCredential? credential) async {
     String res = "Some error occurred";
 
     try {
-      final userSel =
-          await _supabase.from('users').select().eq('uid', uid).maybeSingle();
+      final userSel = await _supabase
+          .from('users')
+          .select()
+          .eq('uid', uid)
+          .maybeSingle();
       final userData = _unwrap(userSel) ?? userSel;
 
       if (userData == null) throw Exception("User record not found");
@@ -614,19 +614,60 @@ class SupabaseProfileMethods {
         throw Exception("User not authenticated or UID mismatch");
       }
 
+      // 1. Delete profile picture/video from storage
+      String? profilePhoto = userData['photoUrl']?.toString();
+      if (profilePhoto != null && profilePhoto.isNotEmpty && profilePhoto != 'default') {
+        await deleteProfileMedia(profilePhoto);
+      }
+
+      // 2. Delete all posts (and their media, comments, ratings, notifications)
+      await _deleteAllUserPosts(uid);
+
+      // 3. Delete user's comments on other people's posts
+      await _supabase.from('comments').delete().eq('uid', uid);
+
+      // 4. Delete user's replies
+      await _supabase.from('replies').delete().eq('uid', uid);
+
+      // 5. Delete user's ratings (post_rating)
+      await _supabase.from('post_rating').delete().eq('uid', uid);
+
+      // 6. Delete followers & following relationships
+      await _supabase.from('user_followers').delete().eq('user_id', uid);
+      await _supabase.from('user_followers').delete().eq('follower_id', uid);
+      await _supabase.from('user_following').delete().eq('user_id', uid);
+      await _supabase.from('user_following').delete().eq('following_id', uid);
+
+      // 7. Delete follow requests (sent & received)
+      await _supabase.from('user_follow_request').delete().eq('user_id', uid);
+      await _supabase.from('user_follow_request').delete().eq('requester_id', uid);
+
+      // 8. Delete profile views (as viewer & as target)
+      await _supabase.from('user_profile_views').delete().eq('user_id', uid);
+      await _supabase.from('user_profile_views').delete().eq('profileowneruid', uid);
+
+      // 9. Delete notifications
+      await _supabase.from('notifications').delete().eq('target_user_id', uid);
+      await _deleteUserActorNotifications(uid);
+
+      // 10. Delete reports
+      await _supabase.from('reports').delete().eq('user_id', uid);
+      // If you have a 'reporter_id' column, uncomment:
+      // await _supabase.from('reports').delete().eq('reporter_id', uid);
+
+      // 11. Delete the user record itself
+      await _supabase.from('users').delete().eq('uid', uid);
+
+      // 12. Delete Firebase Auth account (re-authenticate first)
       if (isFirebaseUser && credential != null) {
         await firebaseUser!.reauthenticateWithCredential(credential);
+        await firebaseUser!.delete();
       }
 
-      if (isFirebaseUser && firebaseUser != null) {
-        await firebaseUser.delete();
-      }
-
+      // 13. Sign out from Supabase (if session exists)
       if (isSupabaseUser) {
         await _supabase.auth.signOut();
       }
-
-      await _supabase.from('users').delete().eq('uid', uid);
 
       res = "success";
     } on firebase_auth.FirebaseAuthException catch (e) {
