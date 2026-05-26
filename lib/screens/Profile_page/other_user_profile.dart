@@ -423,7 +423,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   Timer? _videoInitDebounce;
 
   // ── NEW: Serial queue and state tracking ────────────────────────────────
-  static const int _maxConcurrentVideoInits = 1; // ONLY ONE AT A TIME
+  // FIX 1: raised concurrency from 1 to 3
+  static const int _maxConcurrentVideoInits = 3;
   int _activeVideoInits = 0;
   final List<String> _pendingInitQueue = [];
   final Set<String> _attemptedVideoUrls = {};   // URLs that have been tried (success or fail)
@@ -1139,36 +1140,37 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   // ========== VIDEO HELPERS ==========
 
-  /// PUBLIC ENTRY POINT: queues a video for initialisation (only one at a time)
+  /// PUBLIC ENTRY POINT: queues a video for initialisation (one at a time)
   Future<void> _initializeVideoController(String videoUrl) async {
     // Already finalised? Skip.
     if (_videoControllersInitialized.containsKey(videoUrl) ||
         _failedVideoUrls.contains(videoUrl)) {
-      _sendLog({
+      // FIX 2: wrap with unawaited
+      unawaited(_sendLog({
         'event_type': 'thumbnail_fetch_skipped',
         'thumbnail_url': videoUrl,
         'extra': {'reason': 'already_finalised'},
-      });
+      }));
       return;
     }
 
     // Already attempted (success or fail) – do NOT retry
     if (_attemptedVideoUrls.contains(videoUrl)) {
-      _sendLog({
+      unawaited(_sendLog({
         'event_type': 'thumbnail_fetch_skipped',
         'thumbnail_url': videoUrl,
         'extra': {'reason': 'already_attempted'},
-      });
+      }));
       return;
     }
 
     // If already in the queue or controller exists (but not finalised), skip duplicate
     if (_pendingInitQueue.contains(videoUrl) || _videoControllers.containsKey(videoUrl)) {
-      _sendLog({
+      unawaited(_sendLog({
         'event_type': 'thumbnail_fetch_skipped',
         'thumbnail_url': videoUrl,
         'extra': {'reason': 'already_in_queue_or_controller'},
-      });
+      }));
       return;
     }
 
@@ -1177,11 +1179,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
     // Add to queue and start processing
     _pendingInitQueue.add(videoUrl);
-    _sendLog({
+    unawaited(_sendLog({
       'event_type': 'thumbnail_fetch_queued',
       'thumbnail_url': videoUrl,
       'extra': {'queue_length': _pendingInitQueue.length},
-    });
+    }));
     _processInitQueue();
   }
 
@@ -1192,14 +1194,15 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     final videoUrl = _pendingInitQueue.removeAt(0);
     _activeVideoInits++;
 
-    _sendLog({
+    // FIX 2: wrap with unawaited
+    unawaited(_sendLog({
       'event_type': 'thumbnail_fetch_dequeued',
       'thumbnail_url': videoUrl,
       'extra': {
         'active_inits': _activeVideoInits,
         'queue_length': _pendingInitQueue.length,
       },
-    });
+    }));
 
     await _runInitialization(videoUrl);
 
@@ -2613,17 +2616,21 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
+  // FIX 3: visually distinct loading state (shimmer effect)
   Widget _buildVideoLoading(_OtherProfileColorSet colors) {
+    final shimmerColor = Color.lerp(
+      colors.avatarBackgroundColor,
+      colors.textColor,
+      0.08, // 8% blend toward text colour – visible in both dark and light
+    )!;
+
     return Container(
-      color: colors.avatarBackgroundColor,
+      color: shimmerColor,
       child: Center(
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          CircularProgressIndicator(
-              color: colors.progressIndicatorColor, strokeWidth: 1.5),
-          const SizedBox(height: 4),
-          Text('Loading...',
-              style: TextStyle(color: colors.textColor, fontSize: 8)),
-        ]),
+        child: CircularProgressIndicator(
+          color: colors.progressIndicatorColor,
+          strokeWidth: 1.5,
+        ),
       ),
     );
   }
