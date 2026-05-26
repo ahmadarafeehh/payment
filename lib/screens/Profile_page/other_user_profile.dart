@@ -422,14 +422,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   final Map<String, bool> _videoControllersInitialized = {};
   Timer? _videoInitDebounce;
 
-  // ── NEW: Serial queue and state tracking ────────────────────────────────
-  // FIX 1: raised concurrency from 1 to 3
-  static const int _maxConcurrentVideoInits = 3;
-  int _activeVideoInits = 0;
-  final List<String> _pendingInitQueue = [];
-  final Set<String> _attemptedVideoUrls = {};   // URLs that have been tried (success or fail)
-  final Set<String> _failedVideoUrls = {};      // URLs that permanently failed
-
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = false;
@@ -1138,201 +1130,45 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  // ========== VIDEO HELPERS ==========
-
-  /// PUBLIC ENTRY POINT: queues a video for initialisation (one at a time)
+  // ========== VIDEO HELPERS (same as current_profile_screen) ==========
   Future<void> _initializeVideoController(String videoUrl) async {
-    // Already finalised? Skip.
-    if (_videoControllersInitialized.containsKey(videoUrl) ||
-        _failedVideoUrls.contains(videoUrl)) {
-      // FIX 2: wrap with unawaited
-      unawaited(_sendLog({
-        'event_type': 'thumbnail_fetch_skipped',
-        'thumbnail_url': videoUrl,
-        'extra': {'reason': 'already_finalised'},
-      }));
-      return;
-    }
-
-    // Already attempted (success or fail) – do NOT retry
-    if (_attemptedVideoUrls.contains(videoUrl)) {
-      unawaited(_sendLog({
-        'event_type': 'thumbnail_fetch_skipped',
-        'thumbnail_url': videoUrl,
-        'extra': {'reason': 'already_attempted'},
-      }));
-      return;
-    }
-
-    // If already in the queue or controller exists (but not finalised), skip duplicate
-    if (_pendingInitQueue.contains(videoUrl) || _videoControllers.containsKey(videoUrl)) {
-      unawaited(_sendLog({
-        'event_type': 'thumbnail_fetch_skipped',
-        'thumbnail_url': videoUrl,
-        'extra': {'reason': 'already_in_queue_or_controller'},
-      }));
-      return;
-    }
-
-    // Mark as attempted immediately to prevent duplicates
-    _attemptedVideoUrls.add(videoUrl);
-
-    // Add to queue and start processing
-    _pendingInitQueue.add(videoUrl);
-    unawaited(_sendLog({
-      'event_type': 'thumbnail_fetch_queued',
-      'thumbnail_url': videoUrl,
-      'extra': {'queue_length': _pendingInitQueue.length},
-    }));
-    _processInitQueue();
-  }
-
-  Future<void> _processInitQueue() async {
-    if (_activeVideoInits >= _maxConcurrentVideoInits) return;
-    if (_pendingInitQueue.isEmpty) return;
-
-    final videoUrl = _pendingInitQueue.removeAt(0);
-    _activeVideoInits++;
-
-    // FIX 2: wrap with unawaited
-    unawaited(_sendLog({
-      'event_type': 'thumbnail_fetch_dequeued',
-      'thumbnail_url': videoUrl,
-      'extra': {
-        'active_inits': _activeVideoInits,
-        'queue_length': _pendingInitQueue.length,
-      },
-    }));
-
-    await _runInitialization(videoUrl);
-
-    _activeVideoInits--;
-    // Process next item in queue
-    _processInitQueue();
-  }
-
-  Future<void> _runInitialization(String videoUrl) async {
-    final initStart = DateTime.now();
-    _pendingVideoInits++;
-    unawaited(_sendLog({
-      'event_type': 'thumbnail_fetch_start',
-      'thumbnail_url': videoUrl,
-      'client_timestamp': initStart.toIso8601String(),
-      'extra': {
-        'pending_inits': _pendingVideoInits,
-        'total_controllers': _videoControllers.length,
-        'active_inits': _activeVideoInits,
-        'queue_length': _pendingInitQueue.length,
-      },
-    }));
-
+    if (_videoControllers.containsKey(videoUrl) ||
+        _videoControllersInitialized[videoUrl] == true) return;
     try {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(videoUrl),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
-
       _videoControllers[videoUrl] = controller;
+      _videoControllersInitialized[videoUrl] = false;
 
-      // Step 1: Initialize (with 8s timeout)
-      await controller.initialize().timeout(
-            const Duration(seconds: 8),
-            onTimeout: () {
-              throw TimeoutException('Initialization timed out after 8s');
-            },
-          );
+      controller.initialize().then((_) {
+        if (!mounted || !_videoControllers.containsKey(videoUrl)) return;
+        _videoControllersInitialized[videoUrl] = true;
+        _configureVideoLoop(controller);
+        controller.setVolume(0.0);
 
-      // Step 2: Check for zero duration
-      if (controller.value.duration == Duration.zero) {
-        throw Exception('Video has zero duration – corrupted or empty');
-      }
-
-      // Step 3: Configure loop and volume
-      _configureVideoLoop(controller);
-      controller.setVolume(0.0);
-
-      // Step 4: Wait for first frame using Completer + 5s timeout
-      final frameCompleter = Completer<bool>();
-      void firstFrameListener() {
-        if (controller.value.position > Duration.zero) {
-          frameCompleter.complete(true);
-          controller.removeListener(firstFrameListener);
-        } else if (controller.value.duration == Duration.zero) {
-          frameCompleter.completeError(Exception('Zero duration after init'));
-          controller.removeListener(firstFrameListener);
-        }
-      }
-      controller.addListener(firstFrameListener);
-
-      final hasFrame = await frameCompleter.future.timeout(
-            const Duration(seconds: 5),
-            onTimeout: () => false,
-          );
-
-      if (!hasFrame) {
-        throw Exception('No video frame decoded within 5 seconds');
-      }
-
-      // SUCCESS
-      _videoControllersInitialized[videoUrl] = true;
-      _failedVideoUrls.remove(videoUrl);
-
-      unawaited(_sendLog({
-        'event_type': 'thumbnail_fetch_success',
-        'thumbnail_url': videoUrl,
-        'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
-        'extra': {
-          'pending_inits': _pendingVideoInits,
-          'video_width': controller.value.size.width.toInt(),
-          'video_height': controller.value.size.height.toInt(),
-          'first_frame_position_ms': controller.value.position.inMilliseconds,
-          'active_inits': _activeVideoInits,
-          'queue_length': _pendingInitQueue.length,
-        },
-      }));
-    } catch (e) {
-      // FAILURE: clean up and mark as failed permanently.
+        // Debounce: collapse multiple concurrent init callbacks into one rebuild.
+        _videoInitDebounce?.cancel();
+        _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
+          if (mounted) setState(() {});
+        });
+      }).catchError((_) {
+        _videoControllers.remove(videoUrl)?.dispose();
+        _videoControllersInitialized.remove(videoUrl);
+      });
+    } catch (_) {
       _videoControllers.remove(videoUrl)?.dispose();
       _videoControllersInitialized.remove(videoUrl);
-      _failedVideoUrls.add(videoUrl);
-
-      unawaited(_sendLog({
-        'event_type': 'thumbnail_fetch_error',
-        'thumbnail_url': videoUrl,
-        'error_message': e.toString(),
-        'duration_ms': DateTime.now().difference(initStart).inMilliseconds,
-        'extra': {
-          'pending_inits': _pendingVideoInits,
-          'active_inits': _activeVideoInits,
-          'queue_length': _pendingInitQueue.length,
-          'error_type': e.runtimeType.toString(),
-        },
-      }));
-    } finally {
-      _pendingVideoInits = (_pendingVideoInits - 1).clamp(0, 9999);
     }
-
-    // Debounced rebuild
-    _videoInitDebounce?.cancel();
-    _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
-      if (mounted) setState(() {});
-    });
   }
 
   void _configureVideoLoop(VideoPlayerController controller) {
     final duration = controller.value.duration;
-    if (duration == Duration.zero) {
-      controller.play();
-      return;
-    }
-    final loopEnd = duration < const Duration(seconds: 1)
-        ? duration
-        : const Duration(seconds: 1);
+    final end = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
     controller.addListener(() {
-      if (controller.value.isInitialized &&
-          controller.value.isPlaying &&
-          controller.value.position >= loopEnd) {
-        controller.seekTo(Duration.zero);
+      if (controller.value.isInitialized && controller.value.isPlaying) {
+        if (controller.value.position >= end) controller.seekTo(Duration.zero);
       }
     });
     controller.play();
@@ -1344,16 +1180,10 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
-  /// Adds video URLs to the queue (no artificial delay)
   void _preInitializeVideoControllers(List<dynamic> posts) {
     for (final p in posts) {
       final url = p['postUrl'] ?? '';
-      if (_isVideoFile(url) &&
-          !_videoControllersInitialized.containsKey(url) &&
-          !_failedVideoUrls.contains(url) &&
-          !_attemptedVideoUrls.contains(url)) {
-        _initializeVideoController(url);
-      }
+      if (_isVideoFile(url)) _initializeVideoController(url);
     }
   }
 
@@ -1373,33 +1203,17 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         l.contains('video=true');
   }
 
-  // ── Gallery cover video player with filter & rotation (error handling) ────
+  // ── Gallery cover video player with filter & rotation ────────────────────
   Widget _buildGalleryVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
-    if (_failedVideoUrls.contains(videoUrl)) {
-      return Container(
-        color: colors.avatarBackgroundColor,
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.broken_image, color: colors.errorTextColor, size: 24),
-              const SizedBox(height: 4),
-              Text('Failed',
-                  style: TextStyle(color: colors.errorTextColor, fontSize: 10)),
-            ],
-          ),
-        ),
-      );
-    }
-    if (!_videoControllers.containsKey(videoUrl)) {
-      _initializeVideoController(videoUrl);
-      return _buildVideoLoading(colors);
-    }
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
     if (!isInitialized || controller == null) {
-      return _buildVideoLoading(colors);
+      return Container(
+          color: colors.avatarBackgroundColor,
+          child: Center(
+              child: CircularProgressIndicator(
+                  color: colors.progressIndicatorColor, strokeWidth: 1.5)));
     }
 
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -1427,33 +1241,17 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── Post thumbnail video player (FIXED: error placeholder) ──────────────
+  // ── Post thumbnail video player — applies filter, rotation, overlays ─────
   Widget _buildPostVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
-    if (_failedVideoUrls.contains(videoUrl)) {
-      return Container(
-        color: colors.avatarBackgroundColor,
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.broken_image, color: colors.errorTextColor, size: 24),
-              const SizedBox(height: 4),
-              Text('Failed',
-                  style: TextStyle(color: colors.errorTextColor, fontSize: 10)),
-            ],
-          ),
-        ),
-      );
-    }
-    if (!_videoControllers.containsKey(videoUrl)) {
-      _initializeVideoController(videoUrl);
-      return _buildVideoLoading(colors);
-    }
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
     if (!isInitialized || controller == null) {
-      return _buildVideoLoading(colors);
+      return Container(
+          color: colors.avatarBackgroundColor,
+          child: Center(
+              child: CircularProgressIndicator(
+                  color: colors.progressIndicatorColor, strokeWidth: 1.5)));
     }
 
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -2616,25 +2414,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // FIX 3: visually distinct loading state (shimmer effect)
-  Widget _buildVideoLoading(_OtherProfileColorSet colors) {
-    final shimmerColor = Color.lerp(
-      colors.avatarBackgroundColor,
-      colors.textColor,
-      0.08, // 8% blend toward text colour – visible in both dark and light
-    )!;
-
-    return Container(
-      color: shimmerColor,
-      child: Center(
-        child: CircularProgressIndicator(
-          color: colors.progressIndicatorColor,
-          strokeWidth: 1.5,
-        ),
-      ),
-    );
-  }
-
   @override
   void dispose() {
     _videoInitDebounce?.cancel();
@@ -2647,9 +2426,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
     _videoControllers.clear();
     _videoControllersInitialized.clear();
-    _failedVideoUrls.clear();
-    _attemptedVideoUrls.clear();
-    _pendingInitQueue.clear();
     _profileVideoController?.dispose();
     _profileVideoController = null;
     super.dispose();
