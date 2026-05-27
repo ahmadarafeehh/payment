@@ -1,4 +1,3 @@
-// lib/screens/Profile_page/other_user_profile_screen.dart
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -18,225 +17,11 @@ import 'package:country_flags/country_flags.dart';
 import 'package:Ratedly/screens/Profile_page/gallery_post_view_screen.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
+import 'package:Ratedly/screens/Profile_page/edit_shared.dart'; // ✅ Import shared editing classes
 
-// ─────────────────────────────────────────────────────────────────────────────
-// INLINE DEFINITIONS (normally from edit_shared.dart)
-// ─────────────────────────────────────────────────────────────────────────────
-
-class FilterAdjustments {
-  final double brightness;
-  final double contrast;
-  final double saturation;
-
-  FilterAdjustments({
-    this.brightness = 0.0,
-    this.contrast = 1.0,
-    this.saturation = 1.0,
-  });
-
-  List<double> combinedMatrix(List<double> baseMatrix) {
-    final b = brightness;
-    final c = contrast;
-    final s = saturation;
-    return [
-      c * s, 0, 0, 0, b,
-      0, c * s, 0, 0, b,
-      0, 0, c * s, 0, b,
-      0, 0, 0, 1, 0,
-    ];
-  }
-
-  Map<String, dynamic> toJson() => {
-        'brightness': brightness,
-        'contrast': contrast,
-        'saturation': saturation,
-      };
-
-  factory FilterAdjustments.fromJson(Map<String, dynamic> json) =>
-      FilterAdjustments(
-        brightness: (json['brightness'] as num?)?.toDouble() ?? 0.0,
-        contrast: (json['contrast'] as num?)?.toDouble() ?? 1.0,
-        saturation: (json['saturation'] as num?)?.toDouble() ?? 1.0,
-      );
-}
-
-class FilterInfo {
-  final String name;
-  final List<double> matrix;
-  const FilterInfo({required this.name, required this.matrix});
-}
-
-const List<FilterInfo> kFilters = [
-  FilterInfo(name: 'Original', matrix: [
-    1, 0, 0, 0, 0,
-    0, 1, 0, 0, 0,
-    0, 0, 1, 0, 0,
-    0, 0, 0, 1, 0,
-  ]),
-];
-
-class DrawStroke {
-  final List<Offset> points;
-  final Color color;
-  final double width;
-  final bool isEraser;
-
-  DrawStroke({
-    required this.points,
-    required this.color,
-    required this.width,
-    this.isEraser = false,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'points': points.map((p) => {'dx': p.dx, 'dy': p.dy}).toList(),
-        'color': color.value,
-        'width': width,
-        'isEraser': isEraser,
-      };
-
-  factory DrawStroke.fromJson(Map<String, dynamic> json) => DrawStroke(
-        points: (json['points'] as List)
-            .map((p) => Offset(p['dx'] as double, p['dy'] as double))
-            .toList(),
-        color: Color(json['color'] as int),
-        width: (json['width'] as num).toDouble(),
-        isEraser: json['isEraser'] as bool? ?? false,
-      );
-}
-
-class TextOverlay {
-  final String text;
-  final Offset position;
-  final Color color;
-  final double fontSize;
-  final String fontFamily;
-
-  TextOverlay({
-    required this.text,
-    required this.position,
-    required this.color,
-    required this.fontSize,
-    this.fontFamily = 'Roboto',
-  });
-
-  TextOverlay copyWith({double? fontSize}) => TextOverlay(
-        text: text,
-        position: position,
-        color: color,
-        fontSize: fontSize ?? this.fontSize,
-        fontFamily: fontFamily,
-      );
-
-  Map<String, dynamic> toJson() => {
-        'text': text,
-        'dx': position.dx,
-        'dy': position.dy,
-        'color': color.value,
-        'fontSize': fontSize,
-        'fontFamily': fontFamily,
-      };
-
-  factory TextOverlay.fromJson(Map<String, dynamic> json) => TextOverlay(
-        text: json['text'] as String,
-        position: Offset(
-            (json['dx'] as num).toDouble(), (json['dy'] as num).toDouble()),
-        color: Color(json['color'] as int),
-        fontSize: (json['fontSize'] as num).toDouble(),
-        fontFamily: json['fontFamily'] as String? ?? 'Roboto',
-      );
-}
-
-class VideoEditResult {
-  final FilterAdjustments adjustments;
-  final int filterIndex;
-  final int rotationQuarters;
-  final List<DrawStroke> strokes;
-  final List<TextOverlay> overlays;
-  final File file;
-
-  VideoEditResult({
-    required this.adjustments,
-    required this.filterIndex,
-    required this.rotationQuarters,
-    required this.strokes,
-    required this.overlays,
-    required this.file,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'adjustments': adjustments.toJson(),
-        'filterIndex': filterIndex,
-        'rotationQuarters': rotationQuarters,
-        'strokes': strokes.map((s) => s.toJson()).toList(),
-        'overlays': overlays.map((o) => o.toJson()).toList(),
-      };
-
-  factory VideoEditResult.fromJson(Map<String, dynamic> json, File file) =>
-      VideoEditResult(
-        adjustments: FilterAdjustments.fromJson(
-            json['adjustments'] as Map<String, dynamic>),
-        filterIndex: json['filterIndex'] as int,
-        rotationQuarters: json['rotationQuarters'] as int? ?? 0,
-        strokes: (json['strokes'] as List? ?? [])
-            .map((s) => DrawStroke.fromJson(s as Map<String, dynamic>))
-            .toList(),
-        overlays: (json['overlays'] as List? ?? [])
-            .map((o) => TextOverlay.fromJson(o as Map<String, dynamic>))
-            .toList(),
-        file: file,
-      );
-}
-
-TextStyle overlayTextStyle(TextOverlay overlay) => TextStyle(
-      color: overlay.color,
-      fontSize: overlay.fontSize,
-      fontFamily: overlay.fontFamily,
-    );
-
-TextStyle overlayShadowStyle(TextOverlay overlay) => TextStyle(
-      color: Colors.black.withOpacity(0.5),
-      fontSize: overlay.fontSize,
-      fontFamily: overlay.fontFamily,
-    );
-
-class DrawingPainter extends CustomPainter {
-  final List<DrawStroke> strokes;
-  final DrawStroke? currentStroke;
-
-  DrawingPainter({required this.strokes, this.currentStroke});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    for (final stroke in strokes) {
-      _drawStroke(canvas, stroke);
-    }
-    if (currentStroke != null) {
-      _drawStroke(canvas, currentStroke!);
-    }
-  }
-
-  void _drawStroke(Canvas canvas, DrawStroke stroke) {
-    if (stroke.points.isEmpty) return;
-    final paint = Paint()
-      ..color = stroke.isEraser ? Colors.transparent : stroke.color
-      ..strokeWidth = stroke.width
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..blendMode = stroke.isEraser ? BlendMode.clear : BlendMode.srcOver;
-    for (int i = 0; i < stroke.points.length - 1; i++) {
-      canvas.drawLine(stroke.points[i], stroke.points[i + 1], paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant DrawingPainter oldDelegate) => true;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// END OF INLINE DEFINITIONS
-// ─────────────────────────────────────────────────────────────────────────────
-
+// -----------------------------------------------------------------------------
+// Color definitions (same as original)
+// -----------------------------------------------------------------------------
 class _OtherProfileColorSet {
   final Color backgroundColor;
   final Color textColor;
@@ -315,6 +100,9 @@ class _OtherProfileLightColors extends _OtherProfileColorSet {
         );
 }
 
+// -----------------------------------------------------------------------------
+// Reusable widgets (same as original)
+// -----------------------------------------------------------------------------
 class CountryFlagWidget extends StatelessWidget {
   final String countryCode;
   final double width;
@@ -392,6 +180,9 @@ class _ExpandableBioTextState extends State<ExpandableBioText> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Main OtherUserProfileScreen (corrected)
+// -----------------------------------------------------------------------------
 class OtherUserProfileScreen extends StatefulWidget {
   final String uid;
   const OtherUserProfileScreen({Key? key, required this.uid}) : super(key: key);
@@ -417,7 +208,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   int following = 0;
   bool _isMutualFollow = false;
 
-  // ── Video controllers ────────────────────────────────────────────────────
+  // Video controllers (same as current profile screen)
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
   Timer? _videoInitDebounce;
@@ -451,13 +242,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   bool _hasLoaded = false;
 
-  // ── Logging ──────────────────────────────────────────────────────────────
+  // Logging (optional, kept from original)
   String? _currentSessionId;
   DateTime? _screenOpenAt;
-  int _pendingVideoInits = 0;
   final Set<String> _loggedPostRenders = {};
 
-  // ── Cooldown for load more ──────────────────────────────────────────────
   DateTime? _lastLoadMoreTime;
   static const Duration _loadMoreCooldown = Duration(milliseconds: 500);
 
@@ -479,14 +268,31 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     } catch (_) {}
   }
 
-  // ── Color helpers ─────────────────────────────────────────────────────────
   _OtherProfileColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
         ? _OtherProfileDarkColors()
         : _OtherProfileLightColors();
   }
 
-  // ── Safely extract video_edit_metadata as Map<String,dynamic>? ───────────
+  // --------------------------------------------------------------
+  // Video helpers (identical to current_profile_screen.dart)
+  // --------------------------------------------------------------
+  bool _isVideoFile(String url) {
+    if (url.isEmpty) return false;
+    final l = url.toLowerCase();
+    return l.endsWith('.mp4') ||
+        l.endsWith('.mov') ||
+        l.endsWith('.avi') ||
+        l.endsWith('.wmv') ||
+        l.endsWith('.flv') ||
+        l.endsWith('.mkv') ||
+        l.endsWith('.webm') ||
+        l.endsWith('.m4v') ||
+        l.endsWith('.3gp') ||
+        l.contains('/video/') ||
+        l.contains('video=true');
+  }
+
   Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
     if (raw == null) return null;
     if (raw is Map<String, dynamic>) return raw;
@@ -494,7 +300,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     return null;
   }
 
-  // ── Parse VideoEditResult from a post map, returns null on failure ────────
   VideoEditResult? _parseEditResult(Map<String, dynamic> post) {
     final meta = _extractEditMetadata(post['video_edit_metadata']);
     if (meta == null) return null;
@@ -505,7 +310,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  // ── Build the combined colour-filter matrix for a VideoEditResult ─────────
   List<double> _buildColorMatrix(VideoEditResult? er) {
     if (er == null) {
       return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
@@ -513,7 +317,61 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     return er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix);
   }
 
-  // ── Shared edit overlay layer (strokes + text) scaled to preview cell ─────
+  Future<void> _initializeVideoController(String videoUrl) async {
+    if (_videoControllers.containsKey(videoUrl) ||
+        _videoControllersInitialized[videoUrl] == true) return;
+    try {
+      final controller = VideoPlayerController.networkUrl(
+        Uri.parse(videoUrl),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+      );
+      _videoControllers[videoUrl] = controller;
+      _videoControllersInitialized[videoUrl] = false;
+
+      controller.initialize().then((_) {
+        if (!mounted || !_videoControllers.containsKey(videoUrl)) return;
+        _videoControllersInitialized[videoUrl] = true;
+        _configureVideoLoop(controller);
+        controller.setVolume(0.0);
+
+        _videoInitDebounce?.cancel();
+        _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
+          if (mounted) setState(() {});
+        });
+      }).catchError((_) {
+        _videoControllers.remove(videoUrl)?.dispose();
+        _videoControllersInitialized.remove(videoUrl);
+      });
+    } catch (_) {
+      _videoControllers.remove(videoUrl)?.dispose();
+      _videoControllersInitialized.remove(videoUrl);
+    }
+  }
+
+  void _configureVideoLoop(VideoPlayerController controller) {
+    final duration = controller.value.duration;
+    final end = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
+    controller.addListener(() {
+      if (controller.value.isInitialized && controller.value.isPlaying) {
+        if (controller.value.position >= end) controller.seekTo(Duration.zero);
+      }
+    });
+    controller.play();
+  }
+
+  VideoPlayerController? _getVideoController(String url) =>
+      _videoControllers[url];
+
+  bool _isVideoControllerInitialized(String url) =>
+      _videoControllersInitialized[url] == true;
+
+  void _preInitializeVideoControllers(List<dynamic> posts) {
+    for (final p in posts) {
+      final url = p['postUrl'] ?? '';
+      if (_isVideoFile(url)) _initializeVideoController(url);
+    }
+  }
+
   Widget _buildEditOverlayLayer(
       VideoEditResult editResult, BoxConstraints constraints) {
     if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
@@ -556,86 +414,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _scrollController = ScrollController();
-    _scrollController.addListener(_scrollListener);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_hasLoaded) {
-      _hasLoaded = true;
-      _loadDataInParallel();
-    }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      _pauseAllVideos();
-      _muteProfileVideo();
-    } else if (state == AppLifecycleState.resumed) {
-      _unmuteProfileVideo();
-    }
-  }
-
-  void _pauseAllVideos() {
-    for (final c in _videoControllers.values) {
-      if (c.value.isPlaying) c.pause();
-    }
-  }
-
-  void _resumeAllVideos() {
-    for (final c in _videoControllers.values) {
-      if (c.value.isInitialized && !c.value.isPlaying) c.play();
-    }
-  }
-
-  void _muteProfileVideo() {
-    if (_profileVideoController != null && _isProfileVideoInitialized) {
-      try {
-        _profileVideoController!.setVolume(0.0);
-      } catch (_) {}
-    }
-  }
-
-  void _unmuteProfileVideo() {
-    if (_profileVideoController != null && _isProfileVideoInitialized) {
-      try {
-        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
-      } catch (_) {}
-    }
-  }
-
-  void _toggleProfileVideoMute() {
-    if (_profileVideoController != null && _isProfileVideoInitialized) {
-      setState(() => _isProfileVideoMuted = !_isProfileVideoMuted);
-      try {
-        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
-      } catch (_) {}
-    }
-  }
-
-  // ========== SCROLL ==========
-  void _scrollListener() {
-    if (_scrollController.position.pixels >=
-            _scrollController.position.maxScrollExtent - 50 &&
-        !_isLoadingMore &&
-        _hasMorePosts &&
-        _selectedTabIndex == 0) {
-      Future.delayed(const Duration(milliseconds: 15), () {
-        if (mounted) _loadMorePosts();
-      });
-    }
-  }
-
-  // ========== PROFILE VIDEO ==========
+  // --------------------------------------------------------------
+  // Profile video
+  // --------------------------------------------------------------
   Future<void> _initializeProfileVideo(String videoUrl) async {
     if (_profileVideoController != null) {
       await _profileVideoController!.dispose();
@@ -733,7 +514,90 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ========== LOAD DATA ==========
+  void _pauseAllVideos() {
+    for (final c in _videoControllers.values) {
+      if (c.value.isPlaying) c.pause();
+    }
+  }
+
+  void _resumeAllVideos() {
+    for (final c in _videoControllers.values) {
+      if (c.value.isInitialized && !c.value.isPlaying) c.play();
+    }
+  }
+
+  void _muteProfileVideo() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      try {
+        _profileVideoController!.setVolume(0.0);
+      } catch (_) {}
+    }
+  }
+
+  void _unmuteProfileVideo() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      try {
+        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
+      } catch (_) {}
+    }
+  }
+
+  void _toggleProfileVideoMute() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      setState(() => _isProfileVideoMuted = !_isProfileVideoMuted);
+      try {
+        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
+      } catch (_) {}
+    }
+  }
+
+  // --------------------------------------------------------------
+  // Lifecycle
+  // --------------------------------------------------------------
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _scrollController = ScrollController();
+    _scrollController.addListener(_scrollListener);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_hasLoaded) {
+      _hasLoaded = true;
+      _loadDataInParallel();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _pauseAllVideos();
+      _muteProfileVideo();
+    } else if (state == AppLifecycleState.resumed) {
+      _unmuteProfileVideo();
+    }
+  }
+
+  void _scrollListener() {
+    if (_scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent - 50 &&
+        !_isLoadingMore &&
+        _hasMorePosts &&
+        _selectedTabIndex == 0) {
+      Future.delayed(const Duration(milliseconds: 15), () {
+        if (mounted) _loadMorePosts();
+      });
+    }
+  }
+
+  // --------------------------------------------------------------
+  // Data loading (identical logic to current profile screen)
+  // --------------------------------------------------------------
   Future<void> _loadDataInParallel() async {
     _screenOpenAt = DateTime.now();
     await _sendLog({
@@ -1026,9 +890,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  // ========== LOAD MORE (with cooldown) ==========
   Future<void> _loadMorePosts() async {
-    // Cooldown check
     if (_lastLoadMoreTime != null) {
       final elapsed = DateTime.now().difference(_lastLoadMoreTime!);
       if (elapsed < _loadMoreCooldown) {
@@ -1130,118 +992,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  // ========== VIDEO HELPERS (same as current_profile_screen) ==========
-  Future<void> _initializeVideoController(String videoUrl) async {
-    if (_videoControllers.containsKey(videoUrl) ||
-        _videoControllersInitialized[videoUrl] == true) return;
-    try {
-      final controller = VideoPlayerController.networkUrl(
-        Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-      );
-      _videoControllers[videoUrl] = controller;
-      _videoControllersInitialized[videoUrl] = false;
-
-      controller.initialize().then((_) {
-        if (!mounted || !_videoControllers.containsKey(videoUrl)) return;
-        _videoControllersInitialized[videoUrl] = true;
-        _configureVideoLoop(controller);
-        controller.setVolume(0.0);
-
-        // Debounce: collapse multiple concurrent init callbacks into one rebuild.
-        _videoInitDebounce?.cancel();
-        _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
-          if (mounted) setState(() {});
-        });
-      }).catchError((_) {
-        _videoControllers.remove(videoUrl)?.dispose();
-        _videoControllersInitialized.remove(videoUrl);
-      });
-    } catch (_) {
-      _videoControllers.remove(videoUrl)?.dispose();
-      _videoControllersInitialized.remove(videoUrl);
-    }
-  }
-
-  void _configureVideoLoop(VideoPlayerController controller) {
-    final duration = controller.value.duration;
-    final end = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
-    controller.addListener(() {
-      if (controller.value.isInitialized && controller.value.isPlaying) {
-        if (controller.value.position >= end) controller.seekTo(Duration.zero);
-      }
-    });
-    controller.play();
-  }
-
-  VideoPlayerController? _getVideoController(String url) =>
-      _videoControllers[url];
-
-  bool _isVideoControllerInitialized(String url) =>
-      _videoControllersInitialized[url] == true;
-
-  void _preInitializeVideoControllers(List<dynamic> posts) {
-    for (final p in posts) {
-      final url = p['postUrl'] ?? '';
-      if (_isVideoFile(url)) _initializeVideoController(url);
-    }
-  }
-
-  bool _isVideoFile(String url) {
-    if (url.isEmpty) return false;
-    final l = url.toLowerCase();
-    return l.endsWith('.mp4') ||
-        l.endsWith('.mov') ||
-        l.endsWith('.avi') ||
-        l.endsWith('.wmv') ||
-        l.endsWith('.flv') ||
-        l.endsWith('.mkv') ||
-        l.endsWith('.webm') ||
-        l.endsWith('.m4v') ||
-        l.endsWith('.3gp') ||
-        l.contains('/video/') ||
-        l.contains('video=true');
-  }
-
-  // ── Gallery cover video player with filter & rotation ────────────────────
-  Widget _buildGalleryVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
-      [VideoEditResult? editResult]) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.avatarBackgroundColor,
-          child: Center(
-              child: CircularProgressIndicator(
-                  color: colors.progressIndicatorColor, strokeWidth: 1.5)));
-    }
-
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                    width: controller.value.size.width,
-                    height: controller.value.size.height,
-                    child: VideoPlayer(controller)),
-              ),
-            ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  // ── Post thumbnail video player — applies filter, rotation, overlays ─────
+  // --------------------------------------------------------------
+  // Thumbnail builders (identical to current profile screen)
+  // --------------------------------------------------------------
   Widget _buildPostVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
     final controller = _getVideoController(videoUrl);
@@ -1288,7 +1041,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── Static image thumbnail with filter, rotation, overlays ───────────────
   Widget _buildPostImage(String imageUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -1375,7 +1127,43 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── Gallery cover static image with filter & rotation ────────────────────
+  Widget _buildGalleryVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
+      [VideoEditResult? editResult]) {
+    final controller = _getVideoController(videoUrl);
+    final isInitialized = _isVideoControllerInitialized(videoUrl);
+    if (!isInitialized || controller == null) {
+      return Container(
+          color: colors.avatarBackgroundColor,
+          child: Center(
+              child: CircularProgressIndicator(
+                  color: colors.progressIndicatorColor, strokeWidth: 1.5)));
+    }
+
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(
+          child: ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                    width: controller.value.size.width,
+                    height: controller.value.size.height,
+                    child: VideoPlayer(controller)),
+              ),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
   Widget _buildGalleryCoverImage(String imageUrl, _OtherProfileColorSet colors,
       [VideoEditResult? editResult]) {
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -1414,162 +1202,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ========== SKELETON LOADERS ==========
-  Widget _buildOtherProfileSkeleton(_OtherProfileColorSet colors) {
-    return SingleChildScrollView(
-      controller: _scrollController,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            _buildOtherProfileHeaderSkeleton(colors),
-            const SizedBox(height: 20),
-            _buildOtherBioSectionSkeleton(colors),
-            const SizedBox(height: 16),
-            _buildTabButtonsSkeleton(colors),
-            Divider(color: colors.dividerColor),
-            _buildOtherPostsGridSkeleton(colors),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildOtherProfileHeaderSkeleton(_OtherProfileColorSet colors) {
-    return Column(children: [
-      Container(
-          width: 90,
-          height: 90,
-          decoration: BoxDecoration(
-              shape: BoxShape.circle, color: colors.skeletonColor)),
-      const SizedBox(height: 16),
-      Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _buildOtherMetricSkeleton(colors),
-          _buildOtherMetricSkeleton(colors),
-          _buildOtherMetricSkeleton(colors),
-        ],
-      ),
-      const SizedBox(height: 16),
-      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Container(
-            width: 100,
-            height: 40,
-            decoration: BoxDecoration(
-                color: colors.skeletonColor,
-                borderRadius: BorderRadius.circular(8))),
-        const SizedBox(width: 8),
-        Container(
-            width: 100,
-            height: 40,
-            decoration: BoxDecoration(
-                color: colors.skeletonColor,
-                borderRadius: BorderRadius.circular(8))),
-      ]),
-    ]);
-  }
-
-  Widget _buildOtherMetricSkeleton(_OtherProfileColorSet colors) {
-    return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      Container(
-          height: 16,
-          width: 30,
-          decoration: BoxDecoration(
-              color: colors.skeletonColor,
-              borderRadius: BorderRadius.circular(4))),
-      const SizedBox(height: 6),
-      Container(
-          height: 12,
-          width: 50,
-          decoration: BoxDecoration(
-              color: colors.skeletonColor,
-              borderRadius: BorderRadius.circular(4))),
-    ]);
-  }
-
-  Widget _buildOtherBioSectionSkeleton(_OtherProfileColorSet colors) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Container(
-            height: 18,
-            width: 120,
-            decoration: BoxDecoration(
-                color: colors.skeletonColor,
-                borderRadius: BorderRadius.circular(4))),
-        const SizedBox(height: 12),
-        Container(
-            height: 14,
-            width: double.infinity,
-            decoration: BoxDecoration(
-                color: colors.skeletonColor,
-                borderRadius: BorderRadius.circular(4))),
-        const SizedBox(height: 6),
-        Container(
-            height: 14,
-            width: 250,
-            decoration: BoxDecoration(
-                color: colors.skeletonColor,
-                borderRadius: BorderRadius.circular(4))),
-        const SizedBox(height: 6),
-        Container(
-            height: 14,
-            width: 200,
-            decoration: BoxDecoration(
-                color: colors.skeletonColor,
-                borderRadius: BorderRadius.circular(4))),
-      ]),
-    );
-  }
-
-  Widget _buildTabButtonsSkeleton(_OtherProfileColorSet colors) {
-    return Row(children: [
-      Expanded(
-          child: Container(
-              height: 50,
-              decoration: BoxDecoration(
-                  color: colors.skeletonColor,
-                  borderRadius: BorderRadius.circular(8)))),
-      const SizedBox(width: 8),
-      Expanded(
-          child: Container(
-              height: 50,
-              decoration: BoxDecoration(
-                  color: colors.skeletonColor,
-                  borderRadius: BorderRadius.circular(8)))),
-    ]);
-  }
-
-  Widget _buildOtherPostsGridSkeleton(_OtherProfileColorSet colors) {
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: 9,
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
-          crossAxisSpacing: 2,
-          mainAxisSpacing: 2,
-          childAspectRatio: 0.8),
-      itemBuilder: (_, __) => Container(
-        margin: const EdgeInsets.all(1),
-        decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(4),
-            color: colors.skeletonColor),
-      ),
-    );
-  }
-
-  Widget _buildAppBarTitleSkeleton(_OtherProfileColorSet colors) {
-    return Container(
-        height: 16,
-        width: 120,
-        decoration: BoxDecoration(
-            color: colors.skeletonColor,
-            borderRadius: BorderRadius.circular(4)));
-  }
-
-  // ========== FOLLOW / MESSAGE / REPORT ==========
+  // --------------------------------------------------------------
+  // Follow / Message / Report (unchanged)
+  // --------------------------------------------------------------
   void _otherHandleFollow() async {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
@@ -1730,7 +1365,163 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  // ========== TAB BUTTONS ==========
+  // --------------------------------------------------------------
+  // UI Builders (skeletons, grids, etc.)
+  // --------------------------------------------------------------
+  Widget _buildOtherProfileSkeleton(_OtherProfileColorSet colors) {
+    return SingleChildScrollView(
+      controller: _scrollController,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            _buildOtherProfileHeaderSkeleton(colors),
+            const SizedBox(height: 20),
+            _buildOtherBioSectionSkeleton(colors),
+            const SizedBox(height: 16),
+            _buildTabButtonsSkeleton(colors),
+            Divider(color: colors.dividerColor),
+            _buildOtherPostsGridSkeleton(colors),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOtherProfileHeaderSkeleton(_OtherProfileColorSet colors) {
+    return Column(children: [
+      Container(
+          width: 90,
+          height: 90,
+          decoration: BoxDecoration(
+              shape: BoxShape.circle, color: colors.skeletonColor)),
+      const SizedBox(height: 16),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _buildOtherMetricSkeleton(colors),
+          _buildOtherMetricSkeleton(colors),
+          _buildOtherMetricSkeleton(colors),
+        ],
+      ),
+      const SizedBox(height: 16),
+      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Container(
+            width: 100,
+            height: 40,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor,
+                borderRadius: BorderRadius.circular(8))),
+        const SizedBox(width: 8),
+        Container(
+            width: 100,
+            height: 40,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor,
+                borderRadius: BorderRadius.circular(8))),
+      ]),
+    ]);
+  }
+
+  Widget _buildOtherMetricSkeleton(_OtherProfileColorSet colors) {
+    return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Container(
+          height: 16,
+          width: 30,
+          decoration: BoxDecoration(
+              color: colors.skeletonColor,
+              borderRadius: BorderRadius.circular(4))),
+      const SizedBox(height: 6),
+      Container(
+          height: 12,
+          width: 50,
+          decoration: BoxDecoration(
+              color: colors.skeletonColor,
+              borderRadius: BorderRadius.circular(4))),
+    ]);
+  }
+
+  Widget _buildOtherBioSectionSkeleton(_OtherProfileColorSet colors) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+            height: 18,
+            width: 120,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor,
+                borderRadius: BorderRadius.circular(4))),
+        const SizedBox(height: 12),
+        Container(
+            height: 14,
+            width: double.infinity,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor,
+                borderRadius: BorderRadius.circular(4))),
+        const SizedBox(height: 6),
+        Container(
+            height: 14,
+            width: 250,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor,
+                borderRadius: BorderRadius.circular(4))),
+        const SizedBox(height: 6),
+        Container(
+            height: 14,
+            width: 200,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor,
+                borderRadius: BorderRadius.circular(4))),
+      ]),
+    );
+  }
+
+  Widget _buildTabButtonsSkeleton(_OtherProfileColorSet colors) {
+    return Row(children: [
+      Expanded(
+          child: Container(
+              height: 50,
+              decoration: BoxDecoration(
+                  color: colors.skeletonColor,
+                  borderRadius: BorderRadius.circular(8)))),
+      const SizedBox(width: 8),
+      Expanded(
+          child: Container(
+              height: 50,
+              decoration: BoxDecoration(
+                  color: colors.skeletonColor,
+                  borderRadius: BorderRadius.circular(8)))),
+    ]);
+  }
+
+  Widget _buildOtherPostsGridSkeleton(_OtherProfileColorSet colors) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: 9,
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          crossAxisSpacing: 2,
+          mainAxisSpacing: 2,
+          childAspectRatio: 0.8),
+      itemBuilder: (_, __) => Container(
+        margin: const EdgeInsets.all(1),
+        decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(4),
+            color: colors.skeletonColor),
+      ),
+    );
+  }
+
+  Widget _buildAppBarTitleSkeleton(_OtherProfileColorSet colors) {
+    return Container(
+        height: 16,
+        width: 120,
+        decoration: BoxDecoration(
+            color: colors.skeletonColor,
+            borderRadius: BorderRadius.circular(4)));
+  }
+
   Widget _buildTabButtons(_OtherProfileColorSet colors) {
     return Row(children: [
       Expanded(
@@ -1796,158 +1587,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         ),
       ),
     ]);
-  }
-
-  // ========== BUILD ==========
-  @override
-  Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final colors = _getColors(themeProvider);
-    final userProvider = Provider.of<UserProvider>(context, listen: false);
-    final String? currentUserId =
-        userProvider.firebaseUid ?? userProvider.supabaseUid;
-    final isCurrentUser = currentUserId == widget.uid;
-    final isAuthenticated = currentUserId != null && currentUserId.isNotEmpty;
-
-    if (isLoading) {
-      return Scaffold(
-        appBar: AppBar(
-          backgroundColor: colors.appBarBackgroundColor,
-          elevation: 0,
-          leading: BackButton(color: colors.appBarIconColor),
-          title: _buildAppBarTitleSkeleton(colors),
-          centerTitle: true,
-        ),
-        backgroundColor: colors.backgroundColor,
-        body: _buildOtherProfileSkeleton(colors),
-      );
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        iconTheme: IconThemeData(color: colors.appBarIconColor),
-        backgroundColor: colors.appBarBackgroundColor,
-        elevation: 0,
-        title: Row(mainAxisSize: MainAxisSize.min, children: [
-          VerifiedUsernameWidget(
-            username: userData['username'] ?? 'User',
-            uid: widget.uid,
-            style:
-                TextStyle(color: colors.textColor, fontWeight: FontWeight.bold),
-          ),
-        ]),
-        centerTitle: true,
-        leading: BackButton(color: colors.appBarIconColor),
-        actions: [
-          if (isAuthenticated)
-            PopupMenuButton(
-              icon: Icon(Icons.more_vert, color: colors.appBarIconColor),
-              onSelected: (value) async {
-                if (value == 'block') {
-                  try {
-                    setState(() => isLoading = true);
-                    if (currentUserId == null) return;
-                    await SupabaseBlockMethods().blockUser(
-                        currentUserId: currentUserId, targetUserId: widget.uid);
-                    if (mounted) {
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => BlockedProfileScreen(
-                              uid: widget.uid, isBlocker: true),
-                        ),
-                      );
-                    }
-                  } catch (_) {
-                    if (mounted) {
-                      showSnackBar(context,
-                          "Please try again or contact us at ratedly9@gmail.com");
-                    }
-                  } finally {
-                    if (mounted) setState(() => isLoading = false);
-                  }
-                } else if (value == 'remove_follower') {
-                  if (currentUserId == null) return;
-                  try {
-                    await SupabaseProfileMethods()
-                        .removeFollower(currentUserId, widget.uid);
-                    if (mounted) {
-                      setState(() {
-                        _isViewerFollower = false;
-                        followers = followers - 1;
-                      });
-                      showSnackBar(context, "Follower removed successfully");
-                    }
-                  } catch (_) {
-                    if (mounted) {
-                      showSnackBar(context,
-                          "Please try again or contact us at ratedly9@gmail.com");
-                    }
-                  }
-                } else if (value == 'report') {
-                  _showProfileReportDialog(colors);
-                }
-              },
-              itemBuilder: (_) => [
-                if (_isViewerFollower)
-                  PopupMenuItem(
-                      value: 'remove_follower',
-                      child: Text('Remove Follower',
-                          style: TextStyle(color: colors.textColor))),
-                if (!isCurrentUser)
-                  PopupMenuItem(
-                      value: 'report',
-                      child: Text('Report Profile',
-                          style: TextStyle(color: colors.textColor))),
-                PopupMenuItem(
-                    value: 'block',
-                    child: Text('Block User',
-                        style: TextStyle(color: colors.textColor))),
-              ],
-            )
-        ],
-      ),
-      backgroundColor: colors.backgroundColor,
-      body: NotificationListener<ScrollNotification>(
-        onNotification: (scrollInfo) {
-          if (scrollInfo is ScrollEndNotification) {
-            if (scrollInfo.metrics.pixels >=
-                    scrollInfo.metrics.maxScrollExtent - 100 &&
-                !_isLoadingMore &&
-                _hasMorePosts &&
-                _selectedTabIndex == 0) {
-              _loadMorePosts();
-            }
-          }
-          return false;
-        },
-        child: SingleChildScrollView(
-          controller: _scrollController,
-          child: Column(children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(children: [
-                _buildOtherProfileHeader(colors),
-                const SizedBox(height: 20),
-                _buildOtherBioSection(colors),
-              ]),
-            ),
-            const SizedBox(height: 16),
-            _buildTabButtons(colors),
-            const SizedBox(height: 8),
-            _selectedTabIndex == 0
-                ? _buildOtherPostsGrid(colors)
-                : _buildOtherGalleriesGrid(colors),
-            if (_isLoadingMore && _selectedTabIndex == 0)
-              Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: CircularProgressIndicator(color: colors.textColor),
-              ),
-            const SizedBox(height: 20),
-          ]),
-        ),
-      ),
-    );
   }
 
   Widget _buildOtherProfileHeader(_OtherProfileColorSet colors) {
@@ -2196,7 +1835,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     final editResult = _parseEditResult(post);
     final postId = post['postId']?.toString() ?? '';
 
-    // Log post render once
     if (postId.isNotEmpty && !_loggedPostRenders.contains(postId)) {
       _loggedPostRenders.add(postId);
       unawaited(_sendLog({
@@ -2208,8 +1846,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           'controller_ready':
               isVideo ? _isVideoControllerInitialized(postUrl) : true,
           'has_edit_metadata': editResult != null,
-          'grid_index': _displayedPosts.indexWhere(
-              (p) => p['postId']?.toString() == postId),
+          'grid_index': _displayedPosts
+              .indexWhere((p) => p['postId']?.toString() == postId),
         },
       }));
     }
@@ -2225,8 +1863,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       );
     }
 
-    final int tappedIndex = _displayedPosts
-        .indexWhere((p) => p['postId']?.toString() == postId);
+    final int tappedIndex =
+        _displayedPosts.indexWhere((p) => p['postId']?.toString() == postId);
     final int startIndex = tappedIndex < 0 ? 0 : tappedIndex;
 
     final Map<String, dynamic> feedUserData = {
@@ -2414,6 +2052,161 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
+  // --------------------------------------------------------------
+  // Build
+  // --------------------------------------------------------------
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final colors = _getColors(themeProvider);
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final String? currentUserId =
+        userProvider.firebaseUid ?? userProvider.supabaseUid;
+    final bool isCurrentUser = currentUserId == widget.uid;
+    final bool isAuthenticated =
+        currentUserId != null && currentUserId.isNotEmpty;
+
+    if (isLoading) {
+      return Scaffold(
+        appBar: AppBar(
+          backgroundColor: colors.appBarBackgroundColor,
+          elevation: 0,
+          leading: BackButton(color: colors.appBarIconColor),
+          title: _buildAppBarTitleSkeleton(colors),
+          centerTitle: true,
+        ),
+        backgroundColor: colors.backgroundColor,
+        body: _buildOtherProfileSkeleton(colors),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        iconTheme: IconThemeData(color: colors.appBarIconColor),
+        backgroundColor: colors.appBarBackgroundColor,
+        elevation: 0,
+        title: Row(mainAxisSize: MainAxisSize.min, children: [
+          VerifiedUsernameWidget(
+            username: userData['username'] ?? 'User',
+            uid: widget.uid,
+            style:
+                TextStyle(color: colors.textColor, fontWeight: FontWeight.bold),
+          ),
+        ]),
+        centerTitle: true,
+        leading: BackButton(color: colors.appBarIconColor),
+        actions: [
+          if (isAuthenticated)
+            PopupMenuButton(
+              icon: Icon(Icons.more_vert, color: colors.appBarIconColor),
+              onSelected: (value) async {
+                if (value == 'block') {
+                  try {
+                    setState(() => isLoading = true);
+                    if (currentUserId == null) return;
+                    await SupabaseBlockMethods().blockUser(
+                        currentUserId: currentUserId, targetUserId: widget.uid);
+                    if (mounted) {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => BlockedProfileScreen(
+                              uid: widget.uid, isBlocker: true),
+                        ),
+                      );
+                    }
+                  } catch (_) {
+                    if (mounted) {
+                      showSnackBar(context,
+                          "Please try again or contact us at ratedly9@gmail.com");
+                    }
+                  } finally {
+                    if (mounted) setState(() => isLoading = false);
+                  }
+                } else if (value == 'remove_follower') {
+                  if (currentUserId == null) return;
+                  try {
+                    await SupabaseProfileMethods()
+                        .removeFollower(currentUserId, widget.uid);
+                    if (mounted) {
+                      setState(() {
+                        _isViewerFollower = false;
+                        followers = followers - 1;
+                      });
+                      showSnackBar(context, "Follower removed successfully");
+                    }
+                  } catch (_) {
+                    if (mounted) {
+                      showSnackBar(context,
+                          "Please try again or contact us at ratedly9@gmail.com");
+                    }
+                  }
+                } else if (value == 'report') {
+                  _showProfileReportDialog(colors);
+                }
+              },
+              itemBuilder: (_) => [
+                if (_isViewerFollower)
+                  PopupMenuItem(
+                      value: 'remove_follower',
+                      child: Text('Remove Follower',
+                          style: TextStyle(color: colors.textColor))),
+                if (!isCurrentUser)
+                  PopupMenuItem(
+                      value: 'report',
+                      child: Text('Report Profile',
+                          style: TextStyle(color: colors.textColor))),
+                PopupMenuItem(
+                    value: 'block',
+                    child: Text('Block User',
+                        style: TextStyle(color: colors.textColor))),
+              ],
+            )
+        ],
+      ),
+      backgroundColor: colors.backgroundColor,
+      body: NotificationListener<ScrollNotification>(
+        onNotification: (scrollInfo) {
+          if (scrollInfo is ScrollEndNotification) {
+            if (scrollInfo.metrics.pixels >=
+                    scrollInfo.metrics.maxScrollExtent - 100 &&
+                !_isLoadingMore &&
+                _hasMorePosts &&
+                _selectedTabIndex == 0) {
+              _loadMorePosts();
+            }
+          }
+          return false;
+        },
+        child: SingleChildScrollView(
+          controller: _scrollController,
+          child: Column(children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(children: [
+                _buildOtherProfileHeader(colors),
+                const SizedBox(height: 20),
+                _buildOtherBioSection(colors),
+              ]),
+            ),
+            const SizedBox(height: 16),
+            _buildTabButtons(colors),
+            const SizedBox(height: 8),
+            _selectedTabIndex == 0
+                ? _buildOtherPostsGrid(colors)
+                : _buildOtherGalleriesGrid(colors),
+            if (_isLoadingMore && _selectedTabIndex == 0)
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: CircularProgressIndicator(color: colors.textColor),
+              ),
+            const SizedBox(height: 20),
+          ]),
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _videoInitDebounce?.cancel();
@@ -2432,9 +2225,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 }
 
-// =============================================================================
-// SCALED DRAWING PAINTER
-// =============================================================================
+// -----------------------------------------------------------------------------
+// Scaled Drawing Painter (identical to current_profile_screen.dart)
+// -----------------------------------------------------------------------------
 class _ScaledDrawingPainter extends CustomPainter {
   final List<DrawStroke> strokes;
   final double scaleX;
