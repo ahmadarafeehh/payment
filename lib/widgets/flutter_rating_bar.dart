@@ -30,8 +30,6 @@ class _EmojiThumbShape extends SliderComponentShape {
   // value is normalized rating 1..10 mapped to 0..1 (0=rating1, 1=rating10)
   static double _scaleForValue(double value) {
     // Continuous scale: at value 0.0 -> scale 0.7, at value 1.0 -> scale 1.5
-    // Linear interpolation: scale = 0.7 + (1.5 - 0.7) * value = 0.7 + 0.8 * value
-    // Clamp between 0.7 and 1.5 for safety
     return 0.7 + 0.8 * value.clamp(0.0, 1.0);
   }
 
@@ -159,7 +157,7 @@ class _TooltipPainter extends CustomPainter {
 }
 
 // =============================================================================
-// RATING BAR – with smooth continuous scaling, optimized for performance
+// RATING BAR – avatar sits directly on the bar track, same as the emoji thumb
 // =============================================================================
 
 class RatingBar extends StatefulWidget {
@@ -429,7 +427,6 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
 
   void _onRatingChanged(double newRating) {
     if (_isNudging) _stopNudge();
-    // Only call setState if the value actually changed to avoid unnecessary rebuilds
     if (_currentRating != newRating) {
       setState(() {
         _currentRating = newRating;
@@ -470,6 +467,62 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     super.dispose();
   }
 
+  // ---------------------------------------------------------------------------
+  // Avatar helper – positioned relative to the Slider widget (48 dp tall).
+  // Track centre is at 24 dp. Avatar is 32 dp → top = 24 - 16 = 8 dp.
+  // This is the exact same vertical centre the emoji thumb is painted at.
+  // ---------------------------------------------------------------------------
+  Widget _buildUserReactionAvatar({
+    required BoxConstraints constraints,
+    required double thumbHalfWidth,
+    required double trackWidth,
+    required double userRating,
+    required String photoUrl,
+  }) {
+    final double userT = (userRating - 1) / 9.0;
+    final double userCenterX = thumbHalfWidth + userT * trackWidth;
+    const double avatarSize = 32.0;
+
+    // Slider height = kMinInteractiveDimension = 48 dp.
+    // Track runs through vertical centre at 24 dp.
+    // Centre a 32 dp circle on the track: top = 24 - 32/2 = 8.
+    const double top = 8.0;
+
+    double leftPos = (userCenterX - avatarSize / 2)
+        .clamp(0.0, constraints.maxWidth - avatarSize);
+
+    return Positioned(
+      left: leftPos,
+      top: top,
+      child: IgnorePointer(
+        // Let slider gestures pass through the avatar
+        child: Container(
+          width: avatarSize,
+          height: avatarSize,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 2),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 4,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          child: ClipOval(
+            child: CachedNetworkImage(
+              imageUrl: photoUrl,
+              fit: BoxFit.cover,
+              errorWidget: (_, __, ___) =>
+                  const Icon(Icons.person, size: 32, color: Colors.grey),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
@@ -489,8 +542,9 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
           builder: (context, constraints) {
             final double t = (_currentRating - 1) / 9.0;
 
-            const double thumbHalfWidth =
-                30.0 * 1.5 / 2; // baseSize * maxScale / 2 = 22.5
+            // thumbHalfWidth must match _EmojiThumbShape.getPreferredSize
+            // = baseSize * maxScale / 2 = 30 * 1.5 / 2 = 22.5
+            const double thumbHalfWidth = 30.0 * 1.5 / 2;
             final double trackWidth = constraints.maxWidth - 2 * thumbHalfWidth;
             final double thumbCenterX = thumbHalfWidth + t * trackWidth;
 
@@ -515,6 +569,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // ── "Slide to rate" nudge label ──────────────────────
                       AnimatedOpacity(
                         opacity: _isNudging ? 1.0 : 0.0,
                         duration: const Duration(milliseconds: 200),
@@ -529,7 +584,8 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 12, vertical: 5),
                                 decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.9 + 0.1 * glow),
+                                  color: Colors.white
+                                      .withOpacity(0.9 + 0.1 * glow),
                                   borderRadius: BorderRadius.circular(20),
                                   boxShadow: [
                                     BoxShadow(
@@ -561,7 +617,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                                       ),
                                     ),
                                     Text(
-                                      'Slide to rate',
+                                      'Slide to react',
                                       style: TextStyle(
                                         color: Colors.black
                                             .withOpacity(0.75 + 0.25 * glow),
@@ -578,59 +634,89 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                           ),
                         ),
                       ),
-                      SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          thumbShape: _EmojiThumbShape(
-                            emoji: widget.reactionEmoji,
-                            baseSize: 30.0,
-                            showArrow: _isNudging && _effectiveShowGuidance,
-                            arrowBounce: _arrowBounce.value,
-                            arrowOpacity:
-                                (_isNudging && _effectiveShowGuidance)
+
+                      // ── Slider + avatar in their own Stack ───────────────
+                      // The avatar Stack is scoped to just the Slider widget
+                      // (48 dp tall) so top=8 always lands on the track line.
+                      Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              thumbShape: _EmojiThumbShape(
+                                emoji: widget.reactionEmoji,
+                                baseSize: 30.0,
+                                showArrow:
+                                    _isNudging && _effectiveShowGuidance,
+                                arrowBounce: _arrowBounce.value,
+                                arrowOpacity: (_isNudging &&
+                                        _effectiveShowGuidance)
                                     ? 0.6 + 0.4 * _nudgeGlow.value
                                     : 0.0,
+                              ),
+                              overlayShape:
+                                  SliderComponentShape.noOverlay,
+                              trackHeight: 3.0,
+                              activeTrackColor: _isNudging
+                                  ? (_cachedSliderActiveColor ??
+                                          Colors.white)
+                                      .withOpacity(0.85)
+                                  : _cachedSliderActiveColor,
+                              inactiveTrackColor:
+                                  _cachedSliderInactiveColor,
+                            ),
+                            child: Container(
+                              decoration: _isNudging
+                                  ? BoxDecoration(
+                                      borderRadius:
+                                          BorderRadius.circular(12),
+                                      boxShadow: [
+                                        BoxShadow(
+                                            color: Colors.white.withOpacity(
+                                                0.07 * _nudgeGlow.value),
+                                            blurRadius: 12,
+                                            spreadRadius: 2)
+                                      ],
+                                    )
+                                  : const BoxDecoration(),
+                              child: Slider(
+                                value: _isNudging
+                                    ? _nudgeRating.value.clamp(1.0, 10.0)
+                                    : _currentRating,
+                                min: 1,
+                                max: 10,
+                                divisions: 100,
+                                activeColor: _isNudging
+                                    ? (_cachedSliderActiveColor ??
+                                            Colors.white)
+                                        .withOpacity(0.85)
+                                    : _cachedSliderActiveColor,
+                                inactiveColor: _cachedSliderInactiveColor,
+                                onChanged: _onRatingChanged,
+                                onChangeEnd: _onRatingEnd,
+                              ),
+                            ),
                           ),
-                          overlayShape: SliderComponentShape.noOverlay,
-                          trackHeight: 3.0,
-                          activeTrackColor: _isNudging
-                              ? (_cachedSliderActiveColor ?? Colors.white)
-                                  .withOpacity(0.85)
-                              : _cachedSliderActiveColor,
-                          inactiveTrackColor: _cachedSliderInactiveColor,
-                        ),
-                        child: Container(
-                          decoration: _isNudging
-                              ? BoxDecoration(
-                                  borderRadius: BorderRadius.circular(12),
-                                  boxShadow: [
-                                    BoxShadow(
-                                        color: Colors.white.withOpacity(
-                                            0.07 * _nudgeGlow.value),
-                                        blurRadius: 12,
-                                        spreadRadius: 2)
-                                  ],
-                                )
-                              : const BoxDecoration(),
-                          child: Slider(
-                            value: _isNudging
-                                ? _nudgeRating.value.clamp(1.0, 10.0)
-                                : _currentRating,
-                            min: 1,
-                            max: 10,
-                            divisions: 100,
-                            activeColor: _isNudging
-                                ? (_cachedSliderActiveColor ?? Colors.white)
-                                    .withOpacity(0.85)
-                                : _cachedSliderActiveColor,
-                            inactiveColor: _cachedSliderInactiveColor,
-                            onChanged: _onRatingChanged,
-                            onChangeEnd: _onRatingEnd,
-                          ),
-                        ),
+
+                          // Avatar rendered inside the Slider's Stack so its
+                          // coordinate space is always the 48 dp slider height.
+                          if (widget.userRating != null &&
+                              widget.userProfilePhoto != null &&
+                              widget.userProfilePhoto!.isNotEmpty)
+                            _buildUserReactionAvatar(
+                              constraints: constraints,
+                              thumbHalfWidth: thumbHalfWidth,
+                              trackWidth: trackWidth,
+                              userRating: widget.userRating!,
+                              photoUrl: widget.userProfilePhoto!,
+                            ),
+                        ],
                       ),
                     ],
                   ),
                 ),
+
+                // Tooltip stays in the outer Stack so it floats above the bar
                 if (effectiveShowTooltip)
                   Positioned(
                     left: left,
@@ -643,65 +729,16 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                         height: tooltipHeight,
                         child: CustomPaint(
                           painter: _TooltipPainter(
-                              arrowCenterX: arrowCenterX,
-                              text: 'Average Reaction'),
+                            arrowCenterX: arrowCenterX,
+                            text: 'Average Reaction',
+                          ),
                         ),
                       ),
                     ),
                   ),
-                // User's own reaction – profile picture at their rating position
-                if (widget.userRating != null && widget.userProfilePhoto != null)
-                  _buildUserReactionAvatar(
-                    constraints: constraints,
-                    thumbHalfWidth: thumbHalfWidth,
-                    trackWidth: trackWidth,
-                    userRating: widget.userRating!,
-                    photoUrl: widget.userProfilePhoto!,
-                  ),
               ],
             );
           },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildUserReactionAvatar({
-    required BoxConstraints constraints,
-    required double thumbHalfWidth,
-    required double trackWidth,
-    required double userRating,
-    required String photoUrl,
-  }) {
-    final double userT = (userRating - 1) / 9.0;
-    final double userCenterX = thumbHalfWidth + userT * trackWidth;
-    const double avatarSize = 32.0;
-    double leftPos = userCenterX - avatarSize / 2;
-    leftPos = leftPos.clamp(0.0, constraints.maxWidth - avatarSize);
-
-    return Positioned(
-      left: leftPos,
-      top: 10.5, // aligns with the track center
-      child: Container(
-        width: avatarSize,
-        height: avatarSize,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 2),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black26,
-                blurRadius: 4,
-                offset: const Offset(0, 2)),
-          ],
-        ),
-        child: ClipOval(
-          child: CachedNetworkImage(
-            imageUrl: photoUrl,
-            fit: BoxFit.cover,
-            errorWidget: (_, __, ___) =>
-                const Icon(Icons.person, size: 32, color: Colors.grey),
-          ),
         ),
       ),
     );
