@@ -17,6 +17,7 @@ import 'package:country_flags/country_flags.dart';
 import 'package:Ratedly/screens/Profile_page/gallery_post_view_screen.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
+import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart'; // ✅ Import shared editing classes
 
 // -----------------------------------------------------------------------------
