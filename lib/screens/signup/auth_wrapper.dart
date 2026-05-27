@@ -18,6 +18,7 @@ import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 import 'package:Ratedly/services/feed_cache_service.dart';
+import 'package:Ratedly/services/platform_service.dart';
 
 Future<void> _logError({
   required String eventType,
@@ -381,7 +382,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       }
 
       _updateAuthCache(hasCompletedOnboarding);
-      _runCountryChecks(_firebaseUid!);
+      _runBackgroundTasks(_firebaseUid!);
     } catch (e, stack) {
       await _logError(
         eventType: 'ERROR_SUPABASE_SESSION_HANDLING',
@@ -428,7 +429,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     }
 
     _checkMigrationInBackground();
-    _runCountryChecks(_firebaseUid!);
+    _runBackgroundTasks(_firebaseUid!);
   }
 
   Future<void> _initializeUserProvider(UserProvider userProvider) async {
@@ -611,7 +612,13 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     }
   }
 
-  void _runCountryChecks(String uid) {
+  /// Runs all non-essential background tasks after login.
+  /// Nothing here blocks the UI or auth flow.
+  void _runBackgroundTasks(String uid) {
+    // Save platform once — no-op if already saved on this device.
+    PlatformService.saveOnce(uid);
+
+    // Country checks (existing logic, unchanged).
     Future.delayed(const Duration(seconds: 3), () {
       _countryService.checkAndBackfillCountryForExistingUsers();
     });
@@ -694,20 +701,14 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     return const GetStartedPage();
   }
 
-  /// Returns [FeedSkeleton] for returning signed-in users (persisted userId
-  /// exists in cache), and the logo spinner for first-time / logged-out users.
   Widget _buildLoadingScreen() {
     final hasPersistedUser =
         FeedCacheService.getLastUserIdSync()?.isNotEmpty == true;
 
     if (hasPersistedUser) {
-      // A returning user is signing back in — show the feed skeleton so the
-      // experience is consistent with what _AppBootstrap shows during init.
       return const FeedSkeleton(isDark: true);
     }
 
-    // No persisted user — first-time open or logged-out state.
-    // Show the branded logo screen while auth resolves.
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       body: Center(
