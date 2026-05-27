@@ -38,8 +38,7 @@ class PlatformService {
       await Supabase.instance.client
           .from('users')
           .update({'platform': platform})
-          .eq('uid', uid)
-          .is_('platform', null); // Only update if not already set in DB
+          .eq('uid', uid);
 
       // Mark as saved locally so we never touch the DB again.
       await prefs.setBool(savedKey, true);
