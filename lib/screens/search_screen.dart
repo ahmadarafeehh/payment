@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
@@ -331,6 +332,9 @@ class _SearchScreenState extends State<SearchScreen>
   Set<String> blockedUsersSet = {};
   bool _isLoading = true;
 
+  // ── FIX: track whether a load error occurred so we can show a retry ──
+  bool _hasLoadError = false;
+
   int _offset = 0;
   bool _isLoadingMore = false;
   bool _hasMorePosts = true;
@@ -338,7 +342,6 @@ class _SearchScreenState extends State<SearchScreen>
 
   final int _initialPostsLimit = 12;
   final int _subsequentPostsLimit = 6;
-  final int _initialPostsToShow = 12;
 
   final ScrollController _scrollController = ScrollController();
 
@@ -641,7 +644,6 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  // ADDED MISSING METHOD
   Widget _buildAvatarVideoPlayer(String videoUrl, _SearchColorSet colors) {
     final controller = _getAvatarVideoController(videoUrl);
     final isInitialized = _isAvatarVideoControllerInitialized(videoUrl);
@@ -765,10 +767,16 @@ class _SearchScreenState extends State<SearchScreen>
   // ========== DATA LOADING ==========
   Future<void> _initData() async {
     if (currentUserId == null) {
-      setState(() => _isLoading = false);
+      setState(() {
+        _isLoading = false;
+        _hasLoadError = false;
+      });
       return;
     }
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _hasLoadError = false;
+    });
 
     await Future.wait([
       _loadBlockedUsers(),
@@ -796,6 +804,7 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
+  // ── FIX: normalise every key to a String so dynamic keys never break lookups
   Map<String, dynamic> _normalisePost(dynamic raw) {
     final Map<String, dynamic> post = {};
     (raw as Map).forEach((k, v) => post[k.toString()] = v);
@@ -814,6 +823,7 @@ class _SearchScreenState extends State<SearchScreen>
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
 
+      // ── FIX: page_offset on the first load is always 0
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
@@ -821,8 +831,15 @@ class _SearchScreenState extends State<SearchScreen>
         'page_limit': postsLimit,
       });
 
+      if (kDebugMode) {
+        debugPrint(
+            '[SearchScreen] _fetchPosts: response type=${response.runtimeType}, '
+            'length=${response is List ? response.length : "N/A"}');
+      }
+
       if (response is List && response.isNotEmpty) {
-        _allPosts = response.map<Map<String, dynamic>>(_normalisePost).toList();
+        _allPosts =
+            response.map<Map<String, dynamic>>(_normalisePost).toList();
 
         await _enrichPostsWithUserData(_allPosts);
         for (final post in _allPosts) {
@@ -833,15 +850,24 @@ class _SearchScreenState extends State<SearchScreen>
         _offset = _allPosts.length;
         _hasMorePosts = _allPosts.length == postsLimit;
         _isFirstLoad = false;
+        _hasLoadError = false;
       } else {
+        // Response was empty – not an error, just no content yet
         _allPosts = [];
         _hasMorePosts = false;
         _isFirstLoad = false;
+        _hasLoadError = false;
       }
-    } catch (_) {
+    } catch (e, stack) {
+      // ── FIX: surface the real error in debug mode instead of silently
+      //         showing "No posts found"
+      if (kDebugMode) {
+        debugPrint('[SearchScreen] _fetchPosts ERROR: $e\n$stack');
+      }
       _allPosts = [];
       _hasMorePosts = false;
       _isFirstLoad = false;
+      _hasLoadError = true;
     }
   }
 
@@ -850,14 +876,14 @@ class _SearchScreenState extends State<SearchScreen>
     setState(() => _isLoadingMore = true);
     try {
       final excludedUsers = [...blockedUsersSet, currentUserId!];
-      final postsLimit = _subsequentPostsLimit;
-      final pageNumber = _offset ~/ postsLimit;
+      // page_offset counts full pages already loaded
+      final pageNumber = _offset ~/ _subsequentPostsLimit;
 
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
         'page_offset': pageNumber,
-        'page_limit': postsLimit,
+        'page_limit': _subsequentPostsLimit,
       });
 
       if (response is List && response.isNotEmpty) {
@@ -878,7 +904,8 @@ class _SearchScreenState extends State<SearchScreen>
       } else {
         setState(() => _hasMorePosts = false);
       }
-    } catch (_) {
+    } catch (e) {
+      if (kDebugMode) debugPrint('[SearchScreen] _loadMorePosts ERROR: $e');
       setState(() => _hasMorePosts = false);
     } finally {
       setState(() => _isLoadingMore = false);
@@ -922,7 +949,8 @@ class _SearchScreenState extends State<SearchScreen>
         return newPosts;
       }
       return [];
-    } catch (_) {
+    } catch (e) {
+      if (kDebugMode) debugPrint('[SearchScreen] _loadMorePostsForFeed ERROR: $e');
       return [];
     }
   }
@@ -996,7 +1024,13 @@ class _SearchScreenState extends State<SearchScreen>
       _userDataCache[uid] = data;
       return data;
     }
-    return {'uid': uid, 'username': '', 'photoUrl': '', 'isVerified': false, 'country': ''};
+    return {
+      'uid': uid,
+      'username': '',
+      'photoUrl': '',
+      'isVerified': false,
+      'country': ''
+    };
   }
 
   void _rotateSuggestedUsers() {
@@ -1035,7 +1069,7 @@ class _SearchScreenState extends State<SearchScreen>
     });
   }
 
-  // ========== USER SEARCH IMPLEMENTATION ==========
+  // ========== USER SEARCH ==========
   Future<List<Map<String, dynamic>>> _searchUsers(String query) async {
     if (query.trim().isEmpty || currentUserId == null) return [];
 
@@ -1054,7 +1088,7 @@ class _SearchScreenState extends State<SearchScreen>
         return !blockedUsersSet.contains(uid) && uid != currentUserId;
       }).toList();
     } catch (e) {
-      debugPrint('Error searching users: $e');
+      if (kDebugMode) debugPrint('[SearchScreen] _searchUsers ERROR: $e');
       return [];
     }
   }
@@ -1310,6 +1344,26 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildPostsGrid(_SearchColorSet colors) {
+    // ── FIX: show a retry button when the RPC call errored ──
+    if (_hasLoadError) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, color: colors.iconColor, size: 48),
+            const SizedBox(height: 12),
+            Text('Something went wrong.',
+                style: TextStyle(color: colors.textColor)),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: _initData,
+              child: Text('Retry', style: TextStyle(color: colors.textColor)),
+            ),
+          ],
+        ),
+      );
+    }
+
     if (_allPosts.isEmpty) {
       return Center(
           child: Text('No posts found.',
