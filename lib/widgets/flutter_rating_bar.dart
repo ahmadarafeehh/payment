@@ -9,7 +9,15 @@ import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 // =============================================================================
-// EMOJI THUMB SHAPE – continuous scaling from rating 1 (smallest) to 10 (largest)
+// EMOJI THUMB SHAPE
+//
+// FIX (lag): Previously the font size was changed on every paint frame
+// (fontSize = baseSize * scale), which forced TextPainter to re-lay-out
+// the glyph with a different font size every call — expensive.
+//
+// Fix: keep the TextPainter at a FIXED font size (baseSize) and apply the
+// scale with canvas.save/scale/restore instead. Layout is now stable; only
+// the GPU transform changes per frame → smooth.
 // =============================================================================
 
 class _EmojiThumbShape extends SliderComponentShape {
@@ -33,6 +41,7 @@ class _EmojiThumbShape extends SliderComponentShape {
 
   @override
   Size getPreferredSize(bool isEnabled, bool isDiscrete) {
+    // Maximum possible size (scale = 1.5 when value = 1.0).
     return Size(baseSize * 1.5, baseSize * 1.5);
   }
 
@@ -52,9 +61,9 @@ class _EmojiThumbShape extends SliderComponentShape {
     required Size sizeWithOverflow,
   }) {
     final canvas = context.canvas;
-    final scale = _scaleForValue(value);
-    final double emojiSize = baseSize * scale;
+    final double scale = _scaleForValue(value);
 
+    // ---- Arrow (above thumb) ----------------------------------------------
     final double arrowOffsetY = (scale - 1.0) * 12;
 
     if (showArrow && arrowOpacity > 0) {
@@ -83,18 +92,28 @@ class _EmojiThumbShape extends SliderComponentShape {
       canvas.translate(-arrowCenter.dx, -arrowCenter.dy);
       arrowPainter.paint(
         canvas,
-        Offset(arrowCenter.dx - arrowPainter.width / 2,
-            arrowCenter.dy - arrowPainter.height / 2),
+        Offset(
+          arrowCenter.dx - arrowPainter.width / 2,
+          arrowCenter.dy - arrowPainter.height / 2,
+        ),
       );
       canvas.restore();
     }
 
+    // ---- Emoji (fixed font size + canvas scale) ----------------------
     final tp = TextPainter(
       text: TextSpan(
-          text: emoji, style: TextStyle(fontSize: emojiSize, height: 1.0)),
+        text: emoji,
+        style: TextStyle(fontSize: baseSize, height: 1.0),
+      ),
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.scale(scale, scale);
+    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+    canvas.restore();
   }
 }
 
@@ -152,7 +171,7 @@ class _TooltipPainter extends CustomPainter {
 }
 
 // =============================================================================
-// CUSTOM TRACK PAINTER – draws the slider track with gaps under markers
+// CUSTOM TRACK PAINTER
 // =============================================================================
 
 class Interval {
@@ -175,7 +194,7 @@ class Interval {
 class _TrackWithGapsPainter extends CustomPainter {
   final double startX;
   final double endX;
-  final double splitX; // where active turns to inactive
+  final double splitX;
   final double yCenter;
   final double trackHeight;
   final Color activeColor;
@@ -205,7 +224,6 @@ class _TrackWithGapsPainter extends CustomPainter {
       canvas.drawLine(Offset(from, yCenter), Offset(to, yCenter), paint);
     }
 
-    // Active part (startX → splitX) skipping gaps
     double current = startX;
     for (final gap in gaps) {
       if (gap.start > splitX) break;
@@ -218,7 +236,6 @@ class _TrackWithGapsPainter extends CustomPainter {
       drawSegment(current, splitX, activeColor);
     }
 
-    // Inactive part (splitX → endX) skipping gaps
     current = splitX;
     for (final gap in gaps) {
       if (gap.end < splitX) continue;
@@ -242,7 +259,7 @@ class _TrackWithGapsPainter extends CustomPainter {
 }
 
 // =============================================================================
-// RATING BAR – main widget
+// RATING BAR
 // =============================================================================
 
 class RatingBar extends StatefulWidget {
@@ -455,7 +472,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         _guidanceLoaded = true;
       });
       if (!_isDragging && _effectiveShowGuidance) _startNudge();
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
         setState(() {
           _isTestGroup = true;
@@ -529,8 +546,9 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   }
 
   void _onRatingEnd(double rating) {
+    final double rounded = (rating * 10).round() / 10.0;
     setState(() => _isDragging = false);
-    widget.onRatingEnd(rating);
+    widget.onRatingEnd(rounded);
   }
 
   void _updateCachedColors(ThemeProvider themeProvider) {
@@ -547,6 +565,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   // ---------------------------------------------------------------------------
   // MARKER BUILDERS
   // ---------------------------------------------------------------------------
+
   Widget _buildUserReactionAvatar({
     required double centerX,
     required String photoUrl,
@@ -569,10 +588,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
             border: Border.all(color: Colors.white, width: 2),
             boxShadow: const [
               BoxShadow(
-                color: Colors.black26,
-                blurRadius: 4,
-                offset: Offset(0, 2),
-              ),
+                  color: Colors.black26, blurRadius: 4, offset: Offset(0, 2)),
             ],
           ),
           child: ClipOval(
@@ -609,10 +625,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
             border: Border.all(color: Colors.white, width: 2),
             boxShadow: const [
               BoxShadow(
-                color: Colors.black26,
-                blurRadius: 4,
-                offset: Offset(0, 2),
-              ),
+                  color: Colors.black26, blurRadius: 4, offset: Offset(0, 2)),
             ],
           ),
         ),
@@ -653,9 +666,9 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
             final double trackWidth = constraints.maxWidth - 2 * thumbHalfWidth;
             final double startX = thumbHalfWidth;
             final double endX = constraints.maxWidth - thumbHalfWidth;
-            final double yCenter = 24.0;
+            const double yCenter = 24.0;
 
-            // ---------- Split point (where active track ends) ----------
+            // Split point
             double splitX;
             if (widget.hasUserRated) {
               final double userRatingValue =
@@ -667,7 +680,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
               splitX = thumbHalfWidth + t * trackWidth;
             }
 
-            // ---------- Marker positions ----------
+            // Marker positions
             double? userCenterX;
             if (widget.userRating != null &&
                 widget.userProfilePhoto != null &&
@@ -681,7 +694,6 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
             if (widget.hasUserRated && widget.averageRating >= 1.0) {
               final double avgT = (widget.averageRating - 1) / 9.0;
               avgCenterX = thumbHalfWidth + avgT * trackWidth;
-              // Check if average position coincides with user position (within 1 pixel tolerance)
               const double tolerance = 1.0;
               if (userCenterX == null ||
                   (avgCenterX - userCenterX).abs() > tolerance) {
@@ -689,7 +701,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
               }
             }
 
-            // ---------- Gaps under markers ----------
+            // Gaps
             const double markerRadius = 16.0;
             List<Interval> gaps = [];
             if (userCenterX != null) {
@@ -713,7 +725,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
               }
             }
 
-            // ---------- Tooltip – points to average circle if visible, otherwise to user avatar ----------
+            // Tooltip
             final bool effectiveShowTooltip = _showTooltip &&
                 !_isDragging &&
                 !_isNudging &&
@@ -732,6 +744,10 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
             final double arrowCenterXTooltip =
                 (tooltipTargetX - left).clamp(12.0, tooltipWidth - 12.0);
 
+            final double sliderDisplayValue = _isNudging
+                ? _nudgeRating.value.clamp(1.0, 10.0)
+                : _currentRating;
+
             return Stack(
               clipBehavior: Clip.none,
               children: [
@@ -740,7 +756,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Nudge label – only before rating
+                      // Nudge label
                       if (!widget.hasUserRated)
                         AnimatedOpacity(
                           opacity: _isNudging ? 1.0 : 0.0,
@@ -833,6 +849,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                             ),
 
                             // Draggable slider (only before rating)
+                            // Note: divisions removed to avoid alignment issues
                             if (!widget.hasUserRated)
                               SliderTheme(
                                 data: SliderTheme.of(context).copyWith(
@@ -851,18 +868,15 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                                   trackHeight: 0,
                                 ),
                                 child: Slider(
-                                  value: _isNudging
-                                      ? _nudgeRating.value.clamp(1.0, 10.0)
-                                      : _currentRating,
+                                  value: sliderDisplayValue,
                                   min: 1,
                                   max: 10,
-                                  divisions: 100,
                                   onChanged: _onRatingChanged,
                                   onChangeEnd: _onRatingEnd,
                                 ),
                               ),
 
-                            // User avatar marker (always shown if available)
+                            // User avatar marker
                             if (widget.userRating != null &&
                                 widget.userProfilePhoto != null &&
                                 widget.userProfilePhoto!.isNotEmpty)
@@ -872,7 +886,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                                 constraints: constraints,
                               ),
 
-                            // Average circle marker – only when not overlapping user avatar
+                            // Average circle marker
                             if (showAverageCircle && avgCenterX != null)
                               _buildAverageCircle(
                                 centerX: avgCenterX,
@@ -885,7 +899,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                   ),
                 ),
 
-                // Tooltip – shows "Average Reaction" (still, but points to the correct marker)
+                // Tooltip
                 if (effectiveShowTooltip)
                   Positioned(
                     left: left,
