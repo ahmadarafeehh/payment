@@ -27,15 +27,12 @@ class _EmojiThumbShape extends SliderComponentShape {
     this.showArrow = false,
   });
 
-  // value is normalized rating 1..10 mapped to 0..1 (0=rating1, 1=rating10)
   static double _scaleForValue(double value) {
-    // Continuous scale: at value 0.0 -> scale 0.7, at value 1.0 -> scale 1.5
     return 0.7 + 0.8 * value.clamp(0.0, 1.0);
   }
 
   @override
   Size getPreferredSize(bool isEnabled, bool isDiscrete) {
-    // Reserve enough space for the largest size (1.5 * baseSize)
     return Size(baseSize * 1.5, baseSize * 1.5);
   }
 
@@ -58,7 +55,6 @@ class _EmojiThumbShape extends SliderComponentShape {
     final scale = _scaleForValue(value);
     final double emojiSize = baseSize * scale;
 
-    // Move the arrow up when the emoji grows
     final double arrowOffsetY = (scale - 1.0) * 12;
 
     if (showArrow && arrowOpacity > 0) {
@@ -93,7 +89,6 @@ class _EmojiThumbShape extends SliderComponentShape {
       canvas.restore();
     }
 
-    // Draw the emoji with dynamic size
     final tp = TextPainter(
       text: TextSpan(
           text: emoji, style: TextStyle(fontSize: emojiSize, height: 1.0)),
@@ -104,7 +99,7 @@ class _EmojiThumbShape extends SliderComponentShape {
 }
 
 // =============================================================================
-// TOOLTIP PAINTER (unchanged)
+// TOOLTIP PAINTER
 // =============================================================================
 
 class _TooltipPainter extends CustomPainter {
@@ -157,7 +152,97 @@ class _TooltipPainter extends CustomPainter {
 }
 
 // =============================================================================
-// RATING BAR – avatar sits directly on the bar track, same as the emoji thumb
+// CUSTOM TRACK PAINTER – draws the slider track with gaps under markers
+// =============================================================================
+
+class Interval {
+  final double start;
+  final double end;
+  Interval(this.start, this.end);
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Interval &&
+          runtimeType == other.runtimeType &&
+          start == other.start &&
+          end == other.end;
+
+  @override
+  int get hashCode => start.hashCode ^ end.hashCode;
+}
+
+class _TrackWithGapsPainter extends CustomPainter {
+  final double startX;
+  final double endX;
+  final double splitX; // where active turns to inactive
+  final double yCenter;
+  final double trackHeight;
+  final Color activeColor;
+  final Color inactiveColor;
+  final List<Interval> gaps;
+
+  _TrackWithGapsPainter({
+    required this.startX,
+    required this.endX,
+    required this.splitX,
+    required this.yCenter,
+    required this.trackHeight,
+    required this.activeColor,
+    required this.inactiveColor,
+    required this.gaps,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = trackHeight;
+
+    void drawSegment(double from, double to, Color color) {
+      if (to - from < 0.1) return;
+      paint.color = color;
+      canvas.drawLine(Offset(from, yCenter), Offset(to, yCenter), paint);
+    }
+
+    // Active part (startX → splitX) skipping gaps
+    double current = startX;
+    for (final gap in gaps) {
+      if (gap.start > splitX) break;
+      if (current < gap.start) {
+        drawSegment(current, gap.start.clamp(startX, splitX), activeColor);
+      }
+      current = current < gap.end ? gap.end : current;
+    }
+    if (current < splitX) {
+      drawSegment(current, splitX, activeColor);
+    }
+
+    // Inactive part (splitX → endX) skipping gaps
+    current = splitX;
+    for (final gap in gaps) {
+      if (gap.end < splitX) continue;
+      if (current < gap.start) {
+        drawSegment(current, gap.start.clamp(splitX, endX), inactiveColor);
+      }
+      current = current < gap.end ? gap.end : current;
+    }
+    if (current < endX) {
+      drawSegment(current, endX, inactiveColor);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_TrackWithGapsPainter oldDelegate) {
+    return oldDelegate.startX != startX ||
+        oldDelegate.endX != endX ||
+        oldDelegate.splitX != splitX ||
+        oldDelegate.gaps != gaps;
+  }
+}
+
+// =============================================================================
+// RATING BAR – main widget
 // =============================================================================
 
 class RatingBar extends StatefulWidget {
@@ -408,6 +493,10 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   void didUpdateWidget(covariant RatingBar oldWidget) {
     super.didUpdateWidget(oldWidget);
 
+    if (widget.hasUserRated && !oldWidget.hasUserRated) {
+      if (_isNudging) _stopNudge();
+    }
+
     if (widget.averageRating != oldWidget.averageRating && !_isDragging) {
       if (widget.hasUserRated) {
         setState(() => _currentRating = widget.averageRating.clamp(1.0, 10.0));
@@ -455,47 +544,23 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     }
   }
 
-  @override
-  void dispose() {
-    _tooltipTimer?.cancel();
-    _sliderEntranceController.dispose();
-    _pulseController.dispose();
-    _nudgeController.dispose();
-    _arrowBounceController.dispose();
-    _nudgeGlowController.dispose();
-    _iconWiggleController.dispose();
-    super.dispose();
-  }
-
   // ---------------------------------------------------------------------------
-  // Avatar helper – positioned relative to the Slider widget (48 dp tall).
-  // Track centre is at 24 dp. Avatar is 32 dp → top = 24 - 16 = 8 dp.
-  // This is the exact same vertical centre the emoji thumb is painted at.
+  // MARKER BUILDERS
   // ---------------------------------------------------------------------------
   Widget _buildUserReactionAvatar({
-    required BoxConstraints constraints,
-    required double thumbHalfWidth,
-    required double trackWidth,
-    required double userRating,
+    required double centerX,
     required String photoUrl,
+    required BoxConstraints constraints,
   }) {
-    final double userT = (userRating - 1) / 9.0;
-    final double userCenterX = thumbHalfWidth + userT * trackWidth;
     const double avatarSize = 32.0;
-
-    // Slider height = kMinInteractiveDimension = 48 dp.
-    // Track runs through vertical centre at 24 dp.
-    // Centre a 32 dp circle on the track: top = 24 - 32/2 = 8.
     const double top = 8.0;
-
-    double leftPos = (userCenterX - avatarSize / 2)
+    double leftPos = (centerX - avatarSize / 2)
         .clamp(0.0, constraints.maxWidth - avatarSize);
 
     return Positioned(
       left: leftPos,
       top: top,
       child: IgnorePointer(
-        // Let slider gestures pass through the avatar
         child: Container(
           width: avatarSize,
           height: avatarSize,
@@ -523,6 +588,50 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     );
   }
 
+  Widget _buildAverageCircle(
+      {required double centerX, required BoxConstraints constraints}) {
+    const double circleSize = 32.0;
+    const double top = 8.0;
+    const Color circleColor = Color(0xFF3B82F6);
+    double leftPos = (centerX - circleSize / 2)
+        .clamp(0.0, constraints.maxWidth - circleSize);
+
+    return Positioned(
+      left: leftPos,
+      top: top,
+      child: IgnorePointer(
+        child: Container(
+          width: circleSize,
+          height: circleSize,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: circleColor,
+            border: Border.all(color: Colors.white, width: 2),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 4,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _tooltipTimer?.cancel();
+    _sliderEntranceController.dispose();
+    _pulseController.dispose();
+    _nudgeController.dispose();
+    _arrowBounceController.dispose();
+    _nudgeGlowController.dispose();
+    _iconWiggleController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
@@ -540,26 +649,88 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         },
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final double t = (_currentRating - 1) / 9.0;
-
-            // thumbHalfWidth must match _EmojiThumbShape.getPreferredSize
-            // = baseSize * maxScale / 2 = 30 * 1.5 / 2 = 22.5
-            const double thumbHalfWidth = 30.0 * 1.5 / 2;
+            const double thumbHalfWidth = 30.0 * 1.5 / 2; // 22.5
             final double trackWidth = constraints.maxWidth - 2 * thumbHalfWidth;
-            final double thumbCenterX = thumbHalfWidth + t * trackWidth;
+            final double startX = thumbHalfWidth;
+            final double endX = constraints.maxWidth - thumbHalfWidth;
+            final double yCenter = 24.0;
 
+            // ---------- Split point (where active track ends) ----------
+            double splitX;
+            if (widget.hasUserRated) {
+              final double userRatingValue =
+                  widget.userRating ?? widget.averageRating;
+              final double userT = (userRatingValue - 1) / 9.0;
+              splitX = thumbHalfWidth + userT * trackWidth;
+            } else {
+              final double t = (_currentRating - 1) / 9.0;
+              splitX = thumbHalfWidth + t * trackWidth;
+            }
+
+            // ---------- Marker positions ----------
+            double? userCenterX;
+            if (widget.userRating != null &&
+                widget.userProfilePhoto != null &&
+                widget.userProfilePhoto!.isNotEmpty) {
+              final double userT = (widget.userRating! - 1) / 9.0;
+              userCenterX = thumbHalfWidth + userT * trackWidth;
+            }
+
+            double? avgCenterX;
+            bool showAverageCircle = false;
+            if (widget.hasUserRated && widget.averageRating >= 1.0) {
+              final double avgT = (widget.averageRating - 1) / 9.0;
+              avgCenterX = thumbHalfWidth + avgT * trackWidth;
+              // Check if average position coincides with user position (within 1 pixel tolerance)
+              const double tolerance = 1.0;
+              if (userCenterX == null ||
+                  (avgCenterX - userCenterX).abs() > tolerance) {
+                showAverageCircle = true;
+              }
+            }
+
+            // ---------- Gaps under markers ----------
+            const double markerRadius = 16.0;
+            List<Interval> gaps = [];
+            if (userCenterX != null) {
+              gaps.add(Interval(
+                  userCenterX - markerRadius, userCenterX + markerRadius));
+            }
+            if (showAverageCircle && avgCenterX != null) {
+              gaps.add(Interval(
+                  avgCenterX - markerRadius, avgCenterX + markerRadius));
+            }
+            gaps.sort((a, b) => a.start.compareTo(b.start));
+            final mergedGaps = <Interval>[];
+            for (final gap in gaps) {
+              if (mergedGaps.isEmpty || mergedGaps.last.end < gap.start) {
+                mergedGaps.add(gap);
+              } else {
+                mergedGaps.last = Interval(
+                  mergedGaps.last.start,
+                  math.max(mergedGaps.last.end, gap.end),
+                );
+              }
+            }
+
+            // ---------- Tooltip – points to average circle if visible, otherwise to user avatar ----------
             final bool effectiveShowTooltip = _showTooltip &&
                 !_isDragging &&
                 !_isNudging &&
                 widget.hasUserRated &&
                 widget.averageRating >= 1.0;
-
             const double tooltipWidth = 110;
             const double tooltipHeight = 32;
-            final double left = (thumbCenterX - tooltipWidth / 2)
+
+            final double tooltipTargetX =
+                (showAverageCircle && avgCenterX != null)
+                    ? avgCenterX
+                    : (userCenterX ?? splitX);
+
+            final double left = (tooltipTargetX - tooltipWidth / 2)
                 .clamp(8.0, constraints.maxWidth - tooltipWidth - 8.0);
-            final double arrowCenterX =
-                (thumbCenterX - left).clamp(12.0, tooltipWidth - 12.0);
+            final double arrowCenterXTooltip =
+                (tooltipTargetX - left).clamp(12.0, tooltipWidth - 12.0);
 
             return Stack(
               clipBehavior: Clip.none,
@@ -569,154 +740,152 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // ── "Slide to rate" nudge label ──────────────────────
-                      AnimatedOpacity(
-                        opacity: _isNudging ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 200),
-                        child: Padding(
-                          padding:
-                              const EdgeInsets.only(left: 4.0, bottom: 6.0),
-                          child: AnimatedBuilder(
-                            animation: _nudgeGlow,
-                            builder: (context, _) {
-                              final glow = _nudgeGlow.value;
-                              return Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 5),
-                                decoration: BoxDecoration(
-                                  color: Colors.white
-                                      .withOpacity(0.9 + 0.1 * glow),
-                                  borderRadius: BorderRadius.circular(20),
-                                  boxShadow: [
-                                    BoxShadow(
-                                        color: Colors.white
-                                            .withOpacity(0.35 * glow),
-                                        blurRadius: 10,
-                                        spreadRadius: 1)
-                                  ],
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Container(
-                                      width: 7,
-                                      height: 7,
-                                      margin:
-                                          const EdgeInsets.only(right: 7),
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: Colors.black
-                                            .withOpacity(0.5 + 0.5 * glow),
-                                        boxShadow: [
-                                          BoxShadow(
-                                              color: Colors.black
-                                                  .withOpacity(0.2 * glow),
-                                              blurRadius: 4,
-                                              spreadRadius: 1)
-                                        ],
+                      // Nudge label – only before rating
+                      if (!widget.hasUserRated)
+                        AnimatedOpacity(
+                          opacity: _isNudging ? 1.0 : 0.0,
+                          duration: const Duration(milliseconds: 200),
+                          child: Padding(
+                            padding:
+                                const EdgeInsets.only(left: 4.0, bottom: 6.0),
+                            child: AnimatedBuilder(
+                              animation: _nudgeGlow,
+                              builder: (context, _) {
+                                final glow = _nudgeGlow.value;
+                                return Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 5),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white
+                                        .withOpacity(0.9 + 0.1 * glow),
+                                    borderRadius: BorderRadius.circular(20),
+                                    boxShadow: [
+                                      BoxShadow(
+                                          color: Colors.white
+                                              .withOpacity(0.35 * glow),
+                                          blurRadius: 10,
+                                          spreadRadius: 1)
+                                    ],
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Container(
+                                        width: 7,
+                                        height: 7,
+                                        margin: const EdgeInsets.only(right: 7),
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: Colors.black
+                                              .withOpacity(0.5 + 0.5 * glow),
+                                          boxShadow: [
+                                            BoxShadow(
+                                                color: Colors.black
+                                                    .withOpacity(0.2 * glow),
+                                                blurRadius: 4,
+                                                spreadRadius: 1)
+                                          ],
+                                        ),
                                       ),
-                                    ),
-                                    Text(
-                                      'Slide to react',
-                                      style: TextStyle(
-                                        color: Colors.black
-                                            .withOpacity(0.75 + 0.25 * glow),
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600,
-                                        fontFamily: 'Inter',
-                                        letterSpacing: 0.2,
+                                      Text(
+                                        'Slide to react',
+                                        style: TextStyle(
+                                          color: Colors.black
+                                              .withOpacity(0.75 + 0.25 * glow),
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                          fontFamily: 'Inter',
+                                          letterSpacing: 0.2,
+                                        ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
                           ),
                         ),
-                      ),
 
-                      // ── Slider + avatar in their own Stack ───────────────
-                      // The avatar Stack is scoped to just the Slider widget
-                      // (48 dp tall) so top=8 always lands on the track line.
-                      Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              thumbShape: _EmojiThumbShape(
-                                emoji: widget.reactionEmoji,
-                                baseSize: 30.0,
-                                showArrow:
-                                    _isNudging && _effectiveShowGuidance,
-                                arrowBounce: _arrowBounce.value,
-                                arrowOpacity: (_isNudging &&
-                                        _effectiveShowGuidance)
-                                    ? 0.6 + 0.4 * _nudgeGlow.value
-                                    : 0.0,
-                              ),
-                              overlayShape:
-                                  SliderComponentShape.noOverlay,
-                              trackHeight: 3.0,
-                              activeTrackColor: _isNudging
-                                  ? (_cachedSliderActiveColor ??
-                                          Colors.white)
-                                      .withOpacity(0.85)
-                                  : _cachedSliderActiveColor,
-                              inactiveTrackColor:
-                                  _cachedSliderInactiveColor,
-                            ),
-                            child: Container(
-                              decoration: _isNudging
-                                  ? BoxDecoration(
-                                      borderRadius:
-                                          BorderRadius.circular(12),
-                                      boxShadow: [
-                                        BoxShadow(
-                                            color: Colors.white.withOpacity(
-                                                0.07 * _nudgeGlow.value),
-                                            blurRadius: 12,
-                                            spreadRadius: 2)
-                                      ],
-                                    )
-                                  : const BoxDecoration(),
-                              child: Slider(
-                                value: _isNudging
-                                    ? _nudgeRating.value.clamp(1.0, 10.0)
-                                    : _currentRating,
-                                min: 1,
-                                max: 10,
-                                divisions: 100,
-                                activeColor: _isNudging
-                                    ? (_cachedSliderActiveColor ??
-                                            Colors.white)
+                      // Track + markers
+                      SizedBox(
+                        height: 48,
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            // Custom track with gaps
+                            CustomPaint(
+                              painter: _TrackWithGapsPainter(
+                                startX: startX,
+                                endX: endX,
+                                splitX: splitX,
+                                yCenter: yCenter,
+                                trackHeight: 3.0,
+                                activeColor: (!widget.hasUserRated &&
+                                        _isNudging)
+                                    ? (_cachedSliderActiveColor ?? Colors.white)
                                         .withOpacity(0.85)
-                                    : _cachedSliderActiveColor,
-                                inactiveColor: _cachedSliderInactiveColor,
-                                onChanged: _onRatingChanged,
-                                onChangeEnd: _onRatingEnd,
+                                    : _cachedSliderActiveColor ?? Colors.black,
+                                inactiveColor: _cachedSliderInactiveColor ??
+                                    Colors.grey[400]!,
+                                gaps: mergedGaps,
                               ),
+                              size: Size(constraints.maxWidth, 48),
                             ),
-                          ),
 
-                          // Avatar rendered inside the Slider's Stack so its
-                          // coordinate space is always the 48 dp slider height.
-                          if (widget.userRating != null &&
-                              widget.userProfilePhoto != null &&
-                              widget.userProfilePhoto!.isNotEmpty)
-                            _buildUserReactionAvatar(
-                              constraints: constraints,
-                              thumbHalfWidth: thumbHalfWidth,
-                              trackWidth: trackWidth,
-                              userRating: widget.userRating!,
-                              photoUrl: widget.userProfilePhoto!,
-                            ),
-                        ],
+                            // Draggable slider (only before rating)
+                            if (!widget.hasUserRated)
+                              SliderTheme(
+                                data: SliderTheme.of(context).copyWith(
+                                  thumbShape: _EmojiThumbShape(
+                                    emoji: widget.reactionEmoji,
+                                    baseSize: 30.0,
+                                    showArrow:
+                                        _isNudging && _effectiveShowGuidance,
+                                    arrowBounce: _arrowBounce.value,
+                                    arrowOpacity:
+                                        (_isNudging && _effectiveShowGuidance)
+                                            ? 0.6 + 0.4 * _nudgeGlow.value
+                                            : 0.0,
+                                  ),
+                                  overlayShape: SliderComponentShape.noOverlay,
+                                  trackHeight: 0,
+                                ),
+                                child: Slider(
+                                  value: _isNudging
+                                      ? _nudgeRating.value.clamp(1.0, 10.0)
+                                      : _currentRating,
+                                  min: 1,
+                                  max: 10,
+                                  divisions: 100,
+                                  onChanged: _onRatingChanged,
+                                  onChangeEnd: _onRatingEnd,
+                                ),
+                              ),
+
+                            // User avatar marker (always shown if available)
+                            if (widget.userRating != null &&
+                                widget.userProfilePhoto != null &&
+                                widget.userProfilePhoto!.isNotEmpty)
+                              _buildUserReactionAvatar(
+                                centerX: userCenterX!,
+                                photoUrl: widget.userProfilePhoto!,
+                                constraints: constraints,
+                              ),
+
+                            // Average circle marker – only when not overlapping user avatar
+                            if (showAverageCircle && avgCenterX != null)
+                              _buildAverageCircle(
+                                centerX: avgCenterX,
+                                constraints: constraints,
+                              ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                 ),
 
-                // Tooltip stays in the outer Stack so it floats above the bar
+                // Tooltip – shows "Average Reaction" (still, but points to the correct marker)
                 if (effectiveShowTooltip)
                   Positioned(
                     left: left,
@@ -729,7 +898,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                         height: tooltipHeight,
                         child: CustomPaint(
                           painter: _TooltipPainter(
-                            arrowCenterX: arrowCenterX,
+                            arrowCenterX: arrowCenterXTooltip,
                             text: 'Average Reaction',
                           ),
                         ),
