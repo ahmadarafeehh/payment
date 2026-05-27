@@ -586,7 +586,7 @@ class SupabaseProfileMethods {
   }
 
   // ==========================================================================
-  // FIXED: Complete account deletion – uses correct 'userid' column for post_rating
+  // FINAL WORKING ACCOUNT DELETION – matches all schemas
   // ==========================================================================
   Future<String> deleteEntireUserAccount(
       String uid, firebase_auth.AuthCredential? credential) async {
@@ -629,7 +629,7 @@ class SupabaseProfileMethods {
       // 4. Delete user's replies
       await _supabase.from('replies').delete().eq('uid', uid);
 
-      // 5. Delete user's ratings – FIXED: use 'userid' (actual column name from schema)
+      // 5. Delete user's ratings (column 'userid' per schema)
       await _supabase.from('post_rating').delete().eq('userid', uid);
 
       // 6. Delete followers & following relationships
@@ -650,19 +650,16 @@ class SupabaseProfileMethods {
       await _supabase.from('notifications').delete().eq('target_user_id', uid);
       await _deleteUserActorNotifications(uid);
 
-      // 10. Delete reports
-      await _supabase.from('reports').delete().eq('user_id', uid);
-
-      // 11. Delete the user record itself (cascade will remove post_rating rows with userid = uid)
+      // 10. Delete the user record itself (cascades to foreign keys where defined)
       await _supabase.from('users').delete().eq('uid', uid);
 
-      // 12. Delete Firebase Auth account (re-authenticate first)
+      // 11. Delete Firebase Auth account (re-authenticate first)
       if (isFirebaseUser && credential != null) {
         await firebaseUser!.reauthenticateWithCredential(credential);
         await firebaseUser!.delete();
       }
 
-      // 13. Sign out from Supabase (if session exists)
+      // 12. Sign out from Supabase (if session exists)
       if (isSupabaseUser) {
         await _supabase.auth.signOut();
       }
