@@ -500,17 +500,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Create reaction notification — FIXED
-  //
-  // Root cause of the original bug: the Supabase DB insert, username fetch,
-  // and triggerServerNotification were all inside a single try/catch block.
-  // Any DB or network error in the first two steps caused execution to jump
-  // to catch, silently logging the error and never calling
-  // triggerServerNotification — so no Firestore document was ever written,
-  // the Cloud Function never triggered, and no FCM push was sent.
-  //
-  // Fix: each step has its own independent try/catch so a failure in the DB
-  // write or username fetch can never suppress the push notification.
+  // Create reaction notification
   // ----------------------
   Future<void> createNotification({
     required String postId,
@@ -518,13 +508,12 @@ class SupabasePostsMethods {
     required String raterUid,
     required double rating,
   }) async {
-    // Guard: never notify self, never fire with an empty target UID
     if (raterUid == postOwnerUid || postOwnerUid.isEmpty) return;
 
     // ── Step 1: DB write (best-effort — failure must NOT block the push) ────
     try {
       await _supabase.from('notifications').insert({
-        'type': 'post_rating', // ✅ FIXED: was 'post_reaction'
+        'type': 'post_rating',
         'target_user_id': postOwnerUid,
         'custom_data': {
           'postId': postId,
@@ -534,7 +523,6 @@ class SupabasePostsMethods {
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     } catch (e) {
-      // Log the DB failure but continue — push must still fire
       await _logPostError(
         operationType: 'create_notification_db_write',
         userId: raterUid,
@@ -553,9 +541,7 @@ class SupabasePostsMethods {
           .maybeSingle();
       final raterData = _unwrap(raterSel) ?? raterSel;
       raterUsername = raterData?['username'] ?? 'Someone';
-    } catch (_) {
-      // Non-fatal — push still fires with fallback name 'Someone'
-    }
+    } catch (_) {}
 
     // ── Step 3: Push notification (always attempted, independent of above) ───
     try {
@@ -585,7 +571,7 @@ class SupabasePostsMethods {
       await _supabase
           .from('notifications')
           .delete()
-          .eq('type', 'post_rating') // ✅ FIXED: was 'post_reaction'
+          .eq('type', 'post_rating')
           .eq('custom_data->>postId', postId)
           .eq('custom_data->>raterUid', raterUid);
     } catch (e) {
@@ -708,7 +694,6 @@ class SupabasePostsMethods {
         'timestamp': DateTime.now().toUtc().toIso8601String(),
       }, onConflict: 'postid,userid');
 
-      // Guard: skip notification if rater is owner or owner UID is empty
       if (uid != postOwnerUid && postOwnerUid.isNotEmpty) {
         if (isUpdate) {
           await _deletePreviousReactionNotification(postId, uid);
@@ -1338,6 +1323,63 @@ class SupabasePostsMethods {
           'replyId': replyId,
           'replyOwnerUid': replyOwnerUid,
         },
+      );
+    }
+  }
+
+  // ----------------------
+  // First-post nudge notification (fires 10 min after install, test=true only)
+  // ----------------------
+  Future<void> scheduleFirstPostNudge(String userId) async {
+    try {
+      // Check if user is in test group
+      final userRow = await _supabase
+          .from('users')
+          .select('test')
+          .eq('uid', userId)
+          .maybeSingle();
+
+      final bool isTestGroup = userRow?['test'] ?? false;
+      if (!isTestGroup) return; // Only send for test=true users
+
+      // Check if already posted before scheduling
+      final existing = await _supabase
+          .from('posts')
+          .select('postId')
+          .eq('uid', userId)
+          .limit(1)
+          .maybeSingle();
+
+      if (existing != null) return; // Already has a post, skip
+
+      // Wait 10 minutes
+      await Future.delayed(const Duration(minutes: 10));
+
+      // Re-check after delay in case they posted during the wait
+      final check = await _supabase
+          .from('posts')
+          .select('postId')
+          .eq('uid', userId)
+          .limit(1)
+          .maybeSingle();
+
+      if (check != null) return; // Posted during delay, skip
+
+      await _notificationService.triggerServerNotification(
+        type: 'first_post_nudge',
+        targetUserId: userId,
+        title: 'Don\'t miss out!',
+        body: '⏳ You\'re missing reactions by not posting yet — fix that now.',
+        customData: {
+          'nudgeType': 'first_post',
+          'userId': userId,
+        },
+      );
+    } catch (e) {
+      await _logPostError(
+        operationType: 'schedule_first_post_nudge',
+        userId: userId,
+        error: e,
       );
     }
   }
