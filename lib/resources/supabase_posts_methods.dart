@@ -1353,7 +1353,7 @@ class SupabasePostsMethods {
       if (existing != null) return; // Already has a post, skip
 
       // Wait 10 minutes
-      await Future.delayed(const Duration(minutes: 10));
+      await Future.delayed(const Duration(seconds: 59));
 
       // Re-check after delay in case they posted during the wait
       final check = await _supabase
