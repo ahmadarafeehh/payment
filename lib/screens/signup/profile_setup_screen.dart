@@ -1,5 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/resources/auth_methods.dart';
+import 'package:Ratedly/resources/supabase_posts_methods.dart';
 import 'package:Ratedly/responsive/mobile_screen_layout.dart';
 import 'package:Ratedly/responsive/responsive_layout.dart';
 import 'package:Ratedly/utils/utils.dart';
@@ -95,6 +99,17 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     );
 
     if (res == "success") {
+      // Resolve the uid — Firebase uid takes priority, Supabase id as fallback.
+      // This mirrors the same priority used everywhere else in the app.
+      final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid ??
+          Supabase.instance.client.auth.currentUser?.id;
+
+      // Schedule the first-post nudge fire-and-forget.
+      // Must NOT be awaited — the 59-second delay must not block navigation.
+      if (uid != null) {
+        unawaited(SupabasePostsMethods().scheduleFirstPostNudge(uid));
+      }
+
       // Notify completion
       widget.onComplete();
 
