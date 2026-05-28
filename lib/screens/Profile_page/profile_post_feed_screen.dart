@@ -15,26 +15,18 @@ import 'package:Ratedly/utils/utils.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
-import 'package:Ratedly/screens/Profile_page/profile_page.dart'; // added for navigation
+import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
 typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
     int currentCount);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Supabase logger — fire-and-forget insert into `vertical`
-// ─────────────────────────────────────────────────────────────────────────────
 Future<void> _log(Map<String, dynamic> payload) async {
   try {
     await Supabase.instance.client.from('vertical').insert(payload);
-  } catch (_) {
-    // never crash the UI because of a logging failure
-  }
+  } catch (_) {}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ProfilePostFeedScreen
-// ─────────────────────────────────────────────────────────────────────────────
 class ProfilePostFeedScreen extends StatefulWidget {
   final List<Map<String, dynamic>> initialPosts;
   final int initialIndex;
@@ -64,9 +56,7 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   bool _hasMore = false;
   bool _loadingMore = false;
 
-  // One session ID per screen open so you can group rows in the DB.
-  final String _sessionId =
-      DateTime.now().microsecondsSinceEpoch.toString();
+  final String _sessionId = DateTime.now().microsecondsSinceEpoch.toString();
 
   bool _isVideoUrl(String url) {
     final u = url.toLowerCase();
@@ -92,7 +82,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     _pageController = PageController(initialPage: widget.initialIndex);
     _pageController.addListener(_onPageScroll);
 
-    // Log every post in the initial list so we know what types loaded.
     for (int i = 0; i < _posts.length; i++) {
       final url = _posts[i]['postUrl']?.toString() ?? '';
       _log({
@@ -103,10 +92,7 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         'post_url': url,
         'page_index': i,
         'total_posts': _posts.length,
-        'extra': {
-          'initial_index': widget.initialIndex,
-          'has_more': _hasMore,
-        },
+        'extra': {'initial_index': widget.initialIndex, 'has_more': _hasMore},
       });
     }
   }
@@ -122,9 +108,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     final rawPage = _pageController.page ?? _currentIndex.toDouble();
     final page = rawPage.round();
 
-    // Log every page-change event. If you never see these rows for a video
-    // post, the PageView is not receiving the gesture at all — the inner
-    // SingleChildScrollView is consuming it.
     if (page != _currentIndex) {
       _log({
         'session_id': _sessionId,
@@ -132,10 +115,7 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         'page_index': page,
         'raw_page': rawPage,
         'total_posts': _posts.length,
-        'extra': {
-          'from_index': _currentIndex,
-          'to_index': page,
-        },
+        'extra': {'from_index': _currentIndex, 'to_index': page},
       });
       setState(() => _currentIndex = page);
     }
@@ -160,10 +140,7 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         'session_id': _sessionId,
         'event_type': 'load_more_result',
         'total_posts': _posts.length + batch.length,
-        'extra': {
-          'batch_size': batch.length,
-          'has_more_after': batch.isNotEmpty,
-        },
+        'extra': {'batch_size': batch.length, 'has_more_after': batch.isNotEmpty},
       });
       if (mounted) {
         setState(() {
@@ -204,9 +181,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // NEW: Navigate to profile (same as PostCard)
-  // ─────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
     Navigator.push(
       context,
@@ -270,9 +244,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// _FeedPostPage
-// ─────────────────────────────────────────────────────────────────────────────
 class _FeedPostPage extends StatefulWidget {
   final Map<String, dynamic> post;
   final Map<String, dynamic> userData;
@@ -334,7 +305,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         u.contains('video=true');
   }
 
-  // Convenience wrapper that pre-fills the fields common to every row.
   void _sendLog(String eventType, {Map<String, dynamic>? extra}) {
     _log({
       'session_id': widget.sessionId,
@@ -523,12 +493,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
       final ar = controller.value.aspectRatio;
       final size = controller.value.size;
 
-      // ── This is the key diagnostic row ──────────────────────────────────
-      // After initialization we know the true aspect ratio. If the video is
-      // portrait (ar < 1) the AspectRatio widget will be TALLER than the
-      // screen, causing SingleChildScrollView to become scrollable and steal
-      // all vertical PageView swipes. Check content_taller_than_screen in
-      // the vertical table — if it's true, that's the bug.
       _log({
         'session_id': widget.sessionId,
         'event_type': 'video_init_complete',
@@ -539,8 +503,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         'aspect_ratio': ar,
         'is_video_init': true,
         'is_video_loading': false,
-        // These two are populated in build() where we have MediaQuery,
-        // but we log what we know here.
         'extra': {
           'video_width': size.width,
           'video_height': size.height,
@@ -624,9 +586,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         .combinedMatrix(kFilters[_editResult!.filterIndex].matrix);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Navigate to profile (same as PostCard)
-  // ─────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
     Navigator.push(
       context,
@@ -664,9 +623,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     final quarters = _editResult?.rotationQuarters ?? 0;
     final description = widget.post['description']?.toString() ?? '';
 
-    // ── Log build context so we can see whether the content will overflow ──
-    // This is the most important diagnostic: if content_taller_than_screen
-    // is true on a video post, SingleChildScrollView is stealing the swipe.
     final screenHeight = MediaQuery.of(context).size.height;
     final screenWidth = MediaQuery.of(context).size.width;
     if (_isVideo && _isVideoInitialized && _videoController != null) {
@@ -692,8 +648,14 @@ class _FeedPostPageState extends State<_FeedPostPage>
       });
     }
 
+    // ★ FIX: disable inner scrolling when video is playing/initialized,
+    // so the PageView can always swipe vertically.
+    final bool preventInnerScroll = _isVideo && _isVideoInitialized;
+
     return SingleChildScrollView(
-      physics: const ClampingScrollPhysics(),
+      physics: preventInnerScroll
+          ? const NeverScrollableScrollPhysics()
+          : const ClampingScrollPhysics(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -701,9 +663,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
               children: [
-                // ─────────────────────────────────────────────────────────
-                // Avatar now has a GestureDetector for navigation
-                // ─────────────────────────────────────────────────────────
                 GestureDetector(
                   onTap: _goToProfile,
                   child: _buildAvatar(photoUrl, uid, user?.uid ?? '', cardColor, textColor),
@@ -713,7 +672,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Username also wrapped with GestureDetector
                       GestureDetector(
                         onTap: _goToProfile,
                         child: VerifiedUsernameWidget(
@@ -745,8 +703,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
 
           if (description.isNotEmpty)
             Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Text(description,
                   style: TextStyle(color: textColor, fontSize: 15)),
             ),
