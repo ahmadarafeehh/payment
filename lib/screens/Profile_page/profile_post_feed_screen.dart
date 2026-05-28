@@ -15,6 +15,7 @@ import 'package:Ratedly/utils/utils.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
+import 'package:Ratedly/screens/Profile_page/profile_page.dart'; // added for navigation
 import 'package:timeago/timeago.dart' as timeago;
 
 typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
@@ -203,6 +204,18 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // NEW: Navigate to profile (same as PostCard)
+  // ─────────────────────────────────────────────────────────────────────────
+  void _goToProfile() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ProfileScreen(uid: widget.userData['uid']?.toString() ?? ''),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
@@ -218,10 +231,13 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         backgroundColor: bgColor,
         elevation: 0,
         iconTheme: IconThemeData(color: textColor),
-        title: VerifiedUsernameWidget(
-          username: widget.userData['username']?.toString() ?? '',
-          uid: widget.userData['uid']?.toString() ?? '',
-          style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+        title: GestureDetector(
+          onTap: _goToProfile,
+          child: VerifiedUsernameWidget(
+            username: widget.userData['username']?.toString() ?? '',
+            uid: widget.userData['uid']?.toString() ?? '',
+            style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+          ),
         ),
         centerTitle: true,
       ),
@@ -608,6 +624,18 @@ class _FeedPostPageState extends State<_FeedPostPage>
         .combinedMatrix(kFilters[_editResult!.filterIndex].matrix);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Navigate to profile (same as PostCard)
+  // ─────────────────────────────────────────────────────────────────────────
+  void _goToProfile() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ProfileScreen(uid: widget.userData['uid']?.toString() ?? ''),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -673,19 +701,27 @@ class _FeedPostPageState extends State<_FeedPostPage>
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
               children: [
-                _buildAvatar(
-                    photoUrl, uid, user?.uid ?? '', cardColor, textColor),
+                // ─────────────────────────────────────────────────────────
+                // Avatar now has a GestureDetector for navigation
+                // ─────────────────────────────────────────────────────────
+                GestureDetector(
+                  onTap: _goToProfile,
+                  child: _buildAvatar(photoUrl, uid, user?.uid ?? '', cardColor, textColor),
+                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      VerifiedUsernameWidget(
-                        username:
-                            widget.userData['username']?.toString() ?? '',
-                        uid: uid,
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold, color: textColor),
+                      // Username also wrapped with GestureDetector
+                      GestureDetector(
+                        onTap: _goToProfile,
+                        child: VerifiedUsernameWidget(
+                          username: widget.userData['username']?.toString() ?? '',
+                          uid: uid,
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, color: textColor),
+                        ),
                       ),
                       if (timeStr.isNotEmpty)
                         Text(timeStr,
