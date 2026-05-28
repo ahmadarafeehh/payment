@@ -15,6 +15,7 @@ import 'package:Ratedly/screens/comment_screen.dart';
 import 'package:Ratedly/widgets/postshare.dart';
 import 'package:Ratedly/widgets/rating_list_screen_postcard.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
+import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
 import 'package:Ratedly/utils/utils.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
@@ -40,10 +41,26 @@ class FilterAdjustments {
     final c = contrast;
     final s = saturation;
     return [
-      c * s, 0, 0, 0, b,
-      0, c * s, 0, 0, b,
-      0, 0, c * s, 0, b,
-      0, 0, 0, 1, 0,
+      c * s,
+      0,
+      0,
+      0,
+      b,
+      0,
+      c * s,
+      0,
+      0,
+      b,
+      0,
+      0,
+      c * s,
+      0,
+      b,
+      0,
+      0,
+      0,
+      1,
+      0,
     ];
   }
 
@@ -69,10 +86,26 @@ class FilterInfo {
 
 const List<FilterInfo> kFilters = [
   FilterInfo(name: 'Original', matrix: [
-    1, 0, 0, 0, 0,
-    0, 1, 0, 0, 0,
-    0, 0, 1, 0, 0,
-    0, 0, 0, 1, 0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
   ]),
 ];
 
@@ -1934,7 +1967,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
     });
 
     try {
-      final res = await _postsMethods.ratePost(_postId, user.uid, rating);
+      // CHANGED: use SupabaseReactionsMethods instead of _postsMethods.ratePost
+      final res = await SupabaseReactionsMethods()
+          .reactToPost(_postId, user.uid, rating);
       if (res != 'success' && mounted) _fetchRatings();
     } catch (_) {
       if (mounted) _fetchRatings();
@@ -2151,8 +2186,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
     return CircleAvatar(
       radius: 20,
       backgroundColor: cardColor,
-      backgroundImage:
-          !isDefault ? CachedNetworkImageProvider(photoUrl) : null,
+      backgroundImage: !isDefault ? CachedNetworkImageProvider(photoUrl) : null,
       child: isDefault
           ? Icon(Icons.account_circle, size: 40, color: textColor)
           : null,
@@ -2270,8 +2304,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
                   placeholder: (_, __) => Container(color: cardColor),
                   errorWidget: (_, __, ___) => Container(
                     color: cardColor,
-                    child: Icon(Icons.broken_image,
-                        color: textColor, size: 48),
+                    child: Icon(Icons.broken_image, color: textColor, size: 48),
                   ),
                 ),
               ),
