@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
+import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
 import 'package:Ratedly/screens/comment_screen.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:Ratedly/widgets/rating_list_screen_postcard.dart';
@@ -847,8 +848,9 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     });
 
     try {
-      final success =
-          await _postsMethods.ratePost(widget.postId, user.uid, rating);
+      // CHANGED: use SupabaseReactionsMethods instead of _postsMethods.ratePost
+      final success = await SupabaseReactionsMethods()
+          .reactToPost(widget.postId, user.uid, rating);
       if (success != 'success' && mounted) _fetchInitialRatings();
     } catch (e) {
       if (mounted) _fetchInitialRatings();
