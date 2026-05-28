@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
@@ -39,26 +40,10 @@ class FilterAdjustments {
     final c = contrast;
     final s = saturation;
     return [
-      c * s,
-      0,
-      0,
-      0,
-      b,
-      0,
-      c * s,
-      0,
-      0,
-      b,
-      0,
-      0,
-      c * s,
-      0,
-      b,
-      0,
-      0,
-      0,
-      1,
-      0,
+      c * s, 0, 0, 0, b,
+      0, c * s, 0, 0, b,
+      0, 0, c * s, 0, b,
+      0, 0, 0, 1, 0,
     ];
   }
 
@@ -84,26 +69,10 @@ class FilterInfo {
 
 const List<FilterInfo> kFilters = [
   FilterInfo(name: 'Original', matrix: [
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
+    1, 0, 0, 0, 0,
+    0, 1, 0, 0, 0,
+    0, 0, 1, 0, 0,
+    0, 0, 0, 1, 0,
   ]),
 ];
 
@@ -473,7 +442,9 @@ class _SearchScreenState extends State<SearchScreen>
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(() {
       final position = _scrollController.position;
-      final trigger = position.maxScrollExtent - 200;
+      // ── CHANGE: trigger at 70% scrolled so next page is ready before
+      //            the user reaches the bottom — no visible loading gap.
+      final trigger = position.maxScrollExtent * 0.70;
       if (position.pixels >= trigger &&
           !_isLoadingMore &&
           _hasMorePosts &&
@@ -711,48 +682,39 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
+  // ── CHANGED: uses CachedNetworkImage so images are stored to memory + disk.
+  //             Shows a skeleton-coloured container while loading instead of
+  //             a spinner so cells never visually "pop" when they appear.
   Widget _buildPostImage(String imageUrl, _SearchColorSet colors,
       [VideoEditResult? editResult]) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
+    Widget networkImage = CachedNetworkImage(
+      imageUrl: imageUrl,
+      fit: BoxFit.cover,
+      // Skeleton placeholder — same colour as the loading skeleton grid,
+      // so there is no spinner and no layout jump when the image arrives.
+      placeholder: (_, __) => Container(color: colors.skeletonColor),
+      errorWidget: (_, __, ___) => Container(
+        color: colors.gridItemBackgroundColor,
+        child: Icon(Icons.broken_image, color: colors.iconColor),
+      ),
+    );
+
+    if (editResult != null) {
+      networkImage = ColorFiltered(
+        colorFilter: ColorFilter.matrix(matrix),
+        child: Transform.rotate(
+          angle: quarters * math.pi / 2,
+          child: networkImage,
+        ),
+      );
+    }
+
     Widget baseImage = ClipRRect(
       borderRadius: BorderRadius.circular(8),
-      child: editResult == null
-          ? Image.network(
-              imageUrl,
-              fit: BoxFit.cover,
-              loadingBuilder: (_, child, progress) {
-                if (progress == null) return child;
-                return Center(
-                    child: CircularProgressIndicator(
-                        color: colors.progressIndicatorColor));
-              },
-              errorBuilder: (_, __, ___) => Container(
-                color: colors.gridItemBackgroundColor,
-                child: Icon(Icons.broken_image, color: colors.iconColor),
-              ),
-            )
-          : ColorFiltered(
-              colorFilter: ColorFilter.matrix(matrix),
-              child: Transform.rotate(
-                angle: quarters * math.pi / 2,
-                child: Image.network(
-                  imageUrl,
-                  fit: BoxFit.cover,
-                  loadingBuilder: (_, child, progress) {
-                    if (progress == null) return child;
-                    return Center(
-                        child: CircularProgressIndicator(
-                            color: colors.progressIndicatorColor));
-                  },
-                  errorBuilder: (_, __, ___) => Container(
-                    color: colors.gridItemBackgroundColor,
-                    child: Icon(Icons.broken_image, color: colors.iconColor),
-                  ),
-                ),
-              ),
-            ),
+      child: networkImage,
     );
 
     if (editResult == null) {
@@ -796,11 +758,26 @@ class _SearchScreenState extends State<SearchScreen>
       }
       return _buildAvatarVideoPlayer(url, colors);
     }
+    // ── CHANGED: use CachedNetworkImage for avatars too so they're
+    //             served from cache on re-renders.
     return CircleAvatar(
       backgroundColor: colors.avatarBackgroundColor,
       radius: 20,
-      backgroundImage: NetworkImage(url),
+      backgroundImage: CachedNetworkImageProvider(url),
     );
+  }
+
+  // ── NEW: kicks off a background download for every image in a batch
+  //         the moment we receive the data from Supabase.  By the time
+  //         the user scrolls to those cells the bytes are already in the
+  //         CachedNetworkImage memory/disk cache → instant display.
+  void _precacheImages(List<Map<String, dynamic>> posts) {
+    for (final post in posts) {
+      final url = post['postUrl']?.toString() ?? '';
+      if (url.isNotEmpty && !_isVideoFile(url)) {
+        precacheImage(CachedNetworkImageProvider(url), context);
+      }
+    }
   }
 
   // ========== DATA LOADING ==========
@@ -873,6 +850,11 @@ class _SearchScreenState extends State<SearchScreen>
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
         await _enrichPostsWithUserData(newPosts);
+
+        // ── CHANGED: pre-download all image thumbnails into cache immediately
+        //             so they are ready before the user scrolls to them.
+        _precacheImages(newPosts);
+
         for (final post in newPosts) {
           final url = post['postUrl']?.toString() ?? '';
           if (_isVideoFile(url)) _initializeVideoController(url);
@@ -922,6 +904,10 @@ class _SearchScreenState extends State<SearchScreen>
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
         await _enrichPostsWithUserData(newPosts);
+
+        // ── CHANGED: pre-download the next batch before user scrolls to it.
+        _precacheImages(newPosts);
+
         for (final post in newPosts) {
           final url = post['postUrl']?.toString() ?? '';
           if (_isVideoFile(url)) _initializeVideoController(url);
@@ -964,6 +950,10 @@ class _SearchScreenState extends State<SearchScreen>
         final newPosts =
             response.map<Map<String, dynamic>>(_normalisePost).toList();
         await _enrichPostsWithUserData(newPosts);
+
+        // ── CHANGED: pre-download feed images too.
+        _precacheImages(newPosts);
+
         for (final post in newPosts) {
           final url = post['postUrl']?.toString() ?? '';
           if (_isVideoFile(url)) _initializeVideoController(url);
@@ -1399,7 +1389,10 @@ class _SearchScreenState extends State<SearchScreen>
 
     return NotificationListener<ScrollNotification>(
       onNotification: (scrollInfo) {
-        if (scrollInfo.metrics.extentAfter < 500 &&
+        // ── CHANGED: mirrors the 70% threshold from the scroll controller
+        //             so both triggers fire at the same point.
+        final extent = scrollInfo.metrics.maxScrollExtent;
+        if (scrollInfo.metrics.pixels >= extent * 0.70 &&
             !_isLoadingMore &&
             _hasMorePosts &&
             !isShowUsers) {
@@ -1464,7 +1457,6 @@ class _SearchScreenState extends State<SearchScreen>
       onTap: () async {
         _pauseAllVideos();
 
-        // Navigate to the new search result feed screen
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -1534,8 +1526,7 @@ class _ScaledDrawingPainter extends CustomPainter {
 }
 
 // =============================================================================
-// NEW: SearchResultFeedScreen – a page view that respects the original search
-// order and shows each post with its own author data.
+// SearchResultFeedScreen
 // =============================================================================
 class SearchResultFeedScreen extends StatefulWidget {
   final List<Map<String, dynamic>> initialPosts;
@@ -1656,7 +1647,6 @@ class _SearchResultFeedScreenState extends State<SearchResultFeedScreen> {
             );
           }
           final post = _posts[index];
-          // Build userData from the post's own fields (already enriched)
           final Map<String, dynamic> userData = {
             'uid': post['uid']?.toString() ?? '',
             'username': post['username']?.toString() ?? '',
@@ -1679,8 +1669,7 @@ class _SearchResultFeedScreenState extends State<SearchResultFeedScreen> {
 }
 
 // =============================================================================
-// _FeedPostPage – copied from profile_post_feed_screen.dart with the
-// vertical scrolling fix (NeverScrollableScrollPhysics when video initialized)
+// _FeedPostPage
 // =============================================================================
 class _FeedPostPage extends StatefulWidget {
   final Map<String, dynamic> post;
@@ -1741,10 +1730,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         u.endsWith('.3gp') ||
         u.contains('/video/') ||
         u.contains('video=true');
-  }
-
-  void _sendLog(String eventType, {Map<String, dynamic>? extra}) {
-    // Logging removed for brevity – you can add it back if needed
   }
 
   @override
@@ -2002,7 +1987,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     final quarters = _editResult?.rotationQuarters ?? 0;
     final description = widget.post['description']?.toString() ?? '';
 
-    // ★ FIX: disable inner scrolling when video is playing/initialized
     final bool preventInnerScroll = _isVideo && _isVideoInitialized;
 
     return SingleChildScrollView(
@@ -2163,10 +2147,12 @@ class _FeedPostPageState extends State<_FeedPostPage>
   Widget _buildAvatar(String photoUrl, String uid, String currentUserId,
       Color cardColor, Color textColor) {
     final isDefault = photoUrl.isEmpty || photoUrl == 'default';
+    // ── CHANGED: use CachedNetworkImageProvider for cached avatar loading.
     return CircleAvatar(
       radius: 20,
       backgroundColor: cardColor,
-      backgroundImage: !isDefault ? NetworkImage(photoUrl) : null,
+      backgroundImage:
+          !isDefault ? CachedNetworkImageProvider(photoUrl) : null,
       child: isDefault
           ? Icon(Icons.account_circle, size: 40, color: textColor)
           : null,
@@ -2258,6 +2244,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
+  // ── CHANGED: full-screen feed image now uses CachedNetworkImage too.
   Widget _buildImage(
       List<double> matrix, int quarters, Color cardColor, Color textColor) {
     return AspectRatio(
@@ -2274,14 +2261,17 @@ class _FeedPostPageState extends State<_FeedPostPage>
               colorFilter: ColorFilter.matrix(matrix),
               child: Transform.rotate(
                 angle: quarters * math.pi / 2,
-                child: Image.network(
-                  _postUrl,
+                child: CachedNetworkImage(
+                  imageUrl: _postUrl,
                   fit: BoxFit.cover,
                   width: double.infinity,
                   height: double.infinity,
-                  errorBuilder: (_, __, ___) => Container(
+                  // Re-uses whatever the grid already pre-cached — instant.
+                  placeholder: (_, __) => Container(color: cardColor),
+                  errorWidget: (_, __, ___) => Container(
                     color: cardColor,
-                    child: Icon(Icons.broken_image, color: textColor, size: 48),
+                    child: Icon(Icons.broken_image,
+                        color: textColor, size: 48),
                   ),
                 ),
               ),
