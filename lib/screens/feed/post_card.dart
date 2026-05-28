@@ -18,6 +18,7 @@ import 'package:video_player/video_player.dart';
 import 'dart:ui';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
+import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
@@ -611,8 +612,12 @@ class _PostCardState extends State<PostCard>
       });
     }
     try {
-      final success =
-          await _postsMethods.ratePost(widget.snap['postId'], user.uid, rating);
+      // CHANGED: use SupabaseReactionsMethods instead of _postsMethods.ratePost
+      final success = await SupabaseReactionsMethods().reactToPost(
+        widget.snap['postId'],
+        user.uid,
+        rating,
+      );
       if (success != 'success' && mounted) _loadPostCardData();
     } catch (e) {
       if (mounted) _loadPostCardData();
