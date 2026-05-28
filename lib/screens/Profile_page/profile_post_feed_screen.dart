@@ -11,22 +11,31 @@ import 'package:Ratedly/widgets/postshare.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/widgets/rating_list_screen_postcard.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
+import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
 import 'package:Ratedly/utils/utils.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
-import 'package:Ratedly/screens/Profile_page/profile_page.dart';
+import 'package:Ratedly/screens/Profile_page/profile_page.dart'; // added for navigation
 import 'package:timeago/timeago.dart' as timeago;
 
 typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
     int currentCount);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Supabase logger — fire-and-forget insert into `vertical`
+// ─────────────────────────────────────────────────────────────────────────────
 Future<void> _log(Map<String, dynamic> payload) async {
   try {
     await Supabase.instance.client.from('vertical').insert(payload);
-  } catch (_) {}
+  } catch (_) {
+    // never crash the UI because of a logging failure
+  }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ProfilePostFeedScreen
+// ─────────────────────────────────────────────────────────────────────────────
 class ProfilePostFeedScreen extends StatefulWidget {
   final List<Map<String, dynamic>> initialPosts;
   final int initialIndex;
@@ -56,6 +65,7 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   bool _hasMore = false;
   bool _loadingMore = false;
 
+  // One session ID per screen open so you can group rows in the DB.
   final String _sessionId = DateTime.now().microsecondsSinceEpoch.toString();
 
   bool _isVideoUrl(String url) {
@@ -82,6 +92,7 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     _pageController = PageController(initialPage: widget.initialIndex);
     _pageController.addListener(_onPageScroll);
 
+    // Log every post in the initial list so we know what types loaded.
     for (int i = 0; i < _posts.length; i++) {
       final url = _posts[i]['postUrl']?.toString() ?? '';
       _log({
@@ -92,7 +103,10 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         'post_url': url,
         'page_index': i,
         'total_posts': _posts.length,
-        'extra': {'initial_index': widget.initialIndex, 'has_more': _hasMore},
+        'extra': {
+          'initial_index': widget.initialIndex,
+          'has_more': _hasMore,
+        },
       });
     }
   }
@@ -108,6 +122,9 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     final rawPage = _pageController.page ?? _currentIndex.toDouble();
     final page = rawPage.round();
 
+    // Log every page-change event. If you never see these rows for a video
+    // post, the PageView is not receiving the gesture at all — the inner
+    // SingleChildScrollView is consuming it.
     if (page != _currentIndex) {
       _log({
         'session_id': _sessionId,
@@ -115,7 +132,10 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         'page_index': page,
         'raw_page': rawPage,
         'total_posts': _posts.length,
-        'extra': {'from_index': _currentIndex, 'to_index': page},
+        'extra': {
+          'from_index': _currentIndex,
+          'to_index': page,
+        },
       });
       setState(() => _currentIndex = page);
     }
@@ -140,7 +160,10 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         'session_id': _sessionId,
         'event_type': 'load_more_result',
         'total_posts': _posts.length + batch.length,
-        'extra': {'batch_size': batch.length, 'has_more_after': batch.isNotEmpty},
+        'extra': {
+          'batch_size': batch.length,
+          'has_more_after': batch.isNotEmpty,
+        },
       });
       if (mounted) {
         setState(() {
@@ -181,11 +204,15 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // NEW: Navigate to profile (same as PostCard)
+  // ─────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => ProfileScreen(uid: widget.userData['uid']?.toString() ?? ''),
+        builder: (context) =>
+            ProfileScreen(uid: widget.userData['uid']?.toString() ?? ''),
       ),
     );
   }
@@ -244,6 +271,9 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// _FeedPostPage
+// ─────────────────────────────────────────────────────────────────────────────
 class _FeedPostPage extends StatefulWidget {
   final Map<String, dynamic> post;
   final Map<String, dynamic> userData;
@@ -305,6 +335,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
         u.contains('video=true');
   }
 
+  // Convenience wrapper that pre-fills the fields common to every row.
   void _sendLog(String eventType, {Map<String, dynamic>? extra}) {
     _log({
       'session_id': widget.sessionId,
@@ -493,6 +524,12 @@ class _FeedPostPageState extends State<_FeedPostPage>
       final ar = controller.value.aspectRatio;
       final size = controller.value.size;
 
+      // ── This is the key diagnostic row ──────────────────────────────────
+      // After initialization we know the true aspect ratio. If the video is
+      // portrait (ar < 1) the AspectRatio widget will be TALLER than the
+      // screen, causing SingleChildScrollView to become scrollable and steal
+      // all vertical PageView swipes. Check content_taller_than_screen in
+      // the vertical table — if it's true, that's the bug.
       _log({
         'session_id': widget.sessionId,
         'event_type': 'video_init_complete',
@@ -503,6 +540,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
         'aspect_ratio': ar,
         'is_video_init': true,
         'is_video_loading': false,
+        // These two are populated in build() where we have MediaQuery,
+        // but we log what we know here.
         'extra': {
           'video_width': size.width,
           'video_height': size.height,
@@ -571,7 +610,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
     });
 
     try {
-      final res = await _postsMethods.ratePost(_postId, user.uid, rating);
+      // CHANGED: use SupabaseReactionsMethods instead of _postsMethods.ratePost
+      final res = await SupabaseReactionsMethods()
+          .reactToPost(_postId, user.uid, rating);
       if (res != 'success' && mounted) _fetchRatings();
     } catch (_) {
       if (mounted) _fetchRatings();
@@ -586,11 +627,15 @@ class _FeedPostPageState extends State<_FeedPostPage>
         .combinedMatrix(kFilters[_editResult!.filterIndex].matrix);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Navigate to profile (same as PostCard)
+  // ─────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => ProfileScreen(uid: widget.userData['uid']?.toString() ?? ''),
+        builder: (context) =>
+            ProfileScreen(uid: widget.userData['uid']?.toString() ?? ''),
       ),
     );
   }
@@ -623,6 +668,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
     final quarters = _editResult?.rotationQuarters ?? 0;
     final description = widget.post['description']?.toString() ?? '';
 
+    // ── Log build context so we can see whether the content will overflow ──
+    // This is the most important diagnostic: if content_taller_than_screen
+    // is true on a video post, SingleChildScrollView is stealing the swipe.
     final screenHeight = MediaQuery.of(context).size.height;
     final screenWidth = MediaQuery.of(context).size.width;
     if (_isVideo && _isVideoInitialized && _videoController != null) {
@@ -648,14 +696,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
       });
     }
 
-    // ★ FIX: disable inner scrolling when video is playing/initialized,
-    // so the PageView can always swipe vertically.
-    final bool preventInnerScroll = _isVideo && _isVideoInitialized;
-
     return SingleChildScrollView(
-      physics: preventInnerScroll
-          ? const NeverScrollableScrollPhysics()
-          : const ClampingScrollPhysics(),
+      physics: const ClampingScrollPhysics(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -663,19 +705,25 @@ class _FeedPostPageState extends State<_FeedPostPage>
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
               children: [
+                // ─────────────────────────────────────────────────────────
+                // Avatar now has a GestureDetector for navigation
+                // ─────────────────────────────────────────────────────────
                 GestureDetector(
                   onTap: _goToProfile,
-                  child: _buildAvatar(photoUrl, uid, user?.uid ?? '', cardColor, textColor),
+                  child: _buildAvatar(
+                      photoUrl, uid, user?.uid ?? '', cardColor, textColor),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // Username also wrapped with GestureDetector
                       GestureDetector(
                         onTap: _goToProfile,
                         child: VerifiedUsernameWidget(
-                          username: widget.userData['username']?.toString() ?? '',
+                          username:
+                              widget.userData['username']?.toString() ?? '',
                           uid: uid,
                           style: TextStyle(
                               fontWeight: FontWeight.bold, color: textColor),
@@ -698,16 +746,13 @@ class _FeedPostPageState extends State<_FeedPostPage>
               ],
             ),
           ),
-
           _buildMedia(matrix, quarters, cardColor, textColor),
-
           if (description.isNotEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Text(description,
                   style: TextStyle(color: textColor, fontSize: 15)),
             ),
-
           if (!_isLoadingRatings)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -722,7 +767,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
             )
           else
             const SizedBox(height: 48),
-
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(
@@ -742,8 +786,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
                         left: -6,
                         child: Container(
                           padding: const EdgeInsets.all(4),
-                          constraints: const BoxConstraints(
-                              minWidth: 20, minHeight: 20),
+                          constraints:
+                              const BoxConstraints(minWidth: 20, minHeight: 20),
                           decoration: BoxDecoration(
                               color: cardColor, shape: BoxShape.circle),
                           child: Center(
@@ -765,8 +809,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
                     if (user != null) {
                       showDialog(
                         context: context,
-                        builder: (_) => PostShare(
-                            currentUserId: user.uid, postId: _postId),
+                        builder: (_) =>
+                            PostShare(currentUserId: user.uid, postId: _postId),
                       );
                     }
                   },
@@ -785,8 +829,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
                     decoration: BoxDecoration(
                         color: cardColor,
                         borderRadius: BorderRadius.circular(4)),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     child: Text(
                       _totalRatingsCount == 0
                           ? 'Be the first to react'
@@ -803,7 +847,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
               ],
             ),
           ),
-
           const SizedBox(height: 32),
         ],
       ),
@@ -855,8 +898,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
             else if (_isVideoLoading)
               Center(child: CircularProgressIndicator(color: textColor))
             else
-              Center(
-                  child: Icon(Icons.videocam, color: textColor, size: 48)),
+              Center(child: Icon(Icons.videocam, color: textColor, size: 48)),
             if (_editResult != null && _editResult!.strokes.isNotEmpty)
               Positioned.fill(
                 child: IgnorePointer(
@@ -898,10 +940,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
                     height: 36,
                     decoration: const BoxDecoration(
                         color: Colors.black54, shape: BoxShape.circle),
-                    child: Icon(
-                        _isMuted ? Icons.volume_off : Icons.volume_up,
-                        size: 18,
-                        color: Colors.white),
+                    child: Icon(_isMuted ? Icons.volume_off : Icons.volume_up,
+                        size: 18, color: Colors.white),
                   ),
                 ),
               ),
@@ -934,8 +974,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
                   height: double.infinity,
                   errorBuilder: (_, __, ___) => Container(
                     color: cardColor,
-                    child: Icon(Icons.broken_image,
-                        color: textColor, size: 48),
+                    child: Icon(Icons.broken_image, color: textColor, size: 48),
                   ),
                 ),
               ),
@@ -997,8 +1036,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
     ).then((_) => _fetchCommentsCount());
   }
 
-  void _showOptionsMenu(
-      BuildContext context, Color bgColor, Color textColor) {
+  void _showOptionsMenu(BuildContext context, Color bgColor, Color textColor) {
     showDialog(
       context: context,
       builder: (_) => Dialog(
@@ -1013,18 +1051,17 @@ class _FeedPostPageState extends State<_FeedPostPage>
                 await _deletePost(context);
               },
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    vertical: 14, horizontal: 16),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
                 child: Text('Delete',
-                    style:
-                        TextStyle(color: Colors.red[400], fontSize: 15)),
+                    style: TextStyle(color: Colors.red[400], fontSize: 15)),
               ),
             ),
             InkWell(
               onTap: () => Navigator.of(context).pop(),
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    vertical: 14, horizontal: 16),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
                 child: Text('Cancel',
                     style: TextStyle(color: textColor, fontSize: 15)),
               ),
