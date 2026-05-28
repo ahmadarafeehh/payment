@@ -13,6 +13,7 @@ import 'package:Ratedly/screens/first_time/get_started_page.dart';
 import 'package:Ratedly/screens/signup/onboarding_flow.dart';
 import 'package:Ratedly/services/country_service.dart';
 import 'package:Ratedly/resources/auth_methods.dart';
+import 'package:Ratedly/resources/supabase_posts_methods.dart';
 import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
@@ -148,6 +149,13 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final elapsed = _tracker?.totalElapsedSeconds ?? 0;
       DebugLogger.logEvent(
           'ONBOARDING_APP_BACKGROUNDED [$userId] at step=$step after ${elapsed}s — possible abandon (not logged to DB)');
+    }
+
+    // When the app foregrounds, check whether a pending first-post nudge is
+    // due. This catches the case where the app was backgrounded during the
+    // 59-second Future.delayed window and the timer never fired.
+    if (state == AppLifecycleState.resumed) {
+      unawaited(SupabasePostsMethods().trySendNudge());
     }
   }
 
