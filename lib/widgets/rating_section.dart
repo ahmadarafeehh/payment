@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
+import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
 import 'package:Ratedly/utils/utils.dart';
 import 'package:Ratedly/widgets/flutter_rating_bar.dart';
 
@@ -102,7 +103,9 @@ class _RatingSectionState extends State<RatingSection> {
           reactionEmoji: _reactionEmoji,
           initialThumbPosition: initialPos,
           onRatingEnd: (rating) async {
-            final String response = await SupabasePostsMethods().ratePost(
+            // CHANGED: use SupabaseReactionsMethods().reactToPost
+            final String response =
+                await SupabaseReactionsMethods().reactToPost(
               widget.postId,
               widget.userId,
               rating,
