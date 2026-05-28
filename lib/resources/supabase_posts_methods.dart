@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:Ratedly/resources/storage_methods.dart';
 import 'package:Ratedly/services/notification_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class SupabasePostsMethods {
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -1328,11 +1329,31 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // First-post nudge notification (fires 10 min after install, test=true only)
+  // First-post nudge notification
+  //
+  // FIX 1: The send-time is now persisted to SharedPreferences so the nudge
+  //         survives the app being backgrounded during the 59-second wait.
+  // FIX 2: trySendNudge() is public so the app's AppLifecycleState.resumed
+  //         handler can re-check and fire the nudge after the app foregrounds.
+  //
+  // HOW TO CALL AT REGISTRATION (in your sign-up flow, after the user row is
+  // created in Supabase — do NOT await, this must be fire-and-forget):
+  //
+  //   import 'dart:async' show unawaited;
+  //   unawaited(SupabasePostsMethods().scheduleFirstPostNudge(newUser.uid));
+  //
+  // HOW TO HOOK INTO APP LIFECYCLE (in your root widget):
+  //
+  //   @override
+  //   void didChangeAppLifecycleState(AppLifecycleState state) {
+  //     if (state == AppLifecycleState.resumed) {
+  //       SupabasePostsMethods().trySendNudge();
+  //     }
+  //   }
   // ----------------------
   Future<void> scheduleFirstPostNudge(String userId) async {
     try {
-      // Check if user is in test group
+      // Only schedule for test-group users
       final userRow = await _supabase
           .from('users')
           .select('test')
@@ -1340,22 +1361,60 @@ class SupabasePostsMethods {
           .maybeSingle();
 
       final bool isTestGroup = userRow?['test'] ?? false;
-      if (!isTestGroup) return; // Only send for test=true users
+      if (!isTestGroup) return;
 
-      // Check if already posted before scheduling
+      // Skip if they already have a post
       final existing = await _supabase
           .from('posts')
           .select('postId')
           .eq('uid', userId)
           .limit(1)
           .maybeSingle();
+      if (existing != null) return;
 
-      if (existing != null) return; // Already has a post, skip
+      // Persist the target send-time and userId so it survives backgrounding
+      final prefs = await SharedPreferences.getInstance();
+      final sendAt = DateTime.now()
+          .toUtc()
+          .add(const Duration(seconds: 59))
+          .toIso8601String();
+      await prefs.setString('nudge_send_at_$userId', sendAt);
+      await prefs.setString('nudge_user_id', userId);
 
-      // Wait 10 minutes
-      await Future.delayed(const Duration(seconds: 59));
+      // Also attempt via an in-process timer — works when the app stays open
+      Future.delayed(const Duration(seconds: 59), () async {
+        await trySendNudge();
+      });
+    } catch (e) {
+      await _logPostError(
+        operationType: 'schedule_first_post_nudge',
+        userId: userId,
+        error: e,
+      );
+    }
+  }
 
-      // Re-check after delay in case they posted during the wait
+  /// Checks SharedPreferences for a pending nudge and sends it if the
+  /// scheduled time has passed and the user still has no posts.
+  ///
+  /// Call this:
+  ///   • From the Future.delayed callback inside scheduleFirstPostNudge
+  ///     (covers the case where the app stays open the whole time).
+  ///   • From didChangeAppLifecycleState when state == AppLifecycleState.resumed
+  ///     (covers the case where the app was backgrounded during the wait).
+  Future<void> trySendNudge() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getString('nudge_user_id');
+      if (userId == null || userId.isEmpty) return;
+
+      final sendAtStr = prefs.getString('nudge_send_at_$userId');
+      if (sendAtStr == null) return;
+
+      final sendAt = DateTime.parse(sendAtStr);
+      if (DateTime.now().toUtc().isBefore(sendAt)) return; // not yet time
+
+      // Check if they posted during the wait
       final check = await _supabase
           .from('posts')
           .select('postId')
@@ -1363,7 +1422,11 @@ class SupabasePostsMethods {
           .limit(1)
           .maybeSingle();
 
-      if (check != null) return; // Posted during delay, skip
+      // Clear the pending nudge regardless of outcome to prevent double-send
+      await prefs.remove('nudge_send_at_$userId');
+      await prefs.remove('nudge_user_id');
+
+      if (check != null) return; // user posted — skip the nudge
 
       await _notificationService.triggerServerNotification(
         type: 'first_post_nudge',
@@ -1377,8 +1440,7 @@ class SupabasePostsMethods {
       );
     } catch (e) {
       await _logPostError(
-        operationType: 'schedule_first_post_nudge',
-        userId: userId,
+        operationType: 'try_send_nudge',
         error: e,
       );
     }
