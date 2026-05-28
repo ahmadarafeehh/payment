@@ -22,7 +22,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
-import 'package:Ratedly/services/iap_service.dart';   // ADDED for premium check
+import 'package:Ratedly/services/iap_service.dart'; // ADDED for premium check
 
 class _ColorSet {
   final Color textColor;
@@ -577,7 +577,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
                 throw TimeoutException('Video initialization timeout'),
           );
 
-      // Volume stays at 1.0 so PostCard's default unmuted state is in sync.
       await controller.setVolume(1.0);
       await controller.pause();
 
