@@ -5,6 +5,7 @@ import 'package:video_player/video_player.dart';
 import 'package:Ratedly/models/user.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
+import 'package:Ratedly/resources/comments_methods.dart';
 import 'package:Ratedly/utils/utils.dart';
 import 'package:Ratedly/widgets/comment_card.dart';
 import 'package:provider/provider.dart';
@@ -50,6 +51,8 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
 
   // Supabase methods
   final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
+  final SupabaseCommentsMethods _commentsMethods =
+      SupabaseCommentsMethods(); // <-- ADDED
   final SupabaseClient _supabase = Supabase.instance.client;
 
   // local comments list (each is Map with DB row fields)
@@ -349,8 +352,8 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
     try {
       String res;
       if (replyingToCommentId != null) {
-        // Post reply
-        res = await _postsMethods.postReply(
+        // Post reply - use _commentsMethods
+        res = await _commentsMethods.postReply(
           postId: widget.postId,
           commentId: replyingToCommentId!,
           uid: uid,
@@ -370,8 +373,8 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
           }
         }
       } else {
-        // Post top-level comment
-        res = await _postsMethods.postComment(
+        // Post top-level comment - use _commentsMethods
+        res = await _commentsMethods.postComment(
           widget.postId,
           text,
           uid,
