@@ -326,7 +326,9 @@ class _PostCardState extends State<PostCard>
         _videoController = widget.preloadedVideoController;
         _isVideoInitialized = true;
         _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
+        // CRITICAL: add listener and set looping for replay
         _videoController!.addListener(_videoListener);
+        _videoController!.setLooping(true);
         _videoController!.addListener(() {
           if (_videoController != null &&
               _videoController!.value.position ==
@@ -772,7 +774,9 @@ class _PostCardState extends State<PostCard>
         _videoController!.value.position == _videoController!.value.duration &&
         _videoController!.value.duration != Duration.zero) {
       _videoController!.seekTo(Duration.zero);
-      if (widget.isVisible && !_isVideoPlaying) _videoController!.play();
+      if (widget.isVisible && !_isVideoPlaying) {
+        _videoController!.play();
+      }
     }
     if (_videoController != null && _isVideoInitialized) {
       final isActuallyPlaying = _videoController!.value.isPlaying;
