@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
+import 'package:Ratedly/resources/comments_methods.dart'; // <-- ADDED
 import 'package:Ratedly/resources/block_firestore_methods.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
@@ -544,7 +545,8 @@ class _CommentCardState extends State<CommentCard> {
     );
     if (confirmed ?? false) {
       try {
-        await SupabasePostsMethods().deleteComment(
+        // CHANGED: use SupabaseCommentsMethods instead of SupabasePostsMethods
+        await SupabaseCommentsMethods().deleteComment(
           widget.postId,
           widget.snap['commentId'] ??
               widget.snap['commentid'] ??
@@ -605,7 +607,9 @@ class _CommentCardState extends State<CommentCard> {
                           widget.snap['commentid'] ??
                           widget.snap.id;
                       try {
-                        final res = await SupabasePostsMethods().reportComment(
+                        // CHANGED: use SupabaseCommentsMethods
+                        final res =
+                            await SupabaseCommentsMethods().reportComment(
                           postId: widget.postId,
                           commentId: idToReport,
                           reason: selectedReason!,
@@ -886,7 +890,9 @@ class _CommentCardState extends State<CommentCard> {
                               prevCount + (prevLike ? -1 : 1);
                         });
                         try {
-                          final result = await SupabasePostsMethods().likeReply(
+                          // CHANGED: use SupabaseCommentsMethods
+                          final result =
+                              await SupabaseCommentsMethods().likeReply(
                             postId: widget.postId,
                             commentId: widget.snap['commentId'] ??
                                 widget.snap['commentid'] ??
@@ -939,7 +945,9 @@ class _CommentCardState extends State<CommentCard> {
                     onSelected: (choice) async {
                       if (choice == 'delete') {
                         try {
-                          final res = await SupabasePostsMethods().deleteReply(
+                          // CHANGED: use SupabaseCommentsMethods
+                          final res =
+                              await SupabaseCommentsMethods().deleteReply(
                             postId: widget.postId,
                             commentId: widget.snap['commentId'] ??
                                 widget.snap['commentid'] ??
@@ -1231,7 +1239,8 @@ class _CommentCardState extends State<CommentCard> {
                             );
                           }
                           try {
-                            await SupabasePostsMethods().likeComment(
+                            // CHANGED: use SupabaseCommentsMethods
+                            await SupabaseCommentsMethods().likeComment(
                               widget.postId,
                               widget.snap['commentId'] ??
                                   widget.snap['commentid'] ??
