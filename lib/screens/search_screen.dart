@@ -464,8 +464,9 @@ class _SearchScreenState extends State<SearchScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(() {
-      if (_scrollController.position.pixels >=
-              _scrollController.position.maxScrollExtent - 200 &&
+      final position = _scrollController.position;
+      final trigger = position.maxScrollExtent - 200;
+      if (position.pixels >= trigger &&
           !_isLoadingMore &&
           _hasMorePosts &&
           !isShowUsers) {
@@ -860,29 +861,37 @@ class _SearchScreenState extends State<SearchScreen>
       });
 
       if (response is List && response.isNotEmpty) {
-        _allPosts = response.map<Map<String, dynamic>>(_normalisePost).toList();
+        final newPosts =
+            response.map<Map<String, dynamic>>(_normalisePost).toList();
 
-        await _enrichPostsWithUserData(_allPosts);
-        for (final post in _allPosts) {
+        await _enrichPostsWithUserData(newPosts);
+        for (final post in newPosts) {
           final url = post['postUrl']?.toString() ?? '';
           if (_isVideoFile(url)) _initializeVideoController(url);
         }
 
-        _offset = _allPosts.length;
-        _hasMorePosts = _allPosts.length == postsLimit;
-        _isFirstLoad = false;
-        _hasLoadError = false;
+        setState(() {
+          _allPosts = newPosts;
+          _offset = _allPosts.length;
+          _hasMorePosts = _allPosts.length == postsLimit;
+          _isFirstLoad = false;
+          _hasLoadError = false;
+        });
       } else {
+        setState(() {
+          _allPosts = [];
+          _hasMorePosts = false;
+          _isFirstLoad = false;
+          _hasLoadError = false;
+        });
+      }
+    } catch (_) {
+      setState(() {
         _allPosts = [];
         _hasMorePosts = false;
         _isFirstLoad = false;
-        _hasLoadError = false;
-      }
-    } catch (_) {
-      _allPosts = [];
-      _hasMorePosts = false;
-      _isFirstLoad = false;
-      _hasLoadError = true;
+        _hasLoadError = true;
+      });
     }
   }
 
@@ -1094,10 +1103,11 @@ class _SearchScreenState extends State<SearchScreen>
       final List<Map<String, dynamic>> users =
           List<Map<String, dynamic>>.from(response);
 
-      return users.where((user) {
+      final filtered = users.where((user) {
         final uid = user['uid']?.toString() ?? '';
         return !blockedUsersSet.contains(uid) && uid != currentUserId;
       }).toList();
+      return filtered;
     } catch (_) {
       return [];
     }
@@ -1379,58 +1389,60 @@ class _SearchScreenState extends State<SearchScreen>
               style: TextStyle(color: colors.textColor)));
     }
 
-    return Stack(children: [
-      NotificationListener<ScrollNotification>(
-        onNotification: (scrollInfo) {
-          if (scrollInfo.metrics.extentAfter < 500 &&
-              !_isLoadingMore &&
-              _hasMorePosts &&
-              !isShowUsers) {
-            _loadMorePosts();
-          }
-          return false;
-        },
-        child: ListView(
-          controller: _scrollController,
-          padding: const EdgeInsets.all(8.0),
-          children: [
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                childAspectRatio: 0.75,
-                crossAxisSpacing: 8.0,
-                mainAxisSpacing: 8.0,
+    return NotificationListener<ScrollNotification>(
+      onNotification: (scrollInfo) {
+        if (scrollInfo.metrics.extentAfter < 500 &&
+            !_isLoadingMore &&
+            _hasMorePosts &&
+            !isShowUsers) {
+          _loadMorePosts();
+        }
+        return false;
+      },
+      child: Stack(
+        children: [
+          ListView(
+            controller: _scrollController,
+            padding: const EdgeInsets.all(8.0),
+            children: [
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  childAspectRatio: 0.75,
+                  crossAxisSpacing: 8.0,
+                  mainAxisSpacing: 8.0,
+                ),
+                itemCount: _allPosts.length,
+                itemBuilder: (context, index) {
+                  final post = _allPosts[index];
+                  return _buildPostItem(
+                      post, post['postUrl']?.toString() ?? '', index, colors);
+                },
               ),
-              itemCount: _allPosts.length,
-              itemBuilder: (context, index) {
-                final post = _allPosts[index];
-                return _buildPostItem(
-                    post, post['postUrl']?.toString() ?? '', index, colors);
-              },
-            ),
-          ],
-        ),
-      ),
-      if (_isLoadingMore)
-        Positioned(
-          bottom: 8,
-          left: 0,
-          right: 0,
-          child: Center(
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: colors.backgroundColor.withOpacity(0.8),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: CircularProgressIndicator(
-                  color: colors.progressIndicatorColor),
-            ),
+            ],
           ),
-        ),
-    ]);
+          if (_isLoadingMore)
+            Positioned(
+              bottom: 8,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: colors.backgroundColor.withOpacity(0.8),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: CircularProgressIndicator(
+                      color: colors.progressIndicatorColor),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Widget _buildPostItem(Map<String, dynamic> post, String postUrl, int index,
