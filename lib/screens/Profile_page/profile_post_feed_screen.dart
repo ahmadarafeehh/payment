@@ -17,36 +17,29 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Callback type: caller provides a function that loads the next batch of posts
-// starting after [currentCount] already-loaded posts.
-// ─────────────────────────────────────────────────────────────────────────────
 typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
     int currentCount);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Supabase logger — fire-and-forget insert into `vertical`
+// ─────────────────────────────────────────────────────────────────────────────
+Future<void> _log(Map<String, dynamic> payload) async {
+  try {
+    await Supabase.instance.client.from('vertical').insert(payload);
+  } catch (_) {
+    // never crash the UI because of a logging failure
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ProfilePostFeedScreen
 // ─────────────────────────────────────────────────────────────────────────────
 class ProfilePostFeedScreen extends StatefulWidget {
-  /// The posts already shown in the profile grid — we start here.
   final List<Map<String, dynamic>> initialPosts;
-
-  /// Which post to open first (0-based index into [initialPosts]).
   final int initialIndex;
-
-  /// Profile owner's data (uid, username, photoUrl, isVerified, country, …).
   final Map<String, dynamic> userData;
-
-  /// Called when the feed is within 3 posts of its end; must return the next
-  /// batch. Return an empty list to signal no more posts.
   final _LoadMore onLoadMore;
-
-  /// Whether there are more posts to load beyond [initialPosts].
   final bool initialHasMore;
-
-  /// Provide this only for the logged-in user's own profile. When non-null, a
-  /// delete option is shown and the callback is invoked after deletion so the
-  /// caller can refresh its grid.
   final VoidCallback? onPostDeleted;
 
   const ProfilePostFeedScreen({
@@ -70,6 +63,25 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   bool _hasMore = false;
   bool _loadingMore = false;
 
+  // One session ID per screen open so you can group rows in the DB.
+  final String _sessionId =
+      DateTime.now().microsecondsSinceEpoch.toString();
+
+  bool _isVideoUrl(String url) {
+    final u = url.toLowerCase();
+    return u.endsWith('.mp4') ||
+        u.endsWith('.mov') ||
+        u.endsWith('.avi') ||
+        u.endsWith('.wmv') ||
+        u.endsWith('.flv') ||
+        u.endsWith('.mkv') ||
+        u.endsWith('.webm') ||
+        u.endsWith('.m4v') ||
+        u.endsWith('.3gp') ||
+        u.contains('/video/') ||
+        u.contains('video=true');
+  }
+
   @override
   void initState() {
     super.initState();
@@ -78,6 +90,24 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
     _pageController.addListener(_onPageScroll);
+
+    // Log every post in the initial list so we know what types loaded.
+    for (int i = 0; i < _posts.length; i++) {
+      final url = _posts[i]['postUrl']?.toString() ?? '';
+      _log({
+        'session_id': _sessionId,
+        'event_type': 'feed_init_post',
+        'post_id': _posts[i]['postId']?.toString(),
+        'is_video': _isVideoUrl(url),
+        'post_url': url,
+        'page_index': i,
+        'total_posts': _posts.length,
+        'extra': {
+          'initial_index': widget.initialIndex,
+          'has_more': _hasMore,
+        },
+      });
+    }
   }
 
   @override
@@ -87,13 +117,35 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     super.dispose();
   }
 
-  // ── Fires on every scroll tick; uses integer page to avoid redundant work ─
   void _onPageScroll() {
-    final page = _pageController.page?.round() ?? _currentIndex;
-    if (page == _currentIndex) return;
-    setState(() => _currentIndex = page);
-    // Start loading more when 3 pages from the end.
+    final rawPage = _pageController.page ?? _currentIndex.toDouble();
+    final page = rawPage.round();
+
+    // Log every page-change event. If you never see these rows for a video
+    // post, the PageView is not receiving the gesture at all — the inner
+    // SingleChildScrollView is consuming it.
+    if (page != _currentIndex) {
+      _log({
+        'session_id': _sessionId,
+        'event_type': 'page_changed',
+        'page_index': page,
+        'raw_page': rawPage,
+        'total_posts': _posts.length,
+        'extra': {
+          'from_index': _currentIndex,
+          'to_index': page,
+        },
+      });
+      setState(() => _currentIndex = page);
+    }
+
     if (page >= _posts.length - 3 && _hasMore && !_loadingMore) {
+      _log({
+        'session_id': _sessionId,
+        'event_type': 'load_more_triggered',
+        'page_index': page,
+        'total_posts': _posts.length,
+      });
       _triggerLoadMore();
     }
   }
@@ -103,29 +155,45 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     setState(() => _loadingMore = true);
     try {
       final batch = await widget.onLoadMore(_posts.length);
+      _log({
+        'session_id': _sessionId,
+        'event_type': 'load_more_result',
+        'total_posts': _posts.length + batch.length,
+        'extra': {
+          'batch_size': batch.length,
+          'has_more_after': batch.isNotEmpty,
+        },
+      });
       if (mounted) {
         setState(() {
           _posts.addAll(batch);
-          // Caller returns fewer than the batch size → no more posts.
           _hasMore = batch.isNotEmpty;
           _loadingMore = false;
         });
       }
-    } catch (_) {
+    } catch (e) {
+      _log({
+        'session_id': _sessionId,
+        'event_type': 'load_more_error',
+        'extra': {'error': e.toString()},
+      });
       if (mounted) setState(() => _loadingMore = false);
     }
   }
 
-  // ── Remove a deleted post from the local list and adjust current index ────
   void _onPostDeleted(int index) {
+    _log({
+      'session_id': _sessionId,
+      'event_type': 'post_deleted',
+      'post_id': _posts[index]['postId']?.toString(),
+      'page_index': index,
+    });
     widget.onPostDeleted?.call();
     if (!mounted) return;
     setState(() {
       _posts.removeAt(index);
-      // If we deleted the last post, step back one page.
       if (_currentIndex >= _posts.length && _currentIndex > 0) {
         _currentIndex = _posts.length - 1;
-        // PageController page cannot be set directly after rebuild; animate.
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_pageController.hasClients) {
             _pageController.jumpToPage(_currentIndex);
@@ -142,7 +210,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     final bgColor = isDark ? const Color(0xFF121212) : Colors.white;
     final textColor = isDark ? const Color(0xFFd9d9d9) : Colors.black;
 
-    // Total item count: posts + optional trailing spinner.
     final itemCount = _posts.length + (_hasMore || _loadingMore ? 1 : 0);
 
     return Scaffold(
@@ -163,7 +230,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         scrollDirection: Axis.vertical,
         itemCount: itemCount,
         itemBuilder: (context, index) {
-          // Trailing loading indicator page.
           if (index >= _posts.length) {
             return Center(
               child: Padding(
@@ -173,12 +239,11 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
             );
           }
           return _FeedPostPage(
-            // ValueKey on postId prevents Flutter from reusing a page widget
-            // for a different post when items are removed from the list.
             key: ValueKey(_posts[index]['postId']),
             post: _posts[index],
             userData: widget.userData,
             isActive: index == _currentIndex,
+            sessionId: _sessionId,
             onPostDeleted: widget.onPostDeleted != null
                 ? () => _onPostDeleted(index)
                 : null,
@@ -190,12 +255,13 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _FeedPostPage  — one post card inside the vertical PageView
+// _FeedPostPage
 // ─────────────────────────────────────────────────────────────────────────────
 class _FeedPostPage extends StatefulWidget {
   final Map<String, dynamic> post;
   final Map<String, dynamic> userData;
   final bool isActive;
+  final String sessionId;
   final VoidCallback? onPostDeleted;
 
   const _FeedPostPage({
@@ -203,6 +269,7 @@ class _FeedPostPage extends StatefulWidget {
     required this.post,
     required this.userData,
     required this.isActive,
+    required this.sessionId,
     this.onPostDeleted,
   }) : super(key: key);
 
@@ -212,22 +279,17 @@ class _FeedPostPage extends StatefulWidget {
 
 class _FeedPostPageState extends State<_FeedPostPage>
     with AutomaticKeepAliveClientMixin {
-  // ── keepAlive: visited pages stay alive so ratings/comments don't vanish
-  //    when the user swipes back. Memory cost is acceptable for typical profile
-  //    sizes (≤ ~100 posts); Flutter still disposes widgets far off-screen.
   @override
   bool get wantKeepAlive => true;
 
   final SupabaseClient _supabase = Supabase.instance.client;
   final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
 
-  // ── Video ──────────────────────────────────────────────────────────────────
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
   bool _isVideoLoading = false;
   bool _isMuted = false;
 
-  // ── Ratings ────────────────────────────────────────────────────────────────
   double _averageRating = 0.0;
   int _totalRatingsCount = 0;
   double? _userRating;
@@ -235,13 +297,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
   String _reactionEmoji = '❤️';
   int _commentCount = 0;
 
-  // ── Edit metadata ──────────────────────────────────────────────────────────
   VideoEditResult? _editResult;
-
-  // Guards so data is fetched only once per page lifetime.
   bool _dataFetched = false;
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
   String get _postUrl => widget.post['postUrl']?.toString() ?? '';
   String get _postId => widget.post['postId']?.toString() ?? '';
 
@@ -260,13 +318,30 @@ class _FeedPostPageState extends State<_FeedPostPage>
         u.contains('video=true');
   }
 
+  // Convenience wrapper that pre-fills the fields common to every row.
+  void _sendLog(String eventType, {Map<String, dynamic>? extra}) {
+    _log({
+      'session_id': widget.sessionId,
+      'event_type': eventType,
+      'post_id': _postId,
+      'is_video': _isVideo,
+      'is_active': widget.isActive,
+      'post_url': _postUrl,
+      'is_video_init': _isVideoInitialized,
+      'is_video_loading': _isVideoLoading,
+      if (extra != null) 'extra': extra,
+    });
+  }
+
   @override
   void initState() {
     super.initState();
     _parseEditMetadata();
-
-    // Fetch data eagerly — keeps the UI snappy when arriving via swipe.
     _fetchAllData();
+
+    _sendLog('page_init', extra: {
+      'has_edit_metadata': widget.post['video_edit_metadata'] != null,
+    });
 
     if (widget.isActive) _onBecomeActive();
   }
@@ -274,6 +349,12 @@ class _FeedPostPageState extends State<_FeedPostPage>
   @override
   void didUpdateWidget(_FeedPostPage old) {
     super.didUpdateWidget(old);
+    if (widget.isActive != old.isActive) {
+      _sendLog('active_state_changed', extra: {
+        'from': old.isActive,
+        'to': widget.isActive,
+      });
+    }
     if (widget.isActive && !old.isActive) {
       _onBecomeActive();
     } else if (!widget.isActive && old.isActive) {
@@ -283,17 +364,19 @@ class _FeedPostPageState extends State<_FeedPostPage>
 
   @override
   void dispose() {
+    _sendLog('page_dispose');
     _videoController?.pause();
     _videoController?.dispose();
     _videoController = null;
     super.dispose();
   }
 
-  // ── Activation / deactivation ──────────────────────────────────────────────
   void _onBecomeActive() {
+    _sendLog('become_active');
     if (_isVideo) {
       if (_isVideoInitialized) {
         _videoController?.play();
+        _sendLog('video_play_resumed');
       } else if (!_isVideoLoading) {
         _initVideo();
       }
@@ -301,10 +384,10 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   void _onBecomeInactive() {
+    _sendLog('become_inactive');
     _videoController?.pause();
   }
 
-  // ── Edit metadata ──────────────────────────────────────────────────────────
   void _parseEditMetadata() {
     final raw = widget.post['video_edit_metadata'];
     if (raw == null) return;
@@ -313,10 +396,11 @@ class _FeedPostPageState extends State<_FeedPostPage>
           ? raw
           : Map<String, dynamic>.from(raw as Map);
       _editResult = VideoEditResult.fromJson(map, File(''));
-    } catch (_) {}
+    } catch (e) {
+      _sendLog('edit_metadata_parse_error', extra: {'error': e.toString()});
+    }
   }
 
-  // ── Data fetching ──────────────────────────────────────────────────────────
   Future<void> _fetchAllData() async {
     if (_dataFetched) return;
     _dataFetched = true;
@@ -355,7 +439,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
           _isLoadingRatings = false;
         });
       }
-    } catch (_) {
+    } catch (e) {
+      _sendLog('fetch_ratings_error', extra: {'error': e.toString()});
       if (mounted) setState(() => _isLoadingRatings = false);
     }
   }
@@ -373,7 +458,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
           setState(() => _reactionEmoji = emoji);
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      _sendLog('fetch_emoji_error', extra: {'error': e.toString()});
+    }
   }
 
   Future<void> _fetchCommentsCount() async {
@@ -389,19 +476,63 @@ class _FeedPostPageState extends State<_FeedPostPage>
       if (mounted) {
         setState(() => _commentCount = comments.length + replies.length);
       }
-    } catch (_) {}
+    } catch (e) {
+      _sendLog('fetch_comments_error', extra: {'error': e.toString()});
+    }
   }
 
-  // ── Video initialization ───────────────────────────────────────────────────
   Future<void> _initVideo() async {
-    if (_isVideoLoading || _isVideoInitialized || _postUrl.isEmpty) return;
+    if (_isVideoLoading || _isVideoInitialized || _postUrl.isEmpty) {
+      _sendLog('video_init_skipped', extra: {
+        'reason': _isVideoLoading
+            ? 'already_loading'
+            : _isVideoInitialized
+                ? 'already_initialized'
+                : 'empty_url',
+      });
+      return;
+    }
+
+    _sendLog('video_init_start');
     setState(() => _isVideoLoading = true);
+
     try {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(_postUrl),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
       );
+
       await controller.initialize();
+
+      final ar = controller.value.aspectRatio;
+      final size = controller.value.size;
+
+      // ── This is the key diagnostic row ──────────────────────────────────
+      // After initialization we know the true aspect ratio. If the video is
+      // portrait (ar < 1) the AspectRatio widget will be TALLER than the
+      // screen, causing SingleChildScrollView to become scrollable and steal
+      // all vertical PageView swipes. Check content_taller_than_screen in
+      // the vertical table — if it's true, that's the bug.
+      _log({
+        'session_id': widget.sessionId,
+        'event_type': 'video_init_complete',
+        'post_id': _postId,
+        'is_video': true,
+        'is_active': widget.isActive,
+        'post_url': _postUrl,
+        'aspect_ratio': ar,
+        'is_video_init': true,
+        'is_video_loading': false,
+        // These two are populated in build() where we have MediaQuery,
+        // but we log what we know here.
+        'extra': {
+          'video_width': size.width,
+          'video_height': size.height,
+          'duration_seconds': controller.value.duration.inSeconds,
+          'note': 'Check content_taller_than_screen in the build log row',
+        },
+      });
+
       controller.setLooping(true);
       if (mounted) {
         setState(() {
@@ -409,11 +540,16 @@ class _FeedPostPageState extends State<_FeedPostPage>
           _isVideoInitialized = true;
           _isVideoLoading = false;
         });
-        if (widget.isActive) controller.play();
+        if (widget.isActive) {
+          controller.play();
+          _sendLog('video_autoplay_after_init');
+        }
       } else {
         controller.dispose();
+        _sendLog('video_init_unmounted_before_setState');
       }
-    } catch (_) {
+    } catch (e) {
+      _sendLog('video_init_error', extra: {'error': e.toString()});
       if (mounted) setState(() => _isVideoLoading = false);
     }
   }
@@ -437,7 +573,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     });
   }
 
-  // ── Rating submission (optimistic update) ─────────────────────────────────
   void _handleRatingSubmitted(double rating) async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
     if (user == null) return;
@@ -465,7 +600,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     }
   }
 
-  // ── Colour matrix from edit metadata ─────────────────────────────────────
   List<double> _buildColorMatrix() {
     if (_editResult == null) {
       return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
@@ -474,12 +608,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
         .combinedMatrix(kFilters[_editResult!.filterIndex].matrix);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Build
-  // ─────────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    super.build(context); // required by AutomaticKeepAliveClientMixin
+    super.build(context);
 
     final themeProvider = Provider.of<ThemeProvider>(context);
     final isDark = themeProvider.themeMode == ThemeMode.dark;
@@ -505,12 +636,39 @@ class _FeedPostPageState extends State<_FeedPostPage>
     final quarters = _editResult?.rotationQuarters ?? 0;
     final description = widget.post['description']?.toString() ?? '';
 
+    // ── Log build context so we can see whether the content will overflow ──
+    // This is the most important diagnostic: if content_taller_than_screen
+    // is true on a video post, SingleChildScrollView is stealing the swipe.
+    final screenHeight = MediaQuery.of(context).size.height;
+    final screenWidth = MediaQuery.of(context).size.width;
+    if (_isVideo && _isVideoInitialized && _videoController != null) {
+      final ar = _videoController!.value.aspectRatio;
+      final videoWidgetHeight = screenWidth / ar;
+      final contentTaller = videoWidgetHeight > screenHeight;
+      _log({
+        'session_id': widget.sessionId,
+        'event_type': 'build_video_layout',
+        'post_id': _postId,
+        'is_video': true,
+        'is_active': widget.isActive,
+        'aspect_ratio': ar,
+        'screen_height': screenHeight,
+        'screen_width': screenWidth,
+        'content_taller_than_screen': contentTaller,
+        'is_video_init': _isVideoInitialized,
+        'is_video_loading': _isVideoLoading,
+        'extra': {
+          'video_widget_height': videoWidgetHeight,
+          'swipe_likely_broken': contentTaller,
+        },
+      });
+    }
+
     return SingleChildScrollView(
       physics: const ClampingScrollPhysics(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Profile header row ───────────────────────────────────────────
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
@@ -523,7 +681,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       VerifiedUsernameWidget(
-                        username: widget.userData['username']?.toString() ?? '',
+                        username:
+                            widget.userData['username']?.toString() ?? '',
                         uid: uid,
                         style: TextStyle(
                             fontWeight: FontWeight.bold, color: textColor),
@@ -536,7 +695,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
                     ],
                   ),
                 ),
-                // ── Options menu (delete for owner) ─────────────────────────
                 if (isOwner && widget.onPostDeleted != null)
                   IconButton(
                     icon: Icon(Icons.more_vert, color: iconColor),
@@ -547,25 +705,16 @@ class _FeedPostPageState extends State<_FeedPostPage>
             ),
           ),
 
-          // ── Media (image or video) ───────────────────────────────────────
           _buildMedia(matrix, quarters, cardColor, textColor),
 
-          // ── Description ─────────────────────────────────────────────────
           if (description.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Text(description,
                   style: TextStyle(color: textColor, fontSize: 15)),
             ),
 
-          // ── Rating bar ───────────────────────────────────────────────────
-          // hasUserRated drives two things inside RatingBar:
-          //   1. Whether the thumb snaps to the community average or stays
-          //      at the neutral centre (5.0) so unrated viewers can't infer
-          //      the score before they rate.
-          //   2. Whether the "Average Reaction" tooltip is shown after rating.
-          // _userRating is non-null exactly when the current user has already
-          // submitted a rating for this post, making it the correct signal.
           if (!_isLoadingRatings)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -581,12 +730,10 @@ class _FeedPostPageState extends State<_FeedPostPage>
           else
             const SizedBox(height: 48),
 
-          // ── Action row ────────────────────────────────────────────────────
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(
               children: [
-                // Comment button with badge
                 Stack(
                   clipBehavior: Clip.none,
                   alignment: Alignment.center,
@@ -602,8 +749,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
                         left: -6,
                         child: Container(
                           padding: const EdgeInsets.all(4),
-                          constraints:
-                              const BoxConstraints(minWidth: 20, minHeight: 20),
+                          constraints: const BoxConstraints(
+                              minWidth: 20, minHeight: 20),
                           decoration: BoxDecoration(
                               color: cardColor, shape: BoxShape.circle),
                           child: Center(
@@ -619,21 +766,19 @@ class _FeedPostPageState extends State<_FeedPostPage>
                       ),
                   ],
                 ),
-                // Share button
                 IconButton(
                   icon: Icon(Icons.send, color: iconColor),
                   onPressed: () {
                     if (user != null) {
                       showDialog(
                         context: context,
-                        builder: (_) =>
-                            PostShare(currentUserId: user.uid, postId: _postId),
+                        builder: (_) => PostShare(
+                            currentUserId: user.uid, postId: _postId),
                       );
                     }
                   },
                 ),
                 const Spacer(),
-                // Voter count — tappable for post owner to see the list
                 GestureDetector(
                   onTap: isOwner
                       ? () => Navigator.push(
@@ -647,8 +792,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
                     decoration: BoxDecoration(
                         color: cardColor,
                         borderRadius: BorderRadius.circular(4)),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
                     child: Text(
                       _totalRatingsCount == 0
                           ? 'Be the first to react'
@@ -666,14 +811,12 @@ class _FeedPostPageState extends State<_FeedPostPage>
             ),
           ),
 
-          // Extra breathing room at the bottom so actions aren't clipped.
           const SizedBox(height: 32),
         ],
       ),
     );
   }
 
-  // ── Avatar (static image; profile-video avatars shown as still image here) ─
   Widget _buildAvatar(String photoUrl, String uid, String currentUserId,
       Color cardColor, Color textColor) {
     final isDefault = photoUrl.isEmpty || photoUrl == 'default';
@@ -687,7 +830,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
-  // ── Media widget: image or video with filters, rotation & text overlays ───
   Widget _buildMedia(
       List<double> matrix, int quarters, Color cardColor, Color textColor) {
     if (_isVideo)
@@ -720,8 +862,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
             else if (_isVideoLoading)
               Center(child: CircularProgressIndicator(color: textColor))
             else
-              Center(child: Icon(Icons.videocam, color: textColor, size: 48)),
-            // Drawing strokes overlay
+              Center(
+                  child: Icon(Icons.videocam, color: textColor, size: 48)),
             if (_editResult != null && _editResult!.strokes.isNotEmpty)
               Positioned.fill(
                 child: IgnorePointer(
@@ -731,7 +873,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
                   ),
                 ),
               ),
-            // Text overlays
             if (_editResult != null && _editResult!.overlays.isNotEmpty)
               Positioned.fill(
                 child: IgnorePointer(
@@ -753,7 +894,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
                   ),
                 ),
               ),
-            // Mute button
             if (_isVideoInitialized)
               Positioned(
                 bottom: 16,
@@ -765,8 +905,10 @@ class _FeedPostPageState extends State<_FeedPostPage>
                     height: 36,
                     decoration: const BoxDecoration(
                         color: Colors.black54, shape: BoxShape.circle),
-                    child: Icon(_isMuted ? Icons.volume_off : Icons.volume_up,
-                        size: 18, color: Colors.white),
+                    child: Icon(
+                        _isMuted ? Icons.volume_off : Icons.volume_up,
+                        size: 18,
+                        color: Colors.white),
                   ),
                 ),
               ),
@@ -799,13 +941,13 @@ class _FeedPostPageState extends State<_FeedPostPage>
                   height: double.infinity,
                   errorBuilder: (_, __, ___) => Container(
                     color: cardColor,
-                    child: Icon(Icons.broken_image, color: textColor, size: 48),
+                    child: Icon(Icons.broken_image,
+                        color: textColor, size: 48),
                   ),
                 ),
               ),
             ),
           ),
-          // Drawing strokes overlay
           if (_editResult != null &&
               (_editResult!.strokes.isNotEmpty ||
                   _editResult!.overlays.isNotEmpty))
@@ -844,7 +986,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
-  // ── Comments bottom sheet ─────────────────────────────────────────────────
   void _showComments(BuildContext context) {
     _videoController?.pause();
     showModalBottomSheet(
@@ -863,8 +1004,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
     ).then((_) => _fetchCommentsCount());
   }
 
-  // ── Delete / options menu ─────────────────────────────────────────────────
-  void _showOptionsMenu(BuildContext context, Color bgColor, Color textColor) {
+  void _showOptionsMenu(
+      BuildContext context, Color bgColor, Color textColor) {
     showDialog(
       context: context,
       builder: (_) => Dialog(
@@ -879,17 +1020,18 @@ class _FeedPostPageState extends State<_FeedPostPage>
                 await _deletePost(context);
               },
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                padding: const EdgeInsets.symmetric(
+                    vertical: 14, horizontal: 16),
                 child: Text('Delete',
-                    style: TextStyle(color: Colors.red[400], fontSize: 15)),
+                    style:
+                        TextStyle(color: Colors.red[400], fontSize: 15)),
               ),
             ),
             InkWell(
               onTap: () => Navigator.of(context).pop(),
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                padding: const EdgeInsets.symmetric(
+                    vertical: 14, horizontal: 16),
                 child: Text('Cancel',
                     style: TextStyle(color: textColor, fontSize: 15)),
               ),
