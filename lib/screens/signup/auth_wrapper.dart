@@ -617,6 +617,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   void _runBackgroundTasks(String uid) {
     // Save platform once — no-op if already saved on this device.
     PlatformService.saveOnce(uid);
+    PlatformService.saveNotificationStatus(uid);
 
     // Country checks (existing logic, unchanged).
     Future.delayed(const Duration(seconds: 3), () {
