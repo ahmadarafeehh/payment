@@ -11,12 +11,12 @@ import 'package:Ratedly/widgets/postshare.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/widgets/rating_list_screen_postcard.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
-import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
+import 'package:Ratedly/resources/reactions_methods.dart';
 import 'package:Ratedly/utils/utils.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
-import 'package:Ratedly/screens/Profile_page/profile_page.dart'; // added for navigation
+import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
 typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
@@ -30,6 +30,28 @@ Future<void> _log(Map<String, dynamic> payload) async {
     await Supabase.instance.client.from('vertical').insert(payload);
   } catch (_) {
     // never crash the UI because of a logging failure
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reaction error logger — logs only exceptions to `reactions_error` table
+// ─────────────────────────────────────────────────────────────────────────────
+Future<void> _logReactionError({
+  required String operationType,
+  String? userId,
+  Map<String, dynamic>? additionalData,
+  required dynamic error,
+}) async {
+  try {
+    await Supabase.instance.client.from('reactions_error').insert({
+      'user_id': userId,
+      'operation_type': operationType,
+      'error_message': error.toString(),
+      'stack_trace': error is Error ? error.stackTrace?.toString() : null,
+      'additional_data': additionalData,
+    });
+  } catch (_) {
+    // Fail silently – error logging must not crash the app
   }
 }
 
@@ -122,9 +144,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     final rawPage = _pageController.page ?? _currentIndex.toDouble();
     final page = rawPage.round();
 
-    // Log every page-change event. If you never see these rows for a video
-    // post, the PageView is not receiving the gesture at all — the inner
-    // SingleChildScrollView is consuming it.
     if (page != _currentIndex) {
       _log({
         'session_id': _sessionId,
@@ -204,9 +223,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // NEW: Navigate to profile (same as PostCard)
-  // ─────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
     Navigator.push(
       context,
@@ -421,8 +437,11 @@ class _FeedPostPageState extends State<_FeedPostPage>
   Future<void> _fetchAllData() async {
     if (_dataFetched) return;
     _dataFetched = true;
-    await Future.wait(
-        [_fetchRatings(), _fetchReactionEmoji(), _fetchCommentsCount()]);
+    await Future.wait([
+      _fetchRatings(),
+      _fetchReactionEmoji(),
+      _fetchCommentsCount(),
+    ]);
   }
 
   Future<void> _fetchRatings() async {
@@ -457,6 +476,13 @@ class _FeedPostPageState extends State<_FeedPostPage>
         });
       }
     } catch (e) {
+      // Log to reactions_error table
+      await _logReactionError(
+        operationType: 'fetch_ratings_profile_feed',
+        userId: user?.uid,
+        additionalData: {'postId': _postId},
+        error: e,
+      );
       _sendLog('fetch_ratings_error', extra: {'error': e.toString()});
       if (mounted) setState(() => _isLoadingRatings = false);
     }
@@ -476,6 +502,13 @@ class _FeedPostPageState extends State<_FeedPostPage>
         }
       }
     } catch (e) {
+      final user = Provider.of<UserProvider>(context, listen: false).user;
+      await _logReactionError(
+        operationType: 'fetch_reaction_emoji_profile_feed',
+        userId: user?.uid,
+        additionalData: {'postId': _postId},
+        error: e,
+      );
       _sendLog('fetch_emoji_error', extra: {'error': e.toString()});
     }
   }
@@ -494,6 +527,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
         setState(() => _commentCount = comments.length + replies.length);
       }
     } catch (e) {
+      // Not a reaction error, but still log to vertical for diagnostics
       _sendLog('fetch_comments_error', extra: {'error': e.toString()});
     }
   }
@@ -524,12 +558,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
       final ar = controller.value.aspectRatio;
       final size = controller.value.size;
 
-      // ── This is the key diagnostic row ──────────────────────────────────
-      // After initialization we know the true aspect ratio. If the video is
-      // portrait (ar < 1) the AspectRatio widget will be TALLER than the
-      // screen, causing SingleChildScrollView to become scrollable and steal
-      // all vertical PageView swipes. Check content_taller_than_screen in
-      // the vertical table — if it's true, that's the bug.
       _log({
         'session_id': widget.sessionId,
         'event_type': 'video_init_complete',
@@ -540,8 +568,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         'aspect_ratio': ar,
         'is_video_init': true,
         'is_video_loading': false,
-        // These two are populated in build() where we have MediaQuery,
-        // but we log what we know here.
         'extra': {
           'video_width': size.width,
           'video_height': size.height,
@@ -610,7 +636,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
     });
 
     try {
-      // CHANGED: use SupabaseReactionsMethods instead of _postsMethods.ratePost
+      // SupabaseReactionsMethods.reactToPost already logs its own errors
       final res = await SupabaseReactionsMethods()
           .reactToPost(_postId, user.uid, rating);
       if (res != 'success' && mounted) _fetchRatings();
@@ -627,9 +653,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         .combinedMatrix(kFilters[_editResult!.filterIndex].matrix);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Navigate to profile (same as PostCard)
-  // ─────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
     Navigator.push(
       context,
@@ -668,9 +691,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     final quarters = _editResult?.rotationQuarters ?? 0;
     final description = widget.post['description']?.toString() ?? '';
 
-    // ── Log build context so we can see whether the content will overflow ──
-    // This is the most important diagnostic: if content_taller_than_screen
-    // is true on a video post, SingleChildScrollView is stealing the swipe.
     final screenHeight = MediaQuery.of(context).size.height;
     final screenWidth = MediaQuery.of(context).size.width;
     if (_isVideo && _isVideoInitialized && _videoController != null) {
@@ -705,9 +725,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
               children: [
-                // ─────────────────────────────────────────────────────────
-                // Avatar now has a GestureDetector for navigation
-                // ─────────────────────────────────────────────────────────
                 GestureDetector(
                   onTap: _goToProfile,
                   child: _buildAvatar(
@@ -718,7 +735,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Username also wrapped with GestureDetector
                       GestureDetector(
                         onTap: _goToProfile,
                         child: VerifiedUsernameWidget(
