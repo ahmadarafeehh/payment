@@ -541,7 +541,7 @@ class _SearchScreenState extends State<SearchScreen>
     super.dispose();
   }
 
-  // ========== VIDEO CONTROLLERS ==========
+  // ========== VIDEO CONTROLLERS (FIXED) ==========
   Future<void> _initializeVideoController(String videoUrl) async {
     if (_videoControllers.containsKey(videoUrl) ||
         _videoControllersInitialized[videoUrl] == true) return;
@@ -552,16 +552,23 @@ class _SearchScreenState extends State<SearchScreen>
       );
       _videoControllers[videoUrl] = controller;
       _videoControllersInitialized[videoUrl] = false;
+
+      // Listener only updates UI; does NOT start playback yet.
       controller.addListener(() {
         if (controller.value.isInitialized &&
             !_videoControllersInitialized[videoUrl]!) {
           _videoControllersInitialized[videoUrl] = true;
-          _configureVideoLoop(controller);
           if (mounted) setState(() {});
         }
       });
+
       await controller.initialize();
+      // 🔇 Mute BEFORE any playback starts
       await controller.setVolume(0.0);
+
+      // Now start the looped playback, already muted
+      _configureVideoLoop(controller);
+      if (mounted) setState(() {});
     } catch (_) {
       _videoControllers.remove(videoUrl)?.dispose();
       _videoControllersInitialized.remove(videoUrl);
@@ -578,22 +585,26 @@ class _SearchScreenState extends State<SearchScreen>
       );
       _avatarVideoControllers[videoUrl] = controller;
       _avatarVideoControllersInitialized[videoUrl] = false;
+
       controller.addListener(() {
         if (controller.value.isInitialized &&
             !_avatarVideoControllersInitialized[videoUrl]!) {
           _avatarVideoControllersInitialized[videoUrl] = true;
-          _configureVideoLoop(controller);
           if (mounted) setState(() {});
         }
       });
+
       await controller.initialize();
       await controller.setVolume(0.0);
+      _configureVideoLoop(controller);
+      if (mounted) setState(() {});
     } catch (_) {
       _avatarVideoControllers.remove(videoUrl)?.dispose();
       _avatarVideoControllersInitialized.remove(videoUrl);
     }
   }
 
+  // The rest of the methods remain unchanged.
   void _configureVideoLoop(VideoPlayerController controller) {
     final duration = controller.value.duration;
     final end = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
