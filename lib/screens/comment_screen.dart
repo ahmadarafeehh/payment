@@ -51,8 +51,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
 
   // Supabase methods
   final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
-  final SupabaseCommentsMethods _commentsMethods =
-      SupabaseCommentsMethods(); // <-- ADDED
+  final SupabaseCommentsMethods _commentsMethods = SupabaseCommentsMethods();
   final SupabaseClient _supabase = Supabase.instance.client;
 
   // local comments list (each is Map with DB row fields)
@@ -135,6 +134,28 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
     super.dispose();
   }
 
+  // --------------------------------------------------------------------------
+  // Error logging helper – logs only exceptions to comments_error table
+  // --------------------------------------------------------------------------
+  Future<void> _logCommentError({
+    required String operationType,
+    String? userId,
+    Map<String, dynamic>? additionalData,
+    required dynamic error,
+  }) async {
+    try {
+      await _supabase.from('comments_error').insert({
+        'user_id': userId,
+        'operation_type': operationType,
+        'error_message': error.toString(),
+        'stack_trace': error is Error ? error.stackTrace?.toString() : null,
+        'additional_data': additionalData,
+      });
+    } catch (_) {
+      // Fail silently – error logging must not crash the app
+    }
+  }
+
   // Helper to normalise different client return shapes
   dynamic _unwrap(dynamic res) {
     try {
@@ -171,7 +192,14 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
           _commentLikes[commentId] = true;
         }
       });
-    } catch (e) {}
+    } catch (e) {
+      await _logCommentError(
+        operationType: 'fetch_all_like_statuses',
+        userId: userId,
+        additionalData: {'postId': widget.postId},
+        error: e,
+      );
+    }
   }
 
   // Add a method to update like status - OPTIMISTIC UPDATE
@@ -281,6 +309,15 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
         await _fetchAllLikeStatuses(user.uid);
       }
     } catch (e) {
+      // Log the error to comments_error table
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final userId = userProvider.user?.uid;
+      await _logCommentError(
+        operationType: 'load_comments',
+        userId: userId,
+        additionalData: {'postId': widget.postId},
+        error: e,
+      );
       if (mounted) showSnackBar(context, 'Failed to load comments: $e');
     } finally {
       if (mounted) setState(() => _isLoadingComments = false);
@@ -352,7 +389,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
     try {
       String res;
       if (replyingToCommentId != null) {
-        // Post reply - use _commentsMethods
+        // Post reply - _commentsMethods already logs errors
         res = await _commentsMethods.postReply(
           postId: widget.postId,
           commentId: replyingToCommentId!,
@@ -373,7 +410,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
           }
         }
       } else {
-        // Post top-level comment - use _commentsMethods
+        // Post top-level comment - _commentsMethods already logs errors
         res = await _commentsMethods.postComment(
           widget.postId,
           text,
@@ -415,6 +452,8 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
       });
     } catch (err) {
       // Remove optimistic comment on error
+      // Note: The underlying service (_commentsMethods) already logs the error,
+      // so we don't duplicate logging here.
       if (mounted) {
         setState(() {
           _optimisticComments.removeWhere(
@@ -569,7 +608,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                        ) // KEPT ORIGINAL STYLE HERE
+                        )
                       : ListView.builder(
                           controller: _scrollController,
                           key: PageStorageKey('comments_${widget.postId}'),
