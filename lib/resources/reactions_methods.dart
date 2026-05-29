@@ -6,7 +6,7 @@ class SupabaseReactionsMethods {
   final NotificationService _notificationService = NotificationService();
 
   // ===========================================================================
-  // ERROR LOGGING HELPER
+  // ERROR LOGGING HELPER – logs only to reactions_error table
   // ===========================================================================
   Future<void> _logReactionError({
     required String operationType,
@@ -15,14 +15,16 @@ class SupabaseReactionsMethods {
     Map<String, dynamic>? additionalData,
   }) async {
     try {
-      await _supabase.from('posts_errors').insert({
+      await _supabase.from('reactions_error').insert({
         'user_id': userId,
         'operation_type': operationType,
         'error_message': error.toString(),
         'stack_trace': error is Error ? error.stackTrace?.toString() : null,
         'additional_data': additionalData,
       });
-    } catch (_) {}
+    } catch (_) {
+      // Fail silently – error logging must not crash the app
+    }
   }
 
   dynamic _unwrap(dynamic res) {
@@ -53,8 +55,7 @@ class SupabaseReactionsMethods {
       postOwnerUid = postData['uid']?.toString() ?? '';
 
       final existingReaction = await _supabase
-          .from(
-              'post_rating') // table name stays 'post_rating' for DB compatibility
+          .from('post_rating')
           .select('rating')
           .eq('postid', postId)
           .eq('userid', uid)
@@ -100,8 +101,7 @@ class SupabaseReactionsMethods {
       await _supabase
           .from('notifications')
           .delete()
-          .eq('type',
-              'post_rating') // keep same type for existing notifications
+          .eq('type', 'post_rating')
           .eq('custom_data->>postId', postId)
           .eq('custom_data->>raterUid', reactorUid);
     } catch (e) {
@@ -153,7 +153,9 @@ class SupabaseReactionsMethods {
           .maybeSingle();
       final reactorData = _unwrap(reactorSel) ?? reactorSel;
       reactorUsername = reactorData?['username'] ?? 'Someone';
-    } catch (_) {}
+    } catch (_) {
+      // Don't log username fetch errors here; they are not critical for the main error flow
+    }
 
     // Push notification
     try {
