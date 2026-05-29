@@ -15,7 +15,7 @@ import 'package:Ratedly/screens/comment_screen.dart';
 import 'package:Ratedly/widgets/postshare.dart';
 import 'package:Ratedly/widgets/rating_list_screen_postcard.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
-import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
+import 'package:Ratedly/resources/reactions_methods.dart';
 import 'package:Ratedly/utils/utils.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
@@ -41,26 +41,10 @@ class FilterAdjustments {
     final c = contrast;
     final s = saturation;
     return [
-      c * s,
-      0,
-      0,
-      0,
-      b,
-      0,
-      c * s,
-      0,
-      0,
-      b,
-      0,
-      0,
-      c * s,
-      0,
-      b,
-      0,
-      0,
-      0,
-      1,
-      0,
+      c * s, 0, 0, 0, b,
+      0, c * s, 0, 0, b,
+      0, 0, c * s, 0, b,
+      0, 0, 0, 1, 0,
     ];
   }
 
@@ -86,26 +70,10 @@ class FilterInfo {
 
 const List<FilterInfo> kFilters = [
   FilterInfo(name: 'Original', matrix: [
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
+    1, 0, 0, 0, 0,
+    0, 1, 0, 0, 0,
+    0, 0, 1, 0, 0,
+    0, 0, 0, 1, 0,
   ]),
 ];
 
@@ -475,8 +443,6 @@ class _SearchScreenState extends State<SearchScreen>
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(() {
       final position = _scrollController.position;
-      // ── CHANGE: trigger at 70% scrolled so next page is ready before
-      //            the user reaches the bottom — no visible loading gap.
       final trigger = position.maxScrollExtent * 0.70;
       if (position.pixels >= trigger &&
           !_isLoadingMore &&
@@ -553,7 +519,6 @@ class _SearchScreenState extends State<SearchScreen>
       _videoControllers[videoUrl] = controller;
       _videoControllersInitialized[videoUrl] = false;
 
-      // Listener only updates UI; does NOT start playback yet.
       controller.addListener(() {
         if (controller.value.isInitialized &&
             !_videoControllersInitialized[videoUrl]!) {
@@ -563,10 +528,7 @@ class _SearchScreenState extends State<SearchScreen>
       });
 
       await controller.initialize();
-      // 🔇 Mute BEFORE any playback starts
       await controller.setVolume(0.0);
-
-      // Now start the looped playback, already muted
       _configureVideoLoop(controller);
       if (mounted) setState(() {});
     } catch (_) {
@@ -604,7 +566,6 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  // The rest of the methods remain unchanged.
   void _configureVideoLoop(VideoPlayerController controller) {
     final duration = controller.value.duration;
     final end = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
@@ -726,9 +687,6 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  // ── CHANGED: uses CachedNetworkImage so images are stored to memory + disk.
-  //             Shows a skeleton-coloured container while loading instead of
-  //             a spinner so cells never visually "pop" when they appear.
   Widget _buildPostImage(String imageUrl, _SearchColorSet colors,
       [VideoEditResult? editResult]) {
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -737,8 +695,6 @@ class _SearchScreenState extends State<SearchScreen>
     Widget networkImage = CachedNetworkImage(
       imageUrl: imageUrl,
       fit: BoxFit.cover,
-      // Skeleton placeholder — same colour as the loading skeleton grid,
-      // so there is no spinner and no layout jump when the image arrives.
       placeholder: (_, __) => Container(color: colors.skeletonColor),
       errorWidget: (_, __, ___) => Container(
         color: colors.gridItemBackgroundColor,
@@ -802,8 +758,6 @@ class _SearchScreenState extends State<SearchScreen>
       }
       return _buildAvatarVideoPlayer(url, colors);
     }
-    // ── CHANGED: use CachedNetworkImage for avatars too so they're
-    //             served from cache on re-renders.
     return CircleAvatar(
       backgroundColor: colors.avatarBackgroundColor,
       radius: 20,
@@ -811,10 +765,6 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  // ── NEW: kicks off a background download for every image in a batch
-  //         the moment we receive the data from Supabase.  By the time
-  //         the user scrolls to those cells the bytes are already in the
-  //         CachedNetworkImage memory/disk cache → instant display.
   void _precacheImages(List<Map<String, dynamic>> posts) {
     for (final post in posts) {
       final url = post['postUrl']?.toString() ?? '';
@@ -824,7 +774,8 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  // ========== DATA LOADING ==========
+  // ========== DATA LOADING (FIXED – NO DUPLICATES) ==========
+
   Future<void> _initData() async {
     if (currentUserId == null) {
       setState(() {
@@ -838,12 +789,20 @@ class _SearchScreenState extends State<SearchScreen>
       _hasLoadError = false;
     });
 
+    // Always reset to first load so we start with 12 posts
+    _isFirstLoad = true;
+    _offset = 0;
+    _allPosts = [];
+
     await Future.wait([
       _loadBlockedUsers(),
       _fetchPosts(),
     ]);
     _rotateSuggestedUsers();
     setState(() => _isLoading = false);
+
+    // Ensure the grid fills the screen; load more if needed
+    _ensureSufficientPosts();
   }
 
   Future<void> _loadBlockedUsers() async {
@@ -859,7 +818,7 @@ class _SearchScreenState extends State<SearchScreen>
           .single();
       final blockedUsers = response['blockedUsers'] as List<dynamic>?;
       blockedUsersSet = Set<String>.from(blockedUsers ?? []);
-    } catch (_) {
+    } catch (e) {
       blockedUsersSet = {};
     }
   }
@@ -885,18 +844,15 @@ class _SearchScreenState extends State<SearchScreen>
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
-        'page_offset': 0,
+        'page_offset': _offset, // skip already loaded posts
         'page_limit': postsLimit,
       });
 
-      if (response is List && response.isNotEmpty) {
+      if (response is List) {
         final newPosts =
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
         await _enrichPostsWithUserData(newPosts);
-
-        // ── CHANGED: pre-download all image thumbnails into cache immediately
-        //             so they are ready before the user scrolls to them.
         _precacheImages(newPosts);
 
         for (final post in newPosts) {
@@ -916,10 +872,10 @@ class _SearchScreenState extends State<SearchScreen>
           _allPosts = [];
           _hasMorePosts = false;
           _isFirstLoad = false;
-          _hasLoadError = false;
+          _hasLoadError = true;
         });
       }
-    } catch (_) {
+    } catch (e) {
       setState(() {
         _allPosts = [];
         _hasMorePosts = false;
@@ -934,12 +890,11 @@ class _SearchScreenState extends State<SearchScreen>
     setState(() => _isLoadingMore = true);
     try {
       final excludedUsers = [...blockedUsersSet, currentUserId!];
-      final pageNumber = _offset ~/ _subsequentPostsLimit;
 
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
-        'page_offset': pageNumber,
+        'page_offset': _offset, // skip already loaded posts
         'page_limit': _subsequentPostsLimit,
       });
 
@@ -948,8 +903,6 @@ class _SearchScreenState extends State<SearchScreen>
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
         await _enrichPostsWithUserData(newPosts);
-
-        // ── CHANGED: pre-download the next batch before user scrolls to it.
         _precacheImages(newPosts);
 
         for (final post in newPosts) {
@@ -965,11 +918,25 @@ class _SearchScreenState extends State<SearchScreen>
       } else {
         setState(() => _hasMorePosts = false);
       }
-    } catch (_) {
+    } catch (e) {
       setState(() => _hasMorePosts = false);
     } finally {
       setState(() => _isLoadingMore = false);
+      _ensureSufficientPosts();
     }
+  }
+
+  /// If the current content doesn't overflow the screen, automatically load more.
+  void _ensureSufficientPosts() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      final position = _scrollController.position;
+      if (position.maxScrollExtent <= position.viewportDimension &&
+          _hasMorePosts &&
+          !_isLoadingMore) {
+        _loadMorePosts();
+      }
+    });
   }
 
   Future<List<Map<String, dynamic>>> _loadMorePostsForFeed(
@@ -981,12 +948,11 @@ class _SearchScreenState extends State<SearchScreen>
     if (!_hasMorePosts) return [];
     try {
       final excludedUsers = [...blockedUsersSet, currentUserId!];
-      final pageNumber = currentCount ~/ _subsequentPostsLimit;
 
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
-        'page_offset': pageNumber,
+        'page_offset': currentCount, // skip already shown posts
         'page_limit': _subsequentPostsLimit,
       });
 
@@ -994,8 +960,6 @@ class _SearchScreenState extends State<SearchScreen>
         final newPosts =
             response.map<Map<String, dynamic>>(_normalisePost).toList();
         await _enrichPostsWithUserData(newPosts);
-
-        // ── CHANGED: pre-download feed images too.
         _precacheImages(newPosts);
 
         for (final post in newPosts) {
@@ -1043,7 +1007,9 @@ class _SearchScreenState extends State<SearchScreen>
             };
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        // Silently fail
+      }
     }
 
     for (final post in posts) {
@@ -1433,8 +1399,6 @@ class _SearchScreenState extends State<SearchScreen>
 
     return NotificationListener<ScrollNotification>(
       onNotification: (scrollInfo) {
-        // ── CHANGED: mirrors the 70% threshold from the scroll controller
-        //             so both triggers fire at the same point.
         final extent = scrollInfo.metrics.maxScrollExtent;
         if (scrollInfo.metrics.pixels >= extent * 0.70 &&
             !_isLoadingMore &&
@@ -1978,7 +1942,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     });
 
     try {
-      // CHANGED: use SupabaseReactionsMethods instead of _postsMethods.ratePost
       final res = await SupabaseReactionsMethods()
           .reactToPost(_postId, user.uid, rating);
       if (res != 'success' && mounted) _fetchRatings();
@@ -2193,7 +2156,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
   Widget _buildAvatar(String photoUrl, String uid, String currentUserId,
       Color cardColor, Color textColor) {
     final isDefault = photoUrl.isEmpty || photoUrl == 'default';
-    // ── CHANGED: use CachedNetworkImageProvider for cached avatar loading.
     return CircleAvatar(
       radius: 20,
       backgroundColor: cardColor,
@@ -2289,7 +2251,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
-  // ── CHANGED: full-screen feed image now uses CachedNetworkImage too.
   Widget _buildImage(
       List<double> matrix, int quarters, Color cardColor, Color textColor) {
     return AspectRatio(
@@ -2311,7 +2272,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
                   fit: BoxFit.cover,
                   width: double.infinity,
                   height: double.infinity,
-                  // Re-uses whatever the grid already pre-cached — instant.
                   placeholder: (_, __) => Container(color: cardColor),
                   errorWidget: (_, __, ___) => Container(
                     color: cardColor,
