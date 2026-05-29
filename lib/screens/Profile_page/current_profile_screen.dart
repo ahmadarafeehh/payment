@@ -190,6 +190,29 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         : _LightColors();
   }
 
+  // ==========================================================================
+  // ERROR LOGGING HELPER
+  // ==========================================================================
+  Future<void> _logProfileError({
+    required String operation,
+    required dynamic error,
+    StackTrace? stack,
+    Map<String, dynamic>? additionalData,
+  }) async {
+    try {
+      await _supabase.from('profile_errors').insert({
+        'user_id': widget.uid,
+        'operation_type': operation,
+        'error_message': error.toString(),
+        'stack_trace': stack?.toString(),
+        'additional_data': additionalData,
+      });
+    } catch (logError) {
+      // Silently fail – don't let logging break the user experience
+      print('Failed to log profile error: $logError');
+    }
+  }
+
   bool _isVideoFile(String url) {
     if (url.isEmpty || url == 'default') return false;
     final l = url.toLowerCase();
@@ -220,7 +243,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     if (meta == null) return null;
     try {
       return VideoEditResult.fromJson(meta, File(''));
-    } catch (_) {
+    } catch (e, stack) {
+      _logProfileError(
+        operation: 'parseEditResult',
+        error: e,
+        stack: stack,
+        additionalData: {'postId': post['postId']},
+      );
       return null;
     }
   }
@@ -275,7 +304,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     if (_profileVideoController != null && _isProfileVideoInitialized) {
       try {
         _profileVideoController!.setVolume(0.0);
-      } catch (_) {}
+      } catch (e, stack) {
+        _logProfileError(
+          operation: 'muteProfileVideo',
+          error: e,
+          stack: stack,
+        );
+      }
     }
   }
 
@@ -283,7 +318,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     if (_profileVideoController != null && _isProfileVideoInitialized) {
       try {
         _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
-      } catch (_) {}
+      } catch (e, stack) {
+        _logProfileError(
+          operation: 'unmuteProfileVideo',
+          error: e,
+          stack: stack,
+        );
+      }
     }
   }
 
@@ -292,7 +333,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       setState(() => _isProfileVideoMuted = !_isProfileVideoMuted);
       try {
         _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
-      } catch (_) {}
+      } catch (e, stack) {
+        _logProfileError(
+          operation: 'toggleProfileVideoMute',
+          error: e,
+          stack: stack,
+        );
+      }
     }
   }
 
@@ -347,7 +394,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           _isProfileVideoMuted = false;
         });
       }
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'initializeProfileVideo',
+        error: e,
+        stack: stack,
+        additionalData: {'videoUrl': videoUrl},
+      );
       if (mounted) setState(() => _isProfileVideoInitialized = false);
     }
   }
@@ -453,8 +506,21 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
           if (mounted) setState(() {});
         });
+      }).catchError((e, stack) {
+        _logProfileError(
+          operation: 'initializeVideoController',
+          error: e,
+          stack: stack,
+          additionalData: {'videoUrl': videoUrl},
+        );
       });
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'initializeVideoController',
+        error: e,
+        stack: stack,
+        additionalData: {'videoUrl': videoUrl},
+      );
       _videoControllers.remove(videoUrl)?.dispose();
       _videoControllersInitialized.remove(videoUrl);
     }
@@ -653,14 +719,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .maybeSingle();
 
       if (userResponse == null) {
-        try {
-          await _supabase.from('login_logs').insert({
-            'event_type': 'PROFILE_USER_NOT_FOUND',
-            'firebase_uid': widget.uid,
-            'error_details':
-                'maybeSingle() returned null for uid: ${widget.uid}',
-          });
-        } catch (_) {}
         if (mounted) {
           setState(() {
             hasError = true;
@@ -679,14 +737,30 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .select('follower_id, followed_at')
           .eq('user_id', widget.uid)
           .then<List>((v) => v)
-          .catchError((_) => <dynamic>[]);
+          .catchError((e, stack) {
+            _logProfileError(
+              operation: 'getData_followers',
+              error: e,
+              stack: stack,
+              additionalData: {'uid': widget.uid},
+            );
+            return <dynamic>[];
+          });
 
       final followingResponse = await _supabase
           .from('user_following')
           .select('following_id, followed_at')
           .eq('user_id', widget.uid)
           .then<List>((v) => v)
-          .catchError((_) => <dynamic>[]);
+          .catchError((e, stack) {
+            _logProfileError(
+              operation: 'getData_following',
+              error: e,
+              stack: stack,
+              additionalData: {'uid': widget.uid},
+            );
+            return <dynamic>[];
+          });
 
       final galleriesResponse = await _supabase
           .from('galleries')
@@ -698,7 +772,15 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .eq('uid', widget.uid)
           .order('created_at', ascending: false)
           .then<List>((v) => v)
-          .catchError((_) => <dynamic>[]);
+          .catchError((e, stack) {
+            _logProfileError(
+              operation: 'getData_galleries',
+              error: e,
+              stack: stack,
+              additionalData: {'uid': widget.uid},
+            );
+            return <dynamic>[];
+          });
 
       final photoUrl = userResponse['photoUrl'] ?? '';
       if (_isVideoFile(photoUrl)) _initializeProfileVideo(photoUrl);
@@ -734,14 +816,12 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         }
       }
     } catch (e, stackTrace) {
-      try {
-        await _supabase.from('login_logs').insert({
-          'event_type': 'PROFILE_LOAD_ERROR',
-          'firebase_uid': widget.uid,
-          'error_details': e.toString(),
-          'stack_trace': stackTrace.toString(),
-        });
-      } catch (_) {}
+      await _logProfileError(
+        operation: 'getData',
+        error: e,
+        stack: stackTrace,
+        additionalData: {'uid': widget.uid},
+      );
       if (mounted) {
         setState(() {
           hasError = true;
@@ -770,7 +850,14 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           body: 'Your first post could be the start of something big.',
           customData: {'source': 'no_post_nudge'},
         );
-      } catch (_) {}
+      } catch (e, stack) {
+        await _logProfileError(
+          operation: 'startNoPostNudgeTimer_notification',
+          error: e,
+          stack: stack,
+          additionalData: {'uid': widget.uid},
+        );
+      }
     });
   }
 
@@ -796,7 +883,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       } else {
         if (mounted) setState(() => _hasMorePosts = false);
       }
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadMorePosts',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid, 'offset': _postsOffset},
+      );
       if (mounted) showSnackBar(context, 'Failed to load more posts');
     } finally {
       if (mounted) setState(() => _isLoadingMore = false);
@@ -822,7 +915,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       _preInitializeVideoControllers(newPosts);
 
       return List<Map<String, dynamic>>.from(newPosts);
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadMorePostsForFeed',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid, 'currentCount': currentCount},
+      );
       return [];
     }
   }
@@ -831,25 +930,35 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       List<dynamic> userList, String idKey) async {
     if (userList.isEmpty) return [];
     final userIds = userList.map((u) => u[idKey] as String).toList();
-    final usersData = await _supabase
-        .from('users')
-        .select('uid, username, photoUrl')
-        .inFilter('uid', userIds);
-    final userMap = {for (var u in usersData) u['uid'] as String: u};
-    return userList
-        .map((entry) {
-          final info = userMap[entry[idKey]];
-          return info != null
-              ? {
-                  'userId': entry[idKey],
-                  'username': info['username'],
-                  'photoUrl': info['photoUrl'],
-                  'timestamp': entry['followed_at'],
-                }
-              : null;
-        })
-        .where((item) => item != null)
-        .toList();
+    try {
+      final usersData = await _supabase
+          .from('users')
+          .select('uid, username, photoUrl')
+          .inFilter('uid', userIds);
+      final userMap = {for (var u in usersData) u['uid'] as String: u};
+      return userList
+          .map((entry) {
+            final info = userMap[entry[idKey]];
+            return info != null
+                ? {
+                    'userId': entry[idKey],
+                    'username': info['username'],
+                    'photoUrl': info['photoUrl'],
+                    'timestamp': entry['followed_at'],
+                  }
+                : null;
+          })
+          .where((item) => item != null)
+          .toList();
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'processUserList',
+        error: e,
+        stack: stack,
+        additionalData: {'idKey': idKey, 'userIds': userIds},
+      );
+      return [];
+    }
   }
 
   void _navigateToSettings() {
@@ -1467,7 +1576,14 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       if (coverMeta != null) {
         try {
           coverEditResult = VideoEditResult.fromJson(coverMeta, File(''));
-        } catch (_) {}
+        } catch (e, stack) {
+          _logProfileError(
+            operation: 'buildGalleryItem_parseEditResult',
+            error: e,
+            stack: stack,
+            additionalData: {'galleryId': gallery['id']},
+          );
+        }
       }
     }
 
@@ -1640,7 +1756,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       if (mounted) {
         setState(() => _galleries = [response.first, ..._galleries]);
       }
-    } catch (e) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'createGallery',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid, 'name': name},
+      );
       if (mounted) showSnackBar(context, 'Failed to create gallery: $e');
     }
   }
