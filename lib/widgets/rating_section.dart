@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:Ratedly/resources/supabase_posts_methods.dart';
-import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
+import 'package:Ratedly/resources/reactions_methods.dart';
 import 'package:Ratedly/utils/utils.dart';
 import 'package:Ratedly/widgets/flutter_rating_bar.dart';
 
@@ -38,6 +37,29 @@ class _RatingSectionState extends State<RatingSection> {
     super.initState();
     _computeAverageRatingAndUserRating();
     _fetchReactionEmoji();
+  }
+
+  // --------------------------------------------------------------------------
+  // Error logging helper – logs only exceptions to reactions_error table
+  // --------------------------------------------------------------------------
+  Future<void> _logReactionError({
+    required String operationType,
+    String? userId,
+    Map<String, dynamic>? additionalData,
+    required dynamic error,
+  }) async {
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('reactions_error').insert({
+        'user_id': userId ?? widget.userId,
+        'operation_type': operationType,
+        'error_message': error.toString(),
+        'stack_trace': error is Error ? error.stackTrace?.toString() : null,
+        'additional_data': additionalData,
+      });
+    } catch (_) {
+      // Fail silently – error logging must not crash the app
+    }
   }
 
   void _computeAverageRatingAndUserRating() {
@@ -78,8 +100,15 @@ class _RatingSectionState extends State<RatingSection> {
           setState(() => _reactionEmoji = emoji);
         }
       }
-    } catch (_) {
-      // keep default emoji
+    } catch (e) {
+      // Log the error to reactions_error table
+      await _logReactionError(
+        operationType: 'fetch_reaction_emoji',
+        userId: widget.userId,
+        additionalData: {'postId': widget.postId},
+        error: e,
+      );
+      // Keep default emoji (❤️) – no user-facing error
     }
     if (mounted) setState(() => _isLoading = false);
   }
@@ -103,7 +132,7 @@ class _RatingSectionState extends State<RatingSection> {
           reactionEmoji: _reactionEmoji,
           initialThumbPosition: initialPos,
           onRatingEnd: (rating) async {
-            // CHANGED: use SupabaseReactionsMethods().reactToPost
+            // SupabaseReactionsMethods.reactToPost already logs its own errors
             final String response =
                 await SupabaseReactionsMethods().reactToPost(
               widget.postId,
