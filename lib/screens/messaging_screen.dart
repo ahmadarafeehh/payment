@@ -12,7 +12,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/screens/first_time/number_particle.dart';
 import 'package:Ratedly/screens/first_time/falling_number_painter.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
-import 'package:Ratedly/providers/user_provider.dart'; // Add this import
+import 'package:Ratedly/providers/user_provider.dart';
 
 class _MessagingColorSet {
   final Color textColor;
@@ -91,7 +91,7 @@ class MessagingScreen extends StatefulWidget {
 class _MessagingScreenState extends State<MessagingScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final TextEditingController _controller = TextEditingController();
-  String? currentUserId; // Changed from final to nullable
+  String? currentUserId;
   final SupabaseBlockMethods _blockMethods = SupabaseBlockMethods();
   final SupabaseClient _supabase = Supabase.instance.client;
   String? chatId;
@@ -131,7 +131,7 @@ class _MessagingScreenState extends State<MessagingScreen>
   // ========== VIDEO PLAYER CONTROLLER FOR PROFILE PICTURE ==========
   VideoPlayerController? _recipientProfileVideoController;
   bool _isRecipientProfileVideoInitialized = false;
-  bool _isRecipientProfileVideoMuted = true; // Muted by default as requested
+  bool _isRecipientProfileVideoMuted = true;
   // ================================================================
 
   _MessagingColorSet _getColors(ThemeProvider themeProvider) {
@@ -142,18 +142,12 @@ class _MessagingScreenState extends State<MessagingScreen>
   @override
   void initState() {
     super.initState();
-
     WidgetsBinding.instance.addObserver(this);
     _initializeFallingNumbers();
-
-    // Setup scroll listener for pagination
     _scrollController.addListener(_scrollListener);
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkInitialKeyboard();
     });
-
-    // Initialize recipient profile video if needed
     if (_isProfileVideo(widget.recipientPhotoUrl)) {
       _initializeRecipientProfileVideo();
     }
@@ -162,11 +156,8 @@ class _MessagingScreenState extends State<MessagingScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-
-    // Get the user ID from UserProvider if not already set
     if (currentUserId == null) {
       final userProvider = Provider.of<UserProvider>(context, listen: false);
-
       if (userProvider.firebaseUid != null) {
         currentUserId = userProvider.firebaseUid;
         _initializeChat();
@@ -179,14 +170,11 @@ class _MessagingScreenState extends State<MessagingScreen>
         });
       }
     }
-
-    // Mark messages as read if conditions are met
     if (chatId != null && !_hasMarkedAsRead && !_isInitializing) {
       _markMessagesAsRead();
     }
   }
 
-  // Check if profile image URL is a video
   bool _isProfileVideo(String url) {
     final lowerUrl = url.toLowerCase();
     return url.isNotEmpty &&
@@ -198,32 +186,22 @@ class _MessagingScreenState extends State<MessagingScreen>
             lowerUrl.contains('video'));
   }
 
-  // ========== RECIPIENT PROFILE VIDEO HANDLING ==========
   Future<void> _initializeRecipientProfileVideo() async {
     if (_recipientProfileVideoController != null ||
         _isRecipientProfileVideoInitialized) {
       return;
     }
-
     try {
       final videoUrl = widget.recipientPhotoUrl;
-      if (videoUrl.isEmpty) {
-        throw Exception('Empty profile video URL');
-      }
-
+      if (videoUrl.isEmpty) throw Exception('Empty profile video URL');
       _recipientProfileVideoController = VideoPlayerController.networkUrl(
         Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: true,
-        ),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
-
       await _recipientProfileVideoController!.initialize();
-      // Muted by default as requested
       await _recipientProfileVideoController!.setVolume(0.0);
       await _recipientProfileVideoController!.setLooping(true);
       await _recipientProfileVideoController!.play();
-
       if (mounted) {
         setState(() {
           _isRecipientProfileVideoInitialized = true;
@@ -231,11 +209,7 @@ class _MessagingScreenState extends State<MessagingScreen>
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isRecipientProfileVideoInitialized = false;
-        });
-      }
+      if (mounted) setState(() => _isRecipientProfileVideoInitialized = false);
     }
   }
 
@@ -243,19 +217,12 @@ class _MessagingScreenState extends State<MessagingScreen>
     if (_recipientProfileVideoController == null ||
         !_isRecipientProfileVideoInitialized) {
       return Container(
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: colors.otherUserMessageColor,
-        ),
+        decoration: BoxDecoration(shape: BoxShape.circle, color: colors.otherUserMessageColor),
         child: Center(
-          child: CircularProgressIndicator(
-            color: colors.progressIndicatorColor,
-            strokeWidth: 2.0,
-          ),
+          child: CircularProgressIndicator(color: colors.progressIndicatorColor, strokeWidth: 2.0),
         ),
       );
     }
-
     return ClipOval(
       child: SizedBox(
         width: 42,
@@ -293,10 +260,8 @@ class _MessagingScreenState extends State<MessagingScreen>
     }
     _isRecipientProfileVideoInitialized = false;
   }
-  // ======================================================
 
   void _scrollListener() {
-    // Load more messages when user scrolls near the top
     if (_scrollController.offset <= 100 &&
         !_isLoadingMore &&
         _hasMoreMessages &&
@@ -308,19 +273,13 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   Future<void> _loadMoreMessages() async {
     if (_isLoadingMore || !_hasMoreMessages || chatId == null) return;
-
-    setState(() {
-      _isLoadingMore = true;
-    });
-
+    setState(() => _isLoadingMore = true);
     try {
-      final olderMessages =
-          await SupabaseMessagesMethods().getMessagesPaginated(
+      final olderMessages = await SupabaseMessagesMethods().getMessagesPaginated(
         chatId!,
         page: _currentPage + 1,
         limit: _messagesPerPage,
       );
-
       if (olderMessages.isEmpty) {
         setState(() {
           _hasMoreMessages = false;
@@ -328,32 +287,23 @@ class _MessagingScreenState extends State<MessagingScreen>
         });
         return;
       }
-
-      // Update oldest timestamp for next pagination
       if (olderMessages.isNotEmpty) {
         final oldest = _parseTimestamp(olderMessages.last['timestamp']);
-        if (oldest != null) {
-          _oldestMessageTimestamp = oldest;
-        }
+        if (oldest != null) _oldestMessageTimestamp = oldest;
       }
-
       setState(() {
         _cachedMessages.insertAll(0, olderMessages);
         _currentPage++;
         _isLoadingMore = false;
       });
     } catch (e) {
-      setState(() {
-        _isLoadingMore = false;
-      });
+      setState(() => _isLoadingMore = false);
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      // Pause all videos when app goes to background
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       _pauseAllVideos();
       _pauseRecipientProfileVideo();
     }
@@ -364,18 +314,14 @@ class _MessagingScreenState extends State<MessagingScreen>
     final bottomInset = WidgetsBinding.instance.window.viewInsets.bottom;
     if (bottomInset > 100.0) {
       Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted) {
-          _scrollToBottom(immediate: false);
-        }
+        if (mounted) _scrollToBottom(immediate: false);
       });
     }
   }
 
   void _checkInitialKeyboard() {
     final bottomInset = WidgetsBinding.instance.window.viewInsets.bottom;
-    if (bottomInset > 0) {
-      _scrollToBottom(immediate: true);
-    }
+    if (bottomInset > 0) _scrollToBottom(immediate: true);
   }
 
   void _initializeFallingNumbers() {
@@ -406,12 +352,10 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   void _updateParticles() {
     if (_screenHeight == 0) return;
-
     for (final particle in _particles) {
       particle.y += particle.speed * 0.012;
       particle.rotation += particle.rotationSpeed;
       particle.sway += particle.swaySpeed;
-
       if (particle.y * _screenHeight > _screenHeight * 1.2) {
         particle.y = -_random.nextDouble() * 0.5;
         particle.x = _random.nextDouble();
@@ -423,10 +367,8 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   void _scrollToBottom({bool immediate = false}) {
     if (!_scrollController.hasClients || !mounted) return;
-
     final maxScroll = _scrollController.position.maxScrollExtent;
     final currentScroll = _scrollController.position.pixels;
-
     if ((maxScroll - currentScroll) > 50.0) {
       if (immediate) {
         _scrollController.jumpTo(maxScroll);
@@ -440,60 +382,40 @@ class _MessagingScreenState extends State<MessagingScreen>
     }
   }
 
-  bool get _isKeyboardVisible {
-    return WidgetsBinding.instance.window.viewInsets.bottom > 100.0;
-  }
+  bool get _isKeyboardVisible => WidgetsBinding.instance.window.viewInsets.bottom > 100.0;
 
   void _initializeChat() async {
     try {
       if (currentUserId == null) {
-        setState(() {
-          _isInitializing = false;
-        });
+        setState(() => _isInitializing = false);
         return;
       }
-
       _isMutuallyBlocked = await _blockMethods.isMutuallyBlocked(
         currentUserId!,
         widget.recipientUid,
       );
-
       if (_isMutuallyBlocked) {
-        if (mounted) {
-          setState(() {
-            _isInitializing = false;
-          });
-        }
+        if (mounted) setState(() => _isInitializing = false);
         return;
       }
-
       final id = await SupabaseMessagesMethods().getOrCreateChat(
         currentUserId!,
         widget.recipientUid,
       );
-
       if (mounted) {
-        setState(() {
-          chatId = id;
-        });
-
-        // Load initial page of messages
+        setState(() => chatId = id);
         await _loadInitialMessages();
-
-        setState(() {
-          _isInitializing = false;
-        });
+        setState(() => _isInitializing = false);
         _markMessagesAsRead();
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _isInitializing = false;
-        });
+        setState(() => _isInitializing = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text(
-                  'Something went wrong, please try again later or contact us at ratedly9@gmail.com')),
+            content: Text(
+                'Something went wrong, please try again later or contact us at ratedly9@gmail.com'),
+          ),
         );
       }
     }
@@ -501,27 +423,17 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   Future<void> _loadInitialMessages() async {
     if (chatId == null) return;
-
     try {
-      final initialMessages =
-          await SupabaseMessagesMethods().getMessagesPaginated(
+      final initialMessages = await SupabaseMessagesMethods().getMessagesPaginated(
         chatId!,
         page: 0,
         limit: _messagesPerPage,
       );
-
-      // Process messages to ensure proper structure
-      final processedMessages = initialMessages.map((msg) {
-        return _processServerMessage(msg);
-      }).toList();
-
+      final processedMessages = initialMessages.map((msg) => _processServerMessage(msg)).toList();
       if (processedMessages.isNotEmpty) {
         final oldest = _parseTimestamp(processedMessages.last['timestamp']);
-        if (oldest != null) {
-          _oldestMessageTimestamp = oldest;
-        }
+        if (oldest != null) _oldestMessageTimestamp = oldest;
       }
-
       setState(() {
         _cachedMessages = processedMessages;
         _currentPage = 0;
@@ -531,17 +443,10 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   Map<String, dynamic> _processServerMessage(Map<String, dynamic> serverMsg) {
-    // Check if this is a reply message based on server data
-    final isReplyFromServer =
-        serverMsg['isReply'] == true || serverMsg['repliedToMessageId'] != null;
-
+    final isReplyFromServer = serverMsg['isReply'] == true || serverMsg['repliedToMessageId'] != null;
     if (isReplyFromServer) {
-      // Determine if the original message was from the current user
-      final repliedMessageSender =
-          serverMsg['repliedMessageSender']?.toString();
+      final repliedMessageSender = serverMsg['repliedMessageSender']?.toString();
       final isOriginalFromSelf = repliedMessageSender == 'You';
-
-      // Create a properly formatted message map with ALL reply fields
       return {
         'id': serverMsg['id'].toString(),
         'message': serverMsg['message']?.toString() ?? '',
@@ -554,17 +459,12 @@ class _MessagingScreenState extends State<MessagingScreen>
         'postShare': serverMsg['postShare'],
         'isReply': true,
         'repliedToMessageId': serverMsg['repliedToMessageId']?.toString(),
-        'repliedMessagePreview':
-            serverMsg['repliedMessagePreview']?.toString() ??
-                'Original message',
+        'repliedMessagePreview': serverMsg['repliedMessagePreview']?.toString() ?? 'Original message',
         'repliedMessageSender': repliedMessageSender,
         'repliedMessageSenderIsSelf': isOriginalFromSelf,
-        'repliedMessageType':
-            serverMsg['repliedMessageType']?.toString() ?? 'text',
+        'repliedMessageType': serverMsg['repliedMessageType']?.toString() ?? 'text',
       };
     }
-
-    // Return non-reply message with proper id
     return {
       'id': serverMsg['id'].toString(),
       'message': serverMsg['message']?.toString() ?? '',
@@ -579,24 +479,20 @@ class _MessagingScreenState extends State<MessagingScreen>
     };
   }
 
-  // Helper method to parse timestamp
   DateTime? _parseTimestamp(dynamic timestamp) {
     if (timestamp == null) return null;
     try {
       if (timestamp is DateTime) return timestamp;
       if (timestamp is String) return DateTime.parse(timestamp);
-      if (timestamp is int)
-        return DateTime.fromMillisecondsSinceEpoch(timestamp);
+      if (timestamp is int) return DateTime.fromMillisecondsSinceEpoch(timestamp);
     } catch (e) {}
     return null;
   }
 
   void _markMessagesAsRead() async {
     if (chatId == null || _hasMarkedAsRead || currentUserId == null) return;
-
     try {
-      await SupabaseMessagesMethods()
-          .markMessagesAsRead(chatId!, currentUserId!);
+      await SupabaseMessagesMethods().markMessagesAsRead(chatId!, currentUserId!);
       _hasMarkedAsRead = true;
     } catch (e) {}
   }
@@ -605,7 +501,6 @@ class _MessagingScreenState extends State<MessagingScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_scrollListener);
-
     if (chatId != null && !_hasMarkedAsRead && currentUserId != null) {
       SupabaseMessagesMethods().markMessagesAsRead(chatId!, currentUserId!);
     }
@@ -613,31 +508,21 @@ class _MessagingScreenState extends State<MessagingScreen>
     _scrollController.dispose();
     _focusNode.dispose();
     _animationController.dispose();
-
-    // Dispose all video controllers
-    for (final controller in _videoControllers.values) {
-      controller.dispose();
-    }
+    for (final controller in _videoControllers.values) controller.dispose();
     _videoControllers.clear();
     _videoControllersInitialized.clear();
-
-    // Dispose recipient profile video controller
     _disposeRecipientProfileVideoController();
-
     super.dispose();
   }
 
   void _pauseAllVideos() {
     for (final controller in _videoControllers.values) {
-      if (controller.value.isInitialized && controller.value.isPlaying) {
-        controller.pause();
-      }
+      if (controller.value.isInitialized && controller.value.isPlaying) controller.pause();
     }
   }
 
   void _handleSwipeStart(String messageId, DragStartDetails details) {
     if (!_swipeEnabled || _isReplying) return;
-
     setState(() {
       _swipeOffsets[messageId] = 0;
       _isSwiping[messageId] = true;
@@ -646,32 +531,19 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   void _handleSwipeUpdate(String messageId, DragUpdateDetails details) {
     if (!_swipeEnabled || _isReplying) return;
-
     double newOffset = (_swipeOffsets[messageId] ?? 0) + details.primaryDelta!;
-
-    if (newOffset > _maxSwipeDistance) {
-      newOffset = _maxSwipeDistance;
-    }
-    if (newOffset < 0) {
-      newOffset = 0;
-    }
-
-    setState(() {
-      _swipeOffsets[messageId] = newOffset;
-    });
+    if (newOffset > _maxSwipeDistance) newOffset = _maxSwipeDistance;
+    if (newOffset < 0) newOffset = 0;
+    setState(() => _swipeOffsets[messageId] = newOffset);
   }
 
-  void _handleSwipeEnd(
-      String messageId, DragEndDetails details, Map<String, dynamic> message) {
+  void _handleSwipeEnd(String messageId, DragEndDetails details, Map<String, dynamic> message) {
     if (!_swipeEnabled || _isReplying) return;
-
     final offset = _swipeOffsets[messageId] ?? 0;
-
     if (offset > _maxSwipeDistance * 0.4) {
       _startReply(message);
       HapticFeedback.mediumImpact();
     }
-
     Future.delayed(Duration(milliseconds: 100), () {
       if (mounted) {
         setState(() {
@@ -691,25 +563,19 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   void _startReply(Map<String, dynamic> message) {
     HapticFeedback.lightImpact();
-
     setState(() {
       _replyingToMessage = {
         'id': message['id'],
         'message': message['message'],
         'senderId': message['senderId'],
         'type': message['type'] ?? 'text',
-        'repliedMessageSender':
-            message['senderId'] == currentUserId ? 'You' : 'Them',
+        'repliedMessageSender': message['senderId'] == currentUserId ? 'You' : 'Them',
         'repliedMessageSenderIsSelf': message['senderId'] == currentUserId,
       };
       _isReplying = true;
     });
-
     _focusNode.requestFocus();
-
-    Future.delayed(const Duration(milliseconds: 100), () {
-      _scrollToBottom(immediate: true);
-    });
+    Future.delayed(const Duration(milliseconds: 100), () => _scrollToBottom(immediate: true));
   }
 
   void _cancelReply() {
@@ -720,46 +586,27 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   String _getMessagePreview(Map<String, dynamic> message) {
-    if (message['type'] == 'post') {
-      return 'Shared a post';
-    }
-
+    if (message['type'] == 'post') return 'Shared a post';
     String text = message['message'] ?? '';
-    if (text.length > 30) {
-      return '${text.substring(0, 30)}...';
-    }
-    return text;
+    return text.length > 30 ? '${text.substring(0, 30)}...' : text;
   }
 
   Future<void> _initializeVideoController(String videoUrl) async {
-    if (_videoControllers.containsKey(videoUrl) ||
-        _videoControllersInitialized[videoUrl] == true) {
-      return;
-    }
-
+    if (_videoControllers.containsKey(videoUrl) || _videoControllersInitialized[videoUrl] == true) return;
     try {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: true,
-        ),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
-
       _videoControllers[videoUrl] = controller;
       _videoControllersInitialized[videoUrl] = false;
-
       controller.addListener(() {
-        if (controller.value.isInitialized &&
-            !_videoControllersInitialized[videoUrl]!) {
+        if (controller.value.isInitialized && !_videoControllersInitialized[videoUrl]!) {
           _videoControllersInitialized[videoUrl] = true;
           _configureVideoLoop(controller);
-
-          if (mounted) {
-            setState(() {});
-          }
+          if (mounted) setState(() {});
         }
       });
-
       await controller.initialize();
       await controller.setVolume(0.0);
     } catch (e) {
@@ -770,32 +617,21 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   void _configureVideoLoop(VideoPlayerController controller) {
     final duration = controller.value.duration;
-    final endPosition =
-        duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
-
+    final endPosition = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
     controller.addListener(() {
       if (controller.value.isInitialized && controller.value.isPlaying) {
         final currentPosition = controller.value.position;
-        if (currentPosition >= endPosition) {
-          controller.seekTo(Duration.zero);
-        }
+        if (currentPosition >= endPosition) controller.seekTo(Duration.zero);
       }
     });
-
     controller.play();
   }
 
-  VideoPlayerController? _getVideoController(String videoUrl) {
-    return _videoControllers[videoUrl];
-  }
-
-  bool _isVideoControllerInitialized(String videoUrl) {
-    return _videoControllersInitialized[videoUrl] == true;
-  }
+  VideoPlayerController? _getVideoController(String videoUrl) => _videoControllers[videoUrl];
+  bool _isVideoControllerInitialized(String videoUrl) => _videoControllersInitialized[videoUrl] == true;
 
   bool _isVideoFile(String url) {
     if (url.isEmpty) return false;
-
     final lowerUrl = url.toLowerCase();
     return lowerUrl.endsWith('.mp4') ||
         lowerUrl.endsWith('.mov') ||
@@ -813,19 +649,13 @@ class _MessagingScreenState extends State<MessagingScreen>
   Widget _buildVideoPlayer(String videoUrl, _MessagingColorSet colors) {
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
-
     if (!isInitialized || controller == null) {
       return Container(
         height: 150,
         color: colors.otherUserMessageColor,
-        child: Center(
-          child: CircularProgressIndicator(
-            color: colors.progressIndicatorColor,
-          ),
-        ),
+        child: Center(child: CircularProgressIndicator(color: colors.progressIndicatorColor)),
       );
     }
-
     return Container(
       height: 150,
       child: ClipRRect(
@@ -842,30 +672,20 @@ class _MessagingScreenState extends State<MessagingScreen>
     );
   }
 
-  // ADDED: Build profile picture widget for post owner
-  Widget _buildPostOwnerProfilePicture(
-      String photoUrl, _MessagingColorSet colors) {
+  Widget _buildPostOwnerProfilePicture(String photoUrl, _MessagingColorSet colors) {
     final isDefault = photoUrl.isEmpty || photoUrl == 'default';
     final isVideo = !isDefault && _isVideoFile(photoUrl);
-
     if (isDefault) {
       return CircleAvatar(
         radius: 16,
         backgroundColor: colors.otherUserMessageColor,
-        child: Icon(
-          Icons.account_circle,
-          size: 32,
-          color: colors.iconColor,
-        ),
+        child: Icon(Icons.account_circle, size: 32, color: colors.iconColor),
       );
     }
-
     if (isVideo) {
-      // Initialize video controller if needed
       _initializeVideoController(photoUrl);
       final controller = _getVideoController(photoUrl);
       final isInitialized = _isVideoControllerInitialized(photoUrl);
-
       if (controller != null && isInitialized) {
         return ClipOval(
           child: SizedBox(
@@ -885,135 +705,89 @@ class _MessagingScreenState extends State<MessagingScreen>
         return Container(
           width: 32,
           height: 32,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: colors.otherUserMessageColor,
-          ),
+          decoration: BoxDecoration(shape: BoxShape.circle, color: colors.otherUserMessageColor),
           child: Center(
-            child: CircularProgressIndicator(
-              color: colors.progressIndicatorColor,
-              strokeWidth: 2.0,
-            ),
+            child: CircularProgressIndicator(color: colors.progressIndicatorColor, strokeWidth: 2.0),
           ),
         );
       }
     }
-
-    // Regular image
     return CircleAvatar(
       radius: 16,
       backgroundColor: colors.otherUserMessageColor,
-      backgroundImage:
-          photoUrl.startsWith('http') ? NetworkImage(photoUrl) : null,
+      backgroundImage: photoUrl.startsWith('http') ? NetworkImage(photoUrl) : null,
       child: !photoUrl.startsWith('http')
-          ? Icon(
-              Icons.account_circle,
-              size: 32,
-              color: colors.iconColor,
-            )
+          ? Icon(Icons.account_circle, size: 32, color: colors.iconColor)
           : null,
     );
   }
 
   Future<bool> _checkIfPostExists(String postId) async {
     try {
-      final response =
-          await _supabase.from('posts').select().eq('postId', postId);
-
+      final response = await _supabase.from('posts').select().eq('postId', postId);
       return response != null && response.isNotEmpty;
     } catch (e) {
       return false;
     }
   }
 
-  Future<Map<String, dynamic>> _checkPostStatus(
-      Map<String, dynamic> postShare) async {
+  Future<Map<String, dynamic>> _checkPostStatus(Map<String, dynamic> postShare) async {
     try {
       final bool postExists = await _checkIfPostExists(postShare['postId']);
       final bool isBlocked = await _blockMethods.isMutuallyBlocked(
         currentUserId!,
         postShare['postOwnerId'] ?? '',
       );
-
-      return {
-        'exists': postExists,
-        'isBlocked': isBlocked,
-        'postData': postShare,
-      };
+      return {'exists': postExists, 'isBlocked': isBlocked, 'postData': postShare};
     } catch (e) {
-      return {
-        'exists': false,
-        'isBlocked': false,
-        'postData': postShare,
-      };
+      return {'exists': false, 'isBlocked': false, 'postData': postShare};
     }
   }
 
   Widget _buildDeletedPostMessage(_MessagingColorSet colors) {
     return Container(
-        margin: const EdgeInsets.all(8),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: colors.otherUserMessageColor.withOpacity(0.5),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: colors.textColor.withOpacity(0.3),
-            width: 1,
+      margin: const EdgeInsets.all(8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colors.otherUserMessageColor.withOpacity(0.5),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colors.textColor.withOpacity(0.3), width: 1),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.delete_outline, color: colors.textColor.withOpacity(0.6), size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Original post deleted',
+                  style: TextStyle(color: colors.textColor.withOpacity(0.8), fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'The shared post is no longer available',
+                  style: TextStyle(color: colors.textColor.withOpacity(0.6), fontSize: 12),
+                ),
+              ],
+            ),
           ),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              Icons.delete_outline,
-              color: colors.textColor.withOpacity(0.6),
-              size: 20,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Original post deleted',
-                    style: TextStyle(
-                      color: colors.textColor.withOpacity(0.8),
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'The shared post is no longer available',
-                    style: TextStyle(
-                      color: colors.textColor.withOpacity(0.6),
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ));
+        ],
+      ),
+    );
   }
 
-  Widget _buildPostContent(Map<String, dynamic> postShare,
-      Map<String, dynamic> data, _MessagingColorSet colors) {
+  Widget _buildPostContent(
+      Map<String, dynamic> postShare, Map<String, dynamic> data, _MessagingColorSet colors) {
     final postImageUrl = postShare['postImageUrl'] ?? '';
     final postOwnerPhotoUrl = postShare['postOwnerPhotoUrl'] ?? '';
     final isVideo = _isVideoFile(postImageUrl);
-
-    if (isVideo) {
-      _initializeVideoController(postImageUrl);
-    }
-
+    if (isVideo) _initializeVideoController(postImageUrl);
     return GestureDetector(
       onTap: () => _navigateToPost(postShare),
       child: Padding(
-        padding: EdgeInsets.fromLTRB(
-          0,
-          data['isReply'] == true ? 4 : 12,
-          0,
-          12,
-        ),
+        padding: EdgeInsets.fromLTRB(0, data['isReply'] == true ? 4 : 12, 0, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -1026,8 +800,7 @@ class _MessagingScreenState extends State<MessagingScreen>
                   VerifiedUsernameWidget(
                     username: postShare['postOwnerUsername'] ?? 'Unknown User',
                     uid: postShare['postOwnerId'] ?? '',
-                    style: TextStyle(
-                        fontWeight: FontWeight.bold, color: colors.textColor),
+                    style: TextStyle(fontWeight: FontWeight.bold, color: colors.textColor),
                   ),
                 ],
               ),
@@ -1042,30 +815,25 @@ class _MessagingScreenState extends State<MessagingScreen>
                       errorBuilder: (_, __, ___) => Container(
                         height: 150,
                         color: Colors.grey,
-                        child: Center(
-                            child: Icon(Icons.error, color: colors.iconColor)),
+                        child: Center(child: Icon(Icons.error, color: colors.iconColor)),
                       ),
                     )
             else
               Container(
                 height: 150,
                 color: colors.otherUserMessageColor,
-                child: Center(
-                  child: Icon(Icons.broken_image, color: colors.iconColor),
-                ),
+                child: Center(child: Icon(Icons.broken_image, color: colors.iconColor)),
               ),
             Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(postShare['postCaption'] ?? '',
-                      style: TextStyle(color: colors.textColor)),
+                  Text(postShare['postCaption'] ?? '', style: TextStyle(color: colors.textColor)),
                   const SizedBox(height: 4),
                   Text(
                     _formatTimestamp(data['timestamp']),
-                    style: TextStyle(
-                        color: colors.textColor.withOpacity(0.6), fontSize: 10),
+                    style: TextStyle(color: colors.textColor.withOpacity(0.6), fontSize: 10),
                   ),
                 ],
               ),
@@ -1077,19 +845,11 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   Future<void> _sendMessage() async {
-    if (_controller.text.isEmpty || _isMutuallyBlocked || currentUserId == null)
-      return;
-
+    if (_controller.text.isEmpty || _isMutuallyBlocked || currentUserId == null) return;
     final messageText = _controller.text.trim();
-
-    // Capture the reply message before clearing it
     final capturedReplyMessage = _replyingToMessage;
-
-    // Determine if the original message was from the current user
     final isOriginalFromSelf = capturedReplyMessage != null &&
         capturedReplyMessage['repliedMessageSenderIsSelf'] == true;
-
-    // Create optimistic message with all reply data
     final optimisticMessage = {
       'id': 'optimistic_${DateTime.now().millisecondsSinceEpoch}',
       'message': messageText,
@@ -1102,38 +862,25 @@ class _MessagingScreenState extends State<MessagingScreen>
       'isOptimistic': true,
       'isReply': capturedReplyMessage != null,
       'repliedToMessageId': capturedReplyMessage?['id'],
-      'repliedMessagePreview': capturedReplyMessage != null
-          ? _getMessagePreview(capturedReplyMessage)
-          : null,
-      'repliedMessageSender': capturedReplyMessage != null
-          ? (isOriginalFromSelf ? 'You' : 'Them')
-          : null,
+      'repliedMessagePreview':
+          capturedReplyMessage != null ? _getMessagePreview(capturedReplyMessage) : null,
+      'repliedMessageSender': capturedReplyMessage != null ? (isOriginalFromSelf ? 'You' : 'Them') : null,
       'repliedMessageSenderIsSelf': isOriginalFromSelf,
       'repliedMessageType': capturedReplyMessage?['type'] ?? 'text',
     };
-
     setState(() {
       _optimisticMessages.add(optimisticMessage);
       _controller.clear();
-
-      if (_isReplying) {
-        _cancelReply();
-      }
+      if (_isReplying) _cancelReply();
     });
-
     _focusNode.requestFocus();
     _scrollToBottom(immediate: true);
-
     try {
       final chatId = await SupabaseMessagesMethods().getOrCreateChat(
         currentUserId!,
         widget.recipientUid,
       );
-
-      if (chatId.startsWith('Error') || chatId.isEmpty) {
-        throw Exception('Failed to get chat');
-      }
-
+      if (chatId.startsWith('Error') || chatId.isEmpty) throw Exception('Failed to get chat');
       final res = await SupabaseMessagesMethods().sendMessageWithReply(
         chatId: chatId,
         senderId: currentUserId!,
@@ -1141,43 +888,33 @@ class _MessagingScreenState extends State<MessagingScreen>
         message: messageText,
         repliedToMessage: capturedReplyMessage,
       );
-
       if (res != 'success') {
         if (mounted) {
           setState(() {
-            _optimisticMessages
-                .removeWhere((msg) => msg['id'] == optimisticMessage['id']);
+            _optimisticMessages.removeWhere((msg) => msg['id'] == optimisticMessage['id']);
           });
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to send message'),
-              duration: Duration(seconds: 3),
-            ),
+            SnackBar(content: Text('Failed to send message'), duration: Duration(seconds: 3)),
           );
         }
       } else {
-        // Instead of refreshing immediately, wait a moment for the server
-        Future.delayed(Duration(seconds: 2), () {
-          if (mounted) {
-            _refreshMessages();
-          }
-        });
+        // ✅ ADDED: Check for expiring streaks after a successful message send
+        // This ensures that if a streak was about to expire, sending a message
+        // will reset the timer and the expiry warning should be cleared.
+        SupabaseMessagesMethods().checkAndSendStreakExpiryNotifications();
 
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _scrollToBottom(immediate: false);
+        Future.delayed(Duration(seconds: 2), () {
+          if (mounted) _refreshMessages();
         });
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(immediate: false));
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _optimisticMessages
-              .removeWhere((msg) => msg['id'] == optimisticMessage['id']);
+          _optimisticMessages.removeWhere((msg) => msg['id'] == optimisticMessage['id']);
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to send message'),
-            duration: Duration(seconds: 3),
-          ),
+          SnackBar(content: Text('Failed to send message'), duration: Duration(seconds: 3)),
         );
       }
     }
@@ -1185,32 +922,20 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   Future<void> _refreshMessages() async {
     if (chatId == null) return;
-
     try {
-      final refreshedMessages =
-          await SupabaseMessagesMethods().getMessagesPaginated(
+      final refreshedMessages = await SupabaseMessagesMethods().getMessagesPaginated(
         chatId!,
         page: 0,
-        limit:
-            (_currentPage + 1) * _messagesPerPage, // Get all pages we've loaded
+        limit: (_currentPage + 1) * _messagesPerPage,
       );
-
-      // Process messages to ensure proper structure
-      final processedMessages = refreshedMessages.map((msg) {
-        return _processServerMessage(msg);
-      }).toList();
-
+      final processedMessages = refreshedMessages.map((msg) => _processServerMessage(msg)).toList();
       if (processedMessages.isNotEmpty) {
         final oldest = _parseTimestamp(processedMessages.last['timestamp']);
-        if (oldest != null) {
-          _oldestMessageTimestamp = oldest;
-        }
+        if (oldest != null) _oldestMessageTimestamp = oldest;
       }
-
       setState(() {
         _cachedMessages = processedMessages;
-        _hasMoreMessages =
-            processedMessages.length >= ((_currentPage + 1) * _messagesPerPage);
+        _hasMoreMessages = processedMessages.length >= ((_currentPage + 1) * _messagesPerPage);
       });
     } catch (e) {}
   }
@@ -1225,10 +950,8 @@ class _MessagingScreenState extends State<MessagingScreen>
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
     final colors = _getColors(themeProvider);
-
     return WillPopScope(
       onWillPop: () async {
-        // Pause videos before navigating away
         _pauseAllVideos();
         _pauseRecipientProfileVideo();
         Navigator.pop(context, true);
@@ -1242,7 +965,6 @@ class _MessagingScreenState extends State<MessagingScreen>
           leading: IconButton(
             icon: Icon(Icons.arrow_back, color: colors.appBarIconColor),
             onPressed: () {
-              // Pause videos before navigating away
               _pauseAllVideos();
               _pauseRecipientProfileVideo();
               Navigator.pop(context, true);
@@ -1263,9 +985,7 @@ class _MessagingScreenState extends State<MessagingScreen>
                 onUpdate: _updateParticles,
                 particles: _particles,
               ),
-            _isMutuallyBlocked
-                ? _buildBlockedUI(colors)
-                : _buildChatBody(colors),
+            _isMutuallyBlocked ? _buildBlockedUI(colors) : _buildChatBody(colors),
           ],
         ),
       ),
@@ -1299,53 +1019,39 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   Widget _buildAppBarTitle(_MessagingColorSet colors) {
     return GestureDetector(
-        onTap: () {
-          // Pause videos before navigating to profile
-          _pauseAllVideos();
-          _pauseRecipientProfileVideo();
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ProfileScreen(uid: widget.recipientUid),
-            ),
-          );
-        },
-        child: Row(
-          children: [
-            _buildRecipientProfilePicture(colors),
-            const SizedBox(width: 10),
-            VerifiedUsernameWidget(
-              username: widget.recipientUsername,
-              uid: widget.recipientUid,
-              style: TextStyle(color: colors.textColor),
-            ),
-          ],
-        ));
+      onTap: () {
+        _pauseAllVideos();
+        _pauseRecipientProfileVideo();
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => ProfileScreen(uid: widget.recipientUid)),
+        );
+      },
+      child: Row(
+        children: [
+          _buildRecipientProfilePicture(colors),
+          const SizedBox(width: 10),
+          VerifiedUsernameWidget(
+            username: widget.recipientUsername,
+            uid: widget.recipientUid,
+            style: TextStyle(color: colors.textColor),
+          ),
+        ],
+      ),
+    );
   }
 
-  // ADDED: Build recipient profile picture widget
   Widget _buildRecipientProfilePicture(_MessagingColorSet colors) {
-    final isDefault = widget.recipientPhotoUrl.isEmpty ||
-        widget.recipientPhotoUrl == 'default';
+    final isDefault = widget.recipientPhotoUrl.isEmpty || widget.recipientPhotoUrl == 'default';
     final isVideo = !isDefault && _isProfileVideo(widget.recipientPhotoUrl);
-
     if (isDefault) {
       return CircleAvatar(
         radius: 21,
         backgroundColor: colors.otherUserMessageColor,
-        child: Icon(
-          Icons.account_circle,
-          size: 42,
-          color: colors.iconColor,
-        ),
+        child: Icon(Icons.account_circle, size: 42, color: colors.iconColor),
       );
     }
-
-    if (isVideo) {
-      return _buildRecipientProfileVideoPlayer(colors);
-    }
-
-    // Regular image
+    if (isVideo) return _buildRecipientProfileVideoPlayer(colors);
     return CircleAvatar(
       radius: 21,
       backgroundColor: colors.otherUserMessageColor,
@@ -1363,30 +1069,17 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   Widget _buildReplyPreview(_MessagingColorSet colors) {
-    if (!_isReplying || _replyingToMessage == null) {
-      return const SizedBox.shrink();
-    }
-
-    // Determine if we're replying to ourselves or the other user
-    final isReplyingToSelf =
-        _replyingToMessage!['repliedMessageSenderIsSelf'] == true;
-    final targetUsername =
-        isReplyingToSelf ? 'yourself' : widget.recipientUsername;
-
+    if (!_isReplying || _replyingToMessage == null) return const SizedBox.shrink();
+    final isReplyingToSelf = _replyingToMessage!['repliedMessageSenderIsSelf'] == true;
+    final targetUsername = isReplyingToSelf ? 'yourself' : widget.recipientUsername;
     return Container(
       key: ValueKey('reply_preview_${_replyingToMessage!['id']}'),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         color: colors.otherUserMessageColor.withOpacity(0.2),
         border: Border(
-          left: BorderSide(
-            color: colors.currentUserMessageColor,
-            width: 4,
-          ),
-          bottom: BorderSide(
-            color: colors.otherUserMessageColor.withOpacity(0.3),
-            width: 1.0,
-          ),
+          left: BorderSide(color: colors.currentUserMessageColor, width: 4),
+          bottom: BorderSide(color: colors.otherUserMessageColor.withOpacity(0.3), width: 1.0),
         ),
       ),
       child: Row(
@@ -1397,18 +1090,11 @@ class _MessagingScreenState extends State<MessagingScreen>
               children: [
                 Row(
                   children: [
-                    Icon(
-                      Icons.reply,
-                      size: 16,
-                      color: colors.textColor.withOpacity(0.7),
-                    ),
+                    Icon(Icons.reply, size: 16, color: colors.textColor.withOpacity(0.7)),
                     const SizedBox(width: 6),
                     Text(
                       'Replying to $targetUsername',
-                      style: TextStyle(
-                        color: colors.textColor.withOpacity(0.7),
-                        fontSize: 12,
-                      ),
+                      style: TextStyle(color: colors.textColor.withOpacity(0.7), fontSize: 12),
                     ),
                   ],
                 ),
@@ -1417,10 +1103,7 @@ class _MessagingScreenState extends State<MessagingScreen>
                   padding: const EdgeInsets.only(left: 22),
                   child: Text(
                     _getMessagePreview(_replyingToMessage!),
-                    style: TextStyle(
-                      color: colors.textColor.withOpacity(0.9),
-                      fontSize: 13,
-                    ),
+                    style: TextStyle(color: colors.textColor.withOpacity(0.9), fontSize: 13),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1430,14 +1113,9 @@ class _MessagingScreenState extends State<MessagingScreen>
           ),
           IconButton(
             icon: Icon(Icons.close, size: 20, color: colors.iconColor),
-            onPressed: () {
-              _cancelReply();
-            },
+            onPressed: _cancelReply,
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(
-              minWidth: 32,
-              minHeight: 32,
-            ),
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
           ),
         ],
       ),
@@ -1466,9 +1144,7 @@ class _MessagingScreenState extends State<MessagingScreen>
       alignment: Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
-        ),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
         decoration: BoxDecoration(
           color: colors.otherUserMessageColor.withOpacity(0.6),
           borderRadius: BorderRadius.circular(12),
@@ -1513,51 +1189,50 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   Widget _buildSentMessagePlaceholder(_MessagingColorSet colors) {
     return Align(
-        alignment: Alignment.centerRight,
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.75,
-          ),
-          decoration: BoxDecoration(
-            color: colors.currentUserMessageColor.withOpacity(0.4),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Container(
-                  height: 14,
-                  width: 100,
-                  decoration: BoxDecoration(
-                    color: colors.currentUserMessageColor.withOpacity(0.8),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
+      alignment: Alignment.centerRight,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+        decoration: BoxDecoration(
+          color: colors.currentUserMessageColor.withOpacity(0.4),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Container(
+                height: 14,
+                width: 100,
+                decoration: BoxDecoration(
+                  color: colors.currentUserMessageColor.withOpacity(0.8),
+                  borderRadius: BorderRadius.circular(4),
                 ),
-                const SizedBox(height: 8),
-                Container(
-                  height: 12,
-                  width: 160,
-                  decoration: BoxDecoration(
-                    color: colors.currentUserMessageColor.withOpacity(0.7),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                height: 12,
+                width: 160,
+                decoration: BoxDecoration(
+                  color: colors.currentUserMessageColor.withOpacity(0.7),
+                  borderRadius: BorderRadius.circular(4),
                 ),
-                const SizedBox(height: 6),
-                Container(
-                  height: 10,
-                  width: 60,
-                  decoration: BoxDecoration(
-                    color: colors.currentUserMessageColor.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
+              ),
+              const SizedBox(height: 6),
+              Container(
+                height: 10,
+                width: 60,
+                decoration: BoxDecoration(
+                  color: colors.currentUserMessageColor.withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(4),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ));
+        ),
+      ),
+    );
   }
 
   Widget _buildEmptyStatePlaceholder(_MessagingColorSet colors) {
@@ -1567,17 +1242,11 @@ class _MessagingScreenState extends State<MessagingScreen>
         children: [
           Icon(Icons.chat_bubble_outline, size: 50, color: colors.iconColor),
           const SizedBox(height: 16),
-          Text(
-            'No messages yet',
-            style: TextStyle(color: colors.textColor),
-          ),
+          Text('No messages yet', style: TextStyle(color: colors.textColor)),
           const SizedBox(height: 8),
           Text(
             'Send the first message!',
-            style: TextStyle(
-              color: colors.textColor.withOpacity(0.6),
-              fontSize: 14,
-            ),
+            style: TextStyle(color: colors.textColor.withOpacity(0.6), fontSize: 14),
           ),
         ],
       ),
@@ -1585,10 +1254,7 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   Widget _buildMessageList(_MessagingColorSet colors) {
-    if (_isInitializing) {
-      return _buildMessagePlaceholderSkeleton(colors);
-    }
-
+    if (_isInitializing) return _buildMessagePlaceholderSkeleton(colors);
     if (currentUserId == null) {
       return Center(
         child: Column(
@@ -1596,15 +1262,11 @@ class _MessagingScreenState extends State<MessagingScreen>
           children: [
             Icon(Icons.error_outline, size: 50, color: colors.iconColor),
             const SizedBox(height: 16),
-            Text(
-              'Please sign in to view messages',
-              style: TextStyle(color: colors.textColor),
-            ),
+            Text('Please sign in to view messages', style: TextStyle(color: colors.textColor)),
           ],
         ),
       );
     }
-
     if (chatId == null) {
       return Center(
         child: Column(
@@ -1612,35 +1274,21 @@ class _MessagingScreenState extends State<MessagingScreen>
           children: [
             Icon(Icons.error_outline, size: 50, color: colors.iconColor),
             const SizedBox(height: 16),
-            Text(
-              'Failed to load chat',
-              style: TextStyle(color: colors.textColor),
-            ),
+            Text('Failed to load chat', style: TextStyle(color: colors.textColor)),
           ],
         ),
       );
     }
-
-    // Combine cached messages with optimistic messages
     List<Map<String, dynamic>> allMessages = [..._cachedMessages];
-
-    // Remove optimistic messages that have been confirmed by server
     final List<Map<String, dynamic>> remainingOptimisticMessages = [];
-
     for (final optimisticMsg in _optimisticMessages) {
       final isConfirmed = _cachedMessages.any((serverMsg) {
         return serverMsg['message'] == optimisticMsg['message'] &&
             serverMsg['senderId'] == optimisticMsg['senderId'] &&
-            _areTimestampsClose(_parseTimestamp(serverMsg['timestamp']),
-                optimisticMsg['timestamp']);
+            _areTimestampsClose(_parseTimestamp(serverMsg['timestamp']), optimisticMsg['timestamp']);
       });
-
-      if (!isConfirmed) {
-        remainingOptimisticMessages.add(optimisticMsg);
-      }
+      if (!isConfirmed) remainingOptimisticMessages.add(optimisticMsg);
     }
-
-    // Update optimistic messages list
     if (remainingOptimisticMessages.length != _optimisticMessages.length) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -1651,11 +1299,7 @@ class _MessagingScreenState extends State<MessagingScreen>
         }
       });
     }
-
-    // Add remaining optimistic messages
     allMessages.addAll(remainingOptimisticMessages);
-
-    // Sort all messages by timestamp
     allMessages.sort((a, b) {
       try {
         DateTime? timeA = _parseTimestamp(a['timestamp']);
@@ -1666,13 +1310,9 @@ class _MessagingScreenState extends State<MessagingScreen>
         return 0;
       }
     });
-
     if (allMessages.isNotEmpty && !_hasMarkedAsRead) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _markMessagesAsRead();
-      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _markMessagesAsRead());
     }
-
     if (allMessages.isNotEmpty && !_hasInitialScroll) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scrollController.hasClients && mounted) {
@@ -1681,96 +1321,61 @@ class _MessagingScreenState extends State<MessagingScreen>
         }
       });
     }
-
-    final shouldShowEmptyState =
-        allMessages.isEmpty && _optimisticMessages.isEmpty;
-
-    if (shouldShowEmptyState) {
-      return _buildEmptyStatePlaceholder(colors);
-    }
-
+    final shouldShowEmptyState = allMessages.isEmpty && _optimisticMessages.isEmpty;
+    if (shouldShowEmptyState) return _buildEmptyStatePlaceholder(colors);
     return Column(
       children: [
-        // Load more indicator at top (only shown when loading)
         if (_isLoadingMore)
           Container(
             padding: EdgeInsets.all(8),
-            child: Center(
-              child: CircularProgressIndicator(
-                color: colors.progressIndicatorColor,
-              ),
-            ),
+            child: Center(child: CircularProgressIndicator(color: colors.progressIndicatorColor)),
           ),
-
-        // Messages list
         Expanded(
           child: ListView.builder(
             controller: _scrollController,
             reverse: false,
             itemCount: allMessages.length,
-            itemBuilder: (context, index) {
-              final message = allMessages[index];
-              return _buildMessageBubble(message, colors);
-            },
+            itemBuilder: (context, index) => _buildMessageBubble(allMessages[index], colors),
           ),
         ),
       ],
     );
   }
 
-  Widget _buildTextMessage(
-      Map<String, dynamic> data, _MessagingColorSet colors) {
+  Widget _buildTextMessage(Map<String, dynamic> data, _MessagingColorSet colors) {
     final isReply = data['isReply'] == true;
     final isMe = data['senderId'] == currentUserId;
     final messageText = data['message'] ?? '';
-    final isOptimistic = data['isOptimistic'] == true;
-
     return Container(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
-        ),
-        padding: EdgeInsets.fromLTRB(
-          12,
-          isReply ? 8 : 12,
-          12,
-          12,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment:
-              isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-          children: [
-            Text(
-              messageText,
-              style: TextStyle(color: colors.textColor),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              _formatTimestamp(data['timestamp']),
-              style: TextStyle(
-                  color: colors.textColor.withOpacity(0.6), fontSize: 10),
-            ),
-          ],
-        ));
+      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+      padding: EdgeInsets.fromLTRB(12, isReply ? 8 : 12, 12, 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          Text(messageText, style: TextStyle(color: colors.textColor)),
+          const SizedBox(height: 4),
+          Text(
+            _formatTimestamp(data['timestamp']),
+            style: TextStyle(color: colors.textColor.withOpacity(0.6), fontSize: 10),
+          ),
+        ],
+      ),
+    );
   }
 
-  Widget _buildMessageBubble(
-      Map<String, dynamic> message, _MessagingColorSet colors) {
+  Widget _buildMessageBubble(Map<String, dynamic> message, _MessagingColorSet colors) {
     final isMe = message['senderId'] == currentUserId;
     final isPost = message['type'] == 'post';
     final isReply = message['isReply'] == true;
     final messageId = message['id'].toString();
     final swipeOffset = _swipeOffsets[messageId] ?? 0;
     final isSwiping = _isSwiping[messageId] ?? false;
-    final isOptimistic = message['isOptimistic'] == true;
-
     return GestureDetector(
       onLongPress: () => _startReply(message),
       onHorizontalDragStart: (details) => _handleSwipeStart(messageId, details),
-      onHorizontalDragUpdate: (details) =>
-          _handleSwipeUpdate(messageId, details),
-      onHorizontalDragEnd: (details) =>
-          _handleSwipeEnd(messageId, details, message),
+      onHorizontalDragUpdate: (details) => _handleSwipeUpdate(messageId, details),
+      onHorizontalDragEnd: (details) => _handleSwipeEnd(messageId, details, message),
       onTap: () => _resetSwipe(messageId),
       child: Stack(
         children: [
@@ -1783,21 +1388,15 @@ class _MessagingScreenState extends State<MessagingScreen>
                   child: Transform.translate(
                     offset: Offset(-(30 - (swipeOffset / 2)), 0),
                     child: Opacity(
-                      opacity:
-                          (swipeOffset / _maxSwipeDistance).clamp(0.0, 1.0),
+                      opacity: (swipeOffset / _maxSwipeDistance).clamp(0.0, 1.0),
                       child: Container(
                         width: 40,
                         height: 40,
                         decoration: BoxDecoration(
-                          color:
-                              colors.currentUserMessageColor.withOpacity(0.3),
+                          color: colors.currentUserMessageColor.withOpacity(0.3),
                           shape: BoxShape.circle,
                         ),
-                        child: Icon(
-                          Icons.reply,
-                          color: colors.iconColor,
-                          size: 20,
-                        ),
+                        child: Icon(Icons.reply, color: colors.iconColor, size: 20),
                       ),
                     ),
                   ),
@@ -1811,8 +1410,7 @@ class _MessagingScreenState extends State<MessagingScreen>
               curve: Curves.easeOut,
               margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
               child: Row(
-                mainAxisAlignment:
-                    isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+                mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
                 children: [
                   Flexible(
                     child: Container(
@@ -1820,33 +1418,20 @@ class _MessagingScreenState extends State<MessagingScreen>
                         maxWidth: MediaQuery.of(context).size.width * 0.75,
                       ),
                       decoration: BoxDecoration(
-                        color: isMe
-                            ? colors.currentUserMessageColor
-                            : colors.otherUserMessageColor,
+                        color: isMe ? colors.currentUserMessageColor : colors.otherUserMessageColor,
                         borderRadius: BorderRadius.circular(12),
                         boxShadow: isSwiping
-                            ? [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.1),
-                                  blurRadius: 8,
-                                  spreadRadius: 1,
-                                ),
-                              ]
+                            ? [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 8, spreadRadius: 1)]
                             : [],
                       ),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: isPost || isReply
                             ? CrossAxisAlignment.stretch
-                            : (isMe
-                                ? CrossAxisAlignment.end
-                                : CrossAxisAlignment.start),
+                            : (isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start),
                         children: [
-                          if (isReply)
-                            _buildReplyIndicator(message, colors, isMe),
-                          isPost
-                              ? _buildPostMessage(message, colors)
-                              : _buildTextMessage(message, colors),
+                          if (isReply) _buildReplyIndicator(message, colors, isMe),
+                          isPost ? _buildPostMessage(message, colors) : _buildTextMessage(message, colors),
                         ],
                       ),
                     ),
@@ -1860,143 +1445,83 @@ class _MessagingScreenState extends State<MessagingScreen>
     );
   }
 
-  Widget _buildReplyIndicator(
-      Map<String, dynamic> message, _MessagingColorSet colors, bool isMe) {
-    final repliedMessagePreview =
-        message['repliedMessagePreview'] ?? 'Original message';
-    final repliedMessageSender = message['repliedMessageSender'] ?? 'Them';
+  Widget _buildReplyIndicator(Map<String, dynamic> message, _MessagingColorSet colors, bool isMe) {
+    final repliedMessagePreview = message['repliedMessagePreview'] ?? 'Original message';
     final isOriginalFromSelf = message['repliedMessageSenderIsSelf'] == true;
-
-    // Determine the reply text based on who sent the reply and who they're replying to
     String replyText;
-
     if (isMe) {
-      // Current user is replying
-      if (isOriginalFromSelf) {
-        // Replying to own message
-        replyText = 'You replied to yourself';
-      } else {
-        // Replying to other user's message
-        replyText = 'You replied to ${widget.recipientUsername}';
-      }
+      replyText = isOriginalFromSelf ? 'You replied to yourself' : 'You replied to ${widget.recipientUsername}';
     } else {
-      // Other user is replying
-      if (isOriginalFromSelf) {
-        // Other user is replying to their own message
-        replyText = '${widget.recipientUsername} replied to themselves';
-      } else {
-        // Other user is replying to current user's message
-        replyText = '${widget.recipientUsername} replied to you';
-      }
+      replyText = isOriginalFromSelf
+          ? '${widget.recipientUsername} replied to themselves'
+          : '${widget.recipientUsername} replied to you';
     }
-
     return Container(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-        decoration: BoxDecoration(
-          color: colors.otherUserMessageColor.withOpacity(isMe ? 0.2 : 0.3),
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(12),
-            topRight: Radius.circular(12),
-          ),
-          border: Border(
-            left: BorderSide(
-              color: isMe ? colors.currentUserMessageColor : colors.iconColor,
-              width: 4,
-            ),
-          ),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      decoration: BoxDecoration(
+        color: colors.otherUserMessageColor.withOpacity(isMe ? 0.2 : 0.3),
+        borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
+        border: Border(
+          left: BorderSide(color: isMe ? colors.currentUserMessageColor : colors.iconColor, width: 4),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.reply,
-                  size: 14,
-                  color: colors.textColor.withOpacity(0.7),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  replyText,
-                  style: TextStyle(
-                    color: colors.textColor.withOpacity(0.7),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Container(
-              padding: const EdgeInsets.only(left: 22),
-              child: Text(
-                repliedMessagePreview,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.reply, size: 14, color: colors.textColor.withOpacity(0.7)),
+              const SizedBox(width: 6),
+              Text(
+                replyText,
                 style: TextStyle(
-                  color: colors.textColor.withOpacity(0.9),
-                  fontSize: 12,
+                  color: colors.textColor.withOpacity(0.7),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
                 ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
               ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Container(
+            padding: const EdgeInsets.only(left: 22),
+            child: Text(
+              repliedMessagePreview,
+              style: TextStyle(color: colors.textColor.withOpacity(0.9), fontSize: 12),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
-          ],
-        ));
+          ),
+        ],
+      ),
+    );
   }
 
-  Widget _buildPostMessage(
-      Map<String, dynamic> data, _MessagingColorSet colors) {
+  Widget _buildPostMessage(Map<String, dynamic> data, _MessagingColorSet colors) {
     final postShare = data['postShare'] as Map<String, dynamic>?;
-
-    if (postShare == null) {
-      return BlockedContentMessage(
-          message: 'Post data unavailable', colors: colors);
-    }
-
+    if (postShare == null) return BlockedContentMessage(message: 'Post data unavailable', colors: colors);
     return FutureBuilder<Map<String, dynamic>>(
       future: _checkPostStatus(postShare),
       builder: (context, statusSnapshot) {
-        if (statusSnapshot.connectionState == ConnectionState.waiting &&
-            !statusSnapshot.hasData) {
+        if (statusSnapshot.connectionState == ConnectionState.waiting && !statusSnapshot.hasData) {
           return Container(
-            padding: EdgeInsets.fromLTRB(
-              12,
-              data['isReply'] == true ? 4 : 12,
-              12,
-              12,
-            ),
-            child: Center(
-              child: CircularProgressIndicator(
-                color: colors.progressIndicatorColor,
-                strokeWidth: 2,
-              ),
-            ),
+            padding: EdgeInsets.fromLTRB(12, data['isReply'] == true ? 4 : 12, 12, 12),
+            child: Center(child: CircularProgressIndicator(color: colors.progressIndicatorColor, strokeWidth: 2)),
           );
         }
-
-        final status = statusSnapshot.data ??
-            {'exists': false, 'isBlocked': false, 'postData': postShare};
-
+        final status = statusSnapshot.data ?? {'exists': false, 'isBlocked': false, 'postData': postShare};
         final bool postExists = status['exists'] ?? false;
         final bool isBlocked = status['isBlocked'] ?? false;
-
-        if (!postExists) {
-          return _buildDeletedPostMessage(colors);
-        }
-
-        if (isBlocked) {
-          return BlockedContentMessage(colors: colors);
-        }
-
+        if (!postExists) return _buildDeletedPostMessage(colors);
+        if (isBlocked) return BlockedContentMessage(colors: colors);
         return _buildPostContent(postShare, data, colors);
       },
     );
   }
 
   void _navigateToPost(Map<String, dynamic> postShare) {
-    // Pause all videos before navigation
     _pauseAllVideos();
     _pauseRecipientProfileVideo();
-
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -2022,12 +1547,7 @@ class _MessagingScreenState extends State<MessagingScreen>
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
           decoration: BoxDecoration(
             color: colors.backgroundColor,
-            border: Border(
-              top: BorderSide(
-                color: colors.otherUserMessageColor.withOpacity(0.5),
-                width: 1.0,
-              ),
-            ),
+            border: Border(top: BorderSide(color: colors.otherUserMessageColor.withOpacity(0.5), width: 1.0)),
           ),
           child: Row(
             children: [
@@ -2036,9 +1556,7 @@ class _MessagingScreenState extends State<MessagingScreen>
                   padding: const EdgeInsets.only(right: 8.0),
                   child: IconButton(
                     icon: Icon(Icons.close, color: colors.iconColor, size: 20),
-                    onPressed: () {
-                      _cancelReply();
-                    },
+                    onPressed: _cancelReply,
                     tooltip: 'Cancel reply',
                     padding: const EdgeInsets.all(6),
                   ),
@@ -2065,23 +1583,16 @@ class _MessagingScreenState extends State<MessagingScreen>
                                     : _isReplying
                                         ? 'Type your reply...'
                                         : 'Type a message...',
-                            hintStyle: TextStyle(
-                                color: colors.textColor.withOpacity(0.6)),
+                            hintStyle: TextStyle(color: colors.textColor.withOpacity(0.6)),
                             border: InputBorder.none,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 12,
-                            ),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                             isDense: true,
                           ),
                           minLines: 1,
                           maxLines: 3,
-                          onTap: () {
-                            Future.delayed(const Duration(milliseconds: 250),
-                                () {
-                              _scrollToBottom(immediate: true);
-                            });
-                          },
+                          onTap: () => Future.delayed(const Duration(milliseconds: 250), () {
+                            _scrollToBottom(immediate: true);
+                          }),
                           onSubmitted: (_) => _sendMessage(),
                         ),
                       ),
@@ -2091,20 +1602,12 @@ class _MessagingScreenState extends State<MessagingScreen>
               ),
               const SizedBox(width: 8),
               Container(
-                decoration: BoxDecoration(
-                  color: colors.buttonColor,
-                  shape: BoxShape.circle,
-                ),
+                decoration: BoxDecoration(color: colors.buttonColor, shape: BoxShape.circle),
                 child: IconButton(
                   icon: Icon(Icons.send, color: colors.iconColor),
-                  onPressed: _isMutuallyBlocked || currentUserId == null
-                      ? null
-                      : _sendMessage,
+                  onPressed: (_isMutuallyBlocked || currentUserId == null) ? null : _sendMessage,
                   padding: const EdgeInsets.all(12),
-                  constraints: const BoxConstraints(
-                    minWidth: 48,
-                    minHeight: 48,
-                  ),
+                  constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
                 ),
               ),
             ],
@@ -2120,18 +1623,11 @@ class _MessagingScreenState extends State<MessagingScreen>
       final localTime = timestamp.toLocal();
       final now = DateTime.now();
       final difference = now.difference(localTime);
-
-      if (difference.inSeconds < 60) {
-        return 'Now';
-      } else if (difference.inMinutes < 60) {
-        return '${difference.inMinutes}m';
-      } else if (difference.inHours < 24) {
-        return '${difference.inHours}h';
-      } else if (difference.inDays < 7) {
-        return '${difference.inDays}d';
-      } else {
-        return '${localTime.day}/${localTime.month}';
-      }
+      if (difference.inSeconds < 60) return 'Now';
+      if (difference.inMinutes < 60) return '${difference.inMinutes}m';
+      if (difference.inHours < 24) return '${difference.inHours}h';
+      if (difference.inDays < 7) return '${difference.inDays}d';
+      return '${localTime.day}/${localTime.month}';
     } catch (e) {
       return 'Now';
     }
@@ -2143,17 +1639,14 @@ class _FallingNumbersBackground extends StatefulWidget {
   final Function(double) onInit;
   final VoidCallback onUpdate;
   final List<NumberParticle> particles;
-
   const _FallingNumbersBackground({
     required this.animationController,
     required this.onInit,
     required this.onUpdate,
     required this.particles,
   });
-
   @override
-  __FallingNumbersBackgroundState createState() =>
-      __FallingNumbersBackgroundState();
+  __FallingNumbersBackgroundState createState() => __FallingNumbersBackgroundState();
 }
 
 class __FallingNumbersBackgroundState extends State<_FallingNumbersBackground> {
@@ -2165,7 +1658,6 @@ class __FallingNumbersBackgroundState extends State<_FallingNumbersBackground> {
       widget.onInit(screenHeight);
     });
   }
-
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -2187,31 +1679,27 @@ class __FallingNumbersBackgroundState extends State<_FallingNumbersBackground> {
 class BlockedContentMessage extends StatelessWidget {
   final String message;
   final _MessagingColorSet colors;
-
   const BlockedContentMessage({
     super.key,
     this.message = 'This content is unavailable due to blocking',
     required this.colors,
   });
-
   @override
   Widget build(BuildContext context) {
     return Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            Icon(Icons.block, color: Colors.red[400], size: 20),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                message,
-                style: TextStyle(
-                  color: colors.textColor.withOpacity(0.6),
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        children: [
+          Icon(Icons.block, color: Colors.red[400], size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(color: colors.textColor.withOpacity(0.6), fontStyle: FontStyle.italic),
             ),
-          ],
-        ));
+          ),
+        ],
+      ),
+    );
   }
 }
