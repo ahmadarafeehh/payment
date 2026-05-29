@@ -134,6 +134,31 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           : _EditProfileLightColors();
 
   // ==========================================================================
+  // ERROR LOGGING HELPER (new)
+  // ==========================================================================
+
+  Future<void> _logEditProfileError({
+    required String operation,
+    required dynamic error,
+    StackTrace? stack,
+    Map<String, dynamic>? additionalData,
+  }) async {
+    try {
+      final uid = _resolvedUid;
+      await _supabase.from('editprof_errors').insert({
+        'user_id': uid,
+        'operation_type': operation,
+        'error_message': error.toString(),
+        'stack_trace': stack?.toString(),
+        'additional_data': additionalData,
+      });
+    } catch (logError) {
+      // Silently fail – don't let logging break the user experience
+      print('Failed to log edit profile error: $logError');
+    }
+  }
+
+  // ==========================================================================
   // HELPERS
   // ==========================================================================
 
@@ -233,7 +258,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           _isVideoUrl(_currentPhotoUrl)) {
         _initializeProfileVideoFromUrl(_currentPhotoUrl!);
       }
-    } catch (e) {
+    } catch (e, stack) {
+      await _logEditProfileError(
+        operation: 'loadUserData',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': _resolvedUid},
+      );
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Error loading profile: $e')));
@@ -256,7 +287,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           _isProfileVideoInitialized = true;
         });
       }
-    } catch (_) {
+    } catch (e, stack) {
+      await _logEditProfileError(
+        operation: 'initializeProfileVideoFromUrl',
+        error: e,
+        stack: stack,
+        additionalData: {'url': url},
+      );
       if (mounted) setState(() => _isProfileVideoInitialized = false);
     }
   }
@@ -526,7 +563,19 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           'photoUrl': updatedData['photoUrl'] ?? _initialPhotoUrl,
         });
       }
-    } catch (e) {
+    } catch (e, stack) {
+      await _logEditProfileError(
+        operation: 'saveProfile',
+        error: e,
+        stack: stack,
+        additionalData: {
+          'uid': uid,
+          'bioLength': _bioController.text.length,
+          'hasPendingImage': _pendingImageBytes != null,
+          'hasPendingVideo': _pendingVideoFile != null,
+          'shouldRemove': _shouldRemoveCurrentMedia,
+        },
+      );
       if (mounted) {
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
@@ -551,7 +600,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         } else {
           await StorageMethods().deleteImage(mediaUrl);
         }
-      } catch (_) {}
+      } catch (e, stack) {
+        await _logEditProfileError(
+          operation: 'deleteOldMediaInBackground',
+          error: e,
+          stack: stack,
+          additionalData: {'mediaUrl': mediaUrl},
+        );
+      }
     });
   }
 
