@@ -1,18 +1,18 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class PlatformService {
   static const _platformPrefKey = 'platform_saved_v1';
   static const _notifPrefKey    = 'notif_status_saved_v1';
+  static const _versionPrefKey  = 'app_version_saved_v1';
 
   // ---------------------------------------------------------------------------
   // Platform detection
   // ---------------------------------------------------------------------------
-
   static String detectPlatform() {
     if (kIsWeb) return 'web';
     if (Platform.isAndroid) return 'android';
@@ -23,28 +23,51 @@ class PlatformService {
     return 'unknown';
   }
 
-  /// Saves the platform to the DB exactly once per device install.
+  static Future<String> _getAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      // e.g. "1.2.3+45"  (version+buildNumber)
+      return '${info.version}+${info.buildNumber}';
+    } catch (_) {
+      return 'unknown';
+    }
+  }
+
+  /// Saves platform exactly once per install.
+  /// Saves app version on every launch if it changed (handles updates).
   static Future<void> saveOnce(String uid) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final savedKey = '${_platformPrefKey}_$uid';
-      if (prefs.getBool(savedKey) == true) return;
+      final platformKey = '${_platformPrefKey}_$uid';
+      final versionKey  = '${_versionPrefKey}_$uid';
 
-      final platform = detectPlatform();
-      await Supabase.instance.client
-          .from('users')
-          .update({'platform': platform}).eq('uid', uid);
+      final platform   = detectPlatform();
+      final appVersion = await _getAppVersion();
 
-      await prefs.setBool(savedKey, true);
+      final platformAlreadySaved = prefs.getBool(platformKey) == true;
+      final lastSavedVersion     = prefs.getString(versionKey);
+      final versionChanged       = lastSavedVersion != appVersion;
+
+      // Build update payload — only include what needs updating
+      final Map<String, dynamic> updates = {};
+      if (!platformAlreadySaved) updates['platform']    = platform;
+      if (versionChanged)        updates['app_version'] = appVersion;
+
+      if (updates.isNotEmpty) {
+        await Supabase.instance.client
+            .from('users')
+            .update(updates)
+            .eq('uid', uid);
+      }
+
+      if (!platformAlreadySaved) await prefs.setBool(platformKey, true);
+      if (versionChanged)        await prefs.setString(versionKey, appVersion);
     } catch (_) {}
   }
 
   // ---------------------------------------------------------------------------
-  // Notification permission detection
+  // Notification permission
   // ---------------------------------------------------------------------------
-
-  /// Checks whether the user has granted push notification permission.
-  /// Uses Firebase Messaging which works on iOS, Android, and Web.
   static Future<bool> _checkNotificationsEnabled() async {
     try {
       final settings =
@@ -56,23 +79,13 @@ class PlatformService {
     }
   }
 
-  /// Saves notification permission status to the DB once per device install.
-  ///
-  /// Unlike platform (which never changes), notification permission CAN change
-  /// if the user goes to Settings and toggles it. So this uses a lighter gate:
-  /// - First call: always saves to DB and caches locally.
-  /// - Subsequent calls within the same app session: skipped via pref.
-  /// - On next app launch: re-checks and updates DB only if the value changed,
-  ///   so the DB stays accurate without hammering it on every open.
   static Future<void> saveNotificationStatus(String uid) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs   = await SharedPreferences.getInstance();
       final prefKey = '${_notifPrefKey}_$uid';
-
       final enabled = await _checkNotificationsEnabled();
-      final newValue = enabled.toString(); // 'true' or 'false'
+      final newValue = enabled.toString();
 
-      // Only write to DB if the value has changed since last save.
       final lastSaved = prefs.getString(prefKey);
       if (lastSaved == newValue) return;
 
