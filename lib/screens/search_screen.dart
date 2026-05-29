@@ -437,6 +437,35 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // ERROR LOGGING HELPER – logs only to search_errors table
+  // ───────────────────────────────────────────────────────────────────────────
+  Future<void> _logSearchError({
+    required String operationType,
+    String? userId,
+    String? postId,
+    Map<String, dynamic>? additionalData,
+    required dynamic error,
+    StackTrace? stackTrace,
+  }) async {
+    try {
+      await _supabase.from('search_errors').insert({
+        'user_id': userId ?? currentUserId,
+        'operation_type': operationType,
+        'error_message': error.toString(),
+        'stack_trace': stackTrace?.toString(),
+        'additional_data': {
+          if (postId != null) 'postId': postId,
+          ...?additionalData,
+        },
+      });
+    } catch (_) {
+      // Fail silently – error logging must never crash the app
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+
   @override
   void initState() {
     super.initState();
@@ -818,7 +847,12 @@ class _SearchScreenState extends State<SearchScreen>
           .single();
       final blockedUsers = response['blockedUsers'] as List<dynamic>?;
       blockedUsersSet = Set<String>.from(blockedUsers ?? []);
-    } catch (e) {
+    } catch (e, st) {
+      await _logSearchError(
+        operationType: 'load_blocked_users',
+        error: e,
+        stackTrace: st,
+      );
       blockedUsersSet = {};
     }
   }
@@ -875,7 +909,16 @@ class _SearchScreenState extends State<SearchScreen>
           _hasLoadError = true;
         });
       }
-    } catch (e) {
+    } catch (e, st) {
+      await _logSearchError(
+        operationType: 'fetch_posts',
+        additionalData: {
+          'offset': _offset,
+          'isFirstLoad': _isFirstLoad,
+        },
+        error: e,
+        stackTrace: st,
+      );
       setState(() {
         _allPosts = [];
         _hasMorePosts = false;
@@ -918,7 +961,13 @@ class _SearchScreenState extends State<SearchScreen>
       } else {
         setState(() => _hasMorePosts = false);
       }
-    } catch (e) {
+    } catch (e, st) {
+      await _logSearchError(
+        operationType: 'load_more_posts',
+        additionalData: {'offset': _offset},
+        error: e,
+        stackTrace: st,
+      );
       setState(() => _hasMorePosts = false);
     } finally {
       setState(() => _isLoadingMore = false);
@@ -976,7 +1025,13 @@ class _SearchScreenState extends State<SearchScreen>
         return newPosts;
       }
       return [];
-    } catch (_) {
+    } catch (e, st) {
+      await _logSearchError(
+        operationType: 'load_more_posts_for_feed',
+        additionalData: {'currentCount': currentCount},
+        error: e,
+        stackTrace: st,
+      );
       return [];
     }
   }
@@ -1007,8 +1062,13 @@ class _SearchScreenState extends State<SearchScreen>
             };
           }
         }
-      } catch (e) {
-        // Silently fail
+      } catch (e, st) {
+        await _logSearchError(
+          operationType: 'enrich_posts_with_user_data',
+          additionalData: {'missingCount': missing.length},
+          error: e,
+          stackTrace: st,
+        );
       }
     }
 
@@ -1116,7 +1176,13 @@ class _SearchScreenState extends State<SearchScreen>
         return !blockedUsersSet.contains(uid) && uid != currentUserId;
       }).toList();
       return filtered;
-    } catch (_) {
+    } catch (e, st) {
+      await _logSearchError(
+        operationType: 'search_users',
+        additionalData: {'query': query},
+        error: e,
+        stackTrace: st,
+      );
       return [];
     }
   }
@@ -1160,7 +1226,13 @@ class _SearchScreenState extends State<SearchScreen>
           .eq('uid', userId)
           .maybeSingle();
       return response as Map<String, dynamic>?;
-    } catch (_) {
+    } catch (e, st) {
+      await _logSearchError(
+        operationType: 'fetch_user_by_id',
+        additionalData: {'userId': userId},
+        error: e,
+        stackTrace: st,
+      );
       return null;
     }
   }
@@ -1789,7 +1861,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
           : Map<String, dynamic>.from(raw as Map);
       _editResult = VideoEditResult.fromJson(map, File(''));
     } catch (e) {
-      // ignore
+      // ignore (metadata parsing failure is not critical)
     }
   }
 
@@ -1831,7 +1903,17 @@ class _FeedPostPageState extends State<_FeedPostPage>
           _isLoadingRatings = false;
         });
       }
-    } catch (e) {
+    } catch (e, st) {
+      // Log rating fetch error to search_errors (using same table for simplicity)
+      try {
+        await _supabase.from('search_errors').insert({
+          'user_id': user?.uid,
+          'operation_type': 'fetch_ratings',
+          'error_message': e.toString(),
+          'stack_trace': st.toString(),
+          'additional_data': {'postId': _postId},
+        });
+      } catch (_) {}
       if (mounted) setState(() => _isLoadingRatings = false);
     }
   }
@@ -1849,8 +1931,16 @@ class _FeedPostPageState extends State<_FeedPostPage>
           setState(() => _reactionEmoji = emoji);
         }
       }
-    } catch (e) {
-      // ignore
+    } catch (e, st) {
+      // Log silently
+      try {
+        await _supabase.from('search_errors').insert({
+          'operation_type': 'fetch_reaction_emoji',
+          'error_message': e.toString(),
+          'stack_trace': st.toString(),
+          'additional_data': {'postId': _postId},
+        });
+      } catch (_) {}
     }
   }
 
@@ -1867,8 +1957,15 @@ class _FeedPostPageState extends State<_FeedPostPage>
       if (mounted) {
         setState(() => _commentCount = comments.length + replies.length);
       }
-    } catch (e) {
-      // ignore
+    } catch (e, st) {
+      try {
+        await _supabase.from('search_errors').insert({
+          'operation_type': 'fetch_comments_count',
+          'error_message': e.toString(),
+          'stack_trace': st.toString(),
+          'additional_data': {'postId': _postId},
+        });
+      } catch (_) {}
     }
   }
 
@@ -1898,8 +1995,16 @@ class _FeedPostPageState extends State<_FeedPostPage>
       } else {
         controller.dispose();
       }
-    } catch (e) {
+    } catch (e, st) {
       if (mounted) setState(() => _isVideoLoading = false);
+      try {
+        await _supabase.from('search_errors').insert({
+          'operation_type': 'init_video',
+          'error_message': e.toString(),
+          'stack_trace': st.toString(),
+          'additional_data': {'postId': _postId, 'postUrl': _postUrl},
+        });
+      } catch (_) {}
     }
   }
 
@@ -1945,8 +2050,17 @@ class _FeedPostPageState extends State<_FeedPostPage>
       final res = await SupabaseReactionsMethods()
           .reactToPost(_postId, user.uid, rating);
       if (res != 'success' && mounted) _fetchRatings();
-    } catch (_) {
+    } catch (e, st) {
       if (mounted) _fetchRatings();
+      try {
+        await _supabase.from('search_errors').insert({
+          'user_id': user.uid,
+          'operation_type': 'submit_rating',
+          'error_message': e.toString(),
+          'stack_trace': st.toString(),
+          'additional_data': {'postId': _postId, 'rating': rating},
+        });
+      } catch (_) {}
     }
   }
 
@@ -2377,8 +2491,16 @@ class _FeedPostPageState extends State<_FeedPostPage>
     try {
       await _postsMethods.deletePost(_postId);
       widget.onPostDeleted?.call();
-    } catch (e) {
+    } catch (e, st) {
       if (mounted) showSnackBar(context, 'Failed to delete post: $e');
+      try {
+        await _supabase.from('search_errors').insert({
+          'operation_type': 'delete_post',
+          'error_message': e.toString(),
+          'stack_trace': st.toString(),
+          'additional_data': {'postId': _postId},
+        });
+      } catch (_) {}
     }
   }
 }
