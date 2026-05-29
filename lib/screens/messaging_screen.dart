@@ -14,7 +14,7 @@ import 'package:Ratedly/screens/first_time/number_particle.dart';
 import 'package:Ratedly/screens/first_time/falling_number_painter.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/providers/user_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // ADDED for streak tooltip
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ============================================================================
 // ERROR LOGGING HELPER – logs only to messages_error table
@@ -177,10 +177,9 @@ class _MessagingScreenState extends State<MessagingScreen>
   OverlayEntry? _celebrationOverlay;
   // ================================================
 
-  // ========== STREAK TOOLTIP (Option 1) ==========
-  final GlobalKey _appBarStreakKey = GlobalKey();
+  // ========== STREAK TOOLTIP (Centered, Got it button) ==========
   bool _hasShownStreakTooltip = false;
-  // ===============================================
+  // ==============================================================
 
   _MessagingColorSet _getColors(ThemeProvider themeProvider) {
     final isDarkMode = themeProvider.themeMode == ThemeMode.dark;
@@ -605,12 +604,15 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   // ========== STREAK INDICATOR METHODS ==========
   Future<void> _updateStreakData() async {
-    if (chatId == null) return;
+    // FIX: Capture chatId locally to avoid null race condition
+    final String? currentChatId = chatId;
+    if (currentChatId == null) return;
+
     try {
       final response = await _supabase
           .from('chats')
           .select('streak_count, last_mutual_exchange')
-          .eq('id', chatId!)
+          .eq('id', currentChatId)
           .single();
 
       final streakCount = response['streak_count'] ?? 0;
@@ -651,14 +653,14 @@ class _MessagingScreenState extends State<MessagingScreen>
         _streakEmoji = emoji;
         _streakTimeLeft = timeLeftText;
       });
-      
+
       // Show tooltip the first time a streak appears
       _maybeShowStreakTooltip();
     } catch (e) {
       await _logMessageError(
         operationType: 'update_streak_data',
         userId: currentUserId,
-        chatId: chatId,
+        chatId: currentChatId,
         error: e,
       );
     }
@@ -675,7 +677,7 @@ class _MessagingScreenState extends State<MessagingScreen>
     });
   }
 
-  // ========== STREAK TOOLTIP (Option 1) ==========
+  // ========== STREAK TOOLTIP (Centered, "Got it" button, no auto-dismiss) ==========
   Future<void> _maybeShowStreakTooltip() async {
     if (_hasShownStreakTooltip) return;
     if (_streakCount <= 0) return;
@@ -691,81 +693,98 @@ class _MessagingScreenState extends State<MessagingScreen>
     _hasShownStreakTooltip = true;
     await prefs.setBool(key, true);
 
-    // Get the position of the streak widget
-    final RenderBox? streakBox = _appBarStreakKey.currentContext?.findRenderObject() as RenderBox?;
-    if (streakBox == null) return;
+    // Wait for the next frame to ensure overlay is ready
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final overlay = Overlay.of(context);
+      if (overlay == null) return;
 
-    final position = streakBox.localToGlobal(Offset.zero);
-    final size = streakBox.size;
-
-    final overlay = Overlay.of(context);
-    if (overlay == null) return;
-
-    OverlayEntry? tooltipEntry;
-    tooltipEntry = OverlayEntry(
-      builder: (context) => Positioned(
-        top: position.dy + size.height + 8,
-        left: position.dx,
-        child: Material(
-          color: Colors.transparent,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            constraints: const BoxConstraints(maxWidth: 260),
-            decoration: BoxDecoration(
-              color: Colors.grey[900],
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 6)],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Row(
+      OverlayEntry? tooltipEntry;
+      tooltipEntry = OverlayEntry(
+        builder: (context) => Material(
+          color: Colors.black54, // semi-transparent background
+          child: Center(
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.0, end: 1.0),
+              duration: const Duration(milliseconds: 200),
+              builder: (context, value, child) {
+                return Transform.scale(
+                  scale: value,
+                  child: Opacity(
+                    opacity: value,
+                    child: child,
+                  ),
+                );
+              },
+              child: Container(
+                width: MediaQuery.of(context).size.width * 0.85,
+                constraints: const BoxConstraints(maxWidth: 300),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+                decoration: BoxDecoration(
+                  color: Colors.grey[900],
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: const [
+                    BoxShadow(
+                        color: Colors.black38,
+                        blurRadius: 12,
+                        offset: Offset(0, 4))
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text('🔥', style: TextStyle(fontSize: 16)),
-                    SizedBox(width: 6),
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text('🔥', style: TextStyle(fontSize: 28)),
+                        SizedBox(width: 8),
+                        Text(
+                          'Streak Started!',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
                     Text(
-                      'Streak Started!',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
+                      'Send a message with ${widget.recipientUsername} every day to keep the streak alive.\n\n'
+                      'Miss a single day and it resets to 0.',
+                      textAlign: TextAlign.center,
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 14),
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      onPressed: () {
+                        tooltipEntry?.remove();
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(30),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 24, vertical: 10),
+                      ),
+                      child: const Text(
+                        'Got it',
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.bold),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Send a message with ${widget.recipientUsername} every day to keep the streak alive.\n\n'
-                  'Miss a single day and it resets to 0.',
-                  style: const TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: GestureDetector(
-                    onTap: () => tooltipEntry?.remove(),
-                    child: const Text(
-                      'Got it',
-                      style: TextStyle(
-                        color: Colors.orange,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ),
-      ),
-    );
+      );
 
-    overlay.insert(tooltipEntry);
-    // Auto-dismiss after 6 seconds
-    Future.delayed(const Duration(seconds: 6), () {
-      if (tooltipEntry?.mounted == true) tooltipEntry?.remove();
+      overlay.insert(tooltipEntry);
     });
   }
   // ===============================================
@@ -1237,6 +1256,12 @@ class _MessagingScreenState extends State<MessagingScreen>
       );
       if (chatId.startsWith('Error') || chatId.isEmpty)
         throw Exception('Failed to get chat');
+
+      // FIX: Assign to the instance variable if it's null
+      if (this.chatId == null) {
+        this.chatId = chatId;
+      }
+
       final res = await SupabaseMessagesMethods().sendMessageWithReply(
         chatId: chatId,
         senderId: currentUserId!,
@@ -1441,7 +1466,6 @@ class _MessagingScreenState extends State<MessagingScreen>
                 if (_streakCount > 0) ...[
                   const SizedBox(width: 8),
                   Container(
-                    key: _appBarStreakKey, // KEY ADDED FOR TOOLTIP
                     padding:
                         const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
