@@ -18,7 +18,7 @@ import 'package:video_player/video_player.dart';
 import 'dart:ui';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
-import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
+import 'package:Ratedly/resources/reactions_methods.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
@@ -190,7 +190,7 @@ class _PostCardState extends State<PostCard>
 
   int _totalRatingsCount = 0;
   double _averageRating = 0.0;
-  double? _userRating; // kept for internal use, not displayed
+  double? _userRating;
   late List<Map<String, dynamic>> _localRatings;
 
   String? _resolvedProfImage;
@@ -327,7 +327,6 @@ class _PostCardState extends State<PostCard>
         _videoController = widget.preloadedVideoController;
         _isVideoInitialized = true;
         _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
-        // CRITICAL: add listener and set looping for replay
         _videoController!.addListener(_videoListener);
         _videoController!.setLooping(true);
         _videoController!.addListener(() {
@@ -371,7 +370,51 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // FETCH REACTION EMOJI FROM DATABASE
+  // ERROR LOGGING HELPERS
+  // =========================================================================
+
+  // Logs to reactions_error (for reaction/emoji issues)
+  Future<void> _logReactionError({
+    required String operationType,
+    String? userId,
+    Map<String, dynamic>? additionalData,
+    required dynamic error,
+  }) async {
+    try {
+      await Supabase.instance.client.from('reactions_error').insert({
+        'user_id': userId,
+        'operation_type': operationType,
+        'error_message': error.toString(),
+        'stack_trace': error is Error ? error.stackTrace?.toString() : null,
+        'additional_data': additionalData,
+      });
+    } catch (_) {
+      // Fail silently
+    }
+  }
+
+  // Logs to feed_errors (for post data loading issues)
+  Future<void> _logFeedError({
+    required String operationType,
+    String? userId,
+    Map<String, dynamic>? additionalData,
+    required dynamic error,
+  }) async {
+    try {
+      await Supabase.instance.client.from('feed_errors').insert({
+        'user_id': userId,
+        'operation_type': operationType,
+        'error_message': error.toString(),
+        'stack_trace': error is Error ? error.stackTrace?.toString() : null,
+        'additional_data': additionalData,
+      });
+    } catch (_) {
+      // Fail silently
+    }
+  }
+
+  // =========================================================================
+  // FETCH REACTION EMOJI FROM DATABASE (with error logging)
   // =========================================================================
   Future<void> _fetchReactionEmoji() async {
     final existing = widget.snap['reaction_emoji']?.toString();
@@ -391,13 +434,20 @@ class _PostCardState extends State<PostCard>
           setState(() => _reactionEmoji = emoji);
         }
       }
-    } catch (_) {
-      // keep current (default ❤️)
+    } catch (e) {
+      final user = Provider.of<UserProvider>(context, listen: false).user;
+      await _logReactionError(
+        operationType: 'fetch_reaction_emoji_post_card',
+        userId: user?.uid,
+        additionalData: {'postId': _postId},
+        error: e,
+      );
+      // Keep default emoji (❤️) – no user-facing error
     }
   }
 
   // =========================================================================
-  // RPC DATA LOADING
+  // RPC DATA LOADING (with feed error logging)
   // =========================================================================
   Future<void> _loadPostCardData() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
@@ -446,7 +496,15 @@ class _PostCardState extends State<PostCard>
         _initializeProfileVideo();
       }
     } catch (e) {
-      // Defaults remain; realtime will fill later.
+      // Log failure to feed_errors – this means the post card cannot load
+      // essential data (ratings, follow status, etc.)
+      await _logFeedError(
+        operationType: 'load_post_card_data',
+        userId: user.uid,
+        additionalData: {'postId': _postId},
+        error: e,
+      );
+      // Keep existing UI; don't show error to user
     }
   }
 
@@ -571,7 +629,7 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // RATING SUBMISSION
+  // RATING SUBMISSION (already logged inside SupabaseReactionsMethods)
   // =========================================================================
   void _handleRatingSubmitted(double rating) async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
@@ -612,7 +670,6 @@ class _PostCardState extends State<PostCard>
       });
     }
     try {
-      // CHANGED: use SupabaseReactionsMethods instead of _postsMethods.ratePost
       final success = await SupabaseReactionsMethods().reactToPost(
         widget.snap['postId'],
         user.uid,
@@ -1350,9 +1407,6 @@ class _PostCardState extends State<PostCard>
   // BOTTOM OVERLAY – shows voter count and the updated RatingBar
   // =========================================================================
   Widget _buildBottomOverlay(model.AppUser user, _ColorSet colors) {
-    // Determine initial thumb position:
-    // - If user has not rated yet -> centre (5.0)
-    // - If user has already rated -> community average
     final double initialPos = _userRating == null ? 5.0 : _averageRating;
 
     return Container(
