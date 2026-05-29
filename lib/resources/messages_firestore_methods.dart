@@ -7,6 +7,9 @@ class SupabaseMessagesMethods {
   final NotificationService _notificationService = NotificationService();
   final Uuid _uuid = Uuid();
 
+  DateTime? _lastExpiryCheckTime;
+  static const Duration _expiryCheckThrottle = Duration(hours: 1);
+
   // Existing sendMessage method remains for backward compatibility
   Future<String> sendMessage(
     String chatId,
@@ -75,11 +78,7 @@ class SupabaseMessagesMethods {
             repliedToMessage['type']?.toString() ?? 'text';
       }
 
-      final messageResult = await _supabase
-          .from('messages')
-          .insert(messageData)
-          .select()
-          .single();
+      await _supabase.from('messages').insert(messageData).select().single();
 
       // 3. Wait for trigger to complete
       await Future.delayed(Duration(seconds: 1));
@@ -101,7 +100,7 @@ class SupabaseMessagesMethods {
         _sendStreakNotification(chatId, senderId, receiverId, newStreak);
       }
 
-      // 6. Send push notification
+      // 6. Send push notification for the new message
       try {
         await _notificationService.triggerServerNotification(
           type: 'message',
@@ -128,7 +127,7 @@ class SupabaseMessagesMethods {
     }
   }
 
-  // Add the new pagination method here
+  // Paginated messages fetch
   Future<List<Map<String, dynamic>>> getMessagesPaginated(
     String chatId, {
     required int page,
@@ -137,32 +136,23 @@ class SupabaseMessagesMethods {
   }) async {
     try {
       final offset = page * limit;
-
-      // Build the query step by step
       final query = _supabase.from('messages').select().eq('chat_id', chatId);
-
       final filteredQuery = olderThan != null
           ? query.lt('timestamp', olderThan.toIso8601String())
           : query;
-
       final orderedQuery = filteredQuery.order('timestamp', ascending: false);
       final paginatedQuery = orderedQuery.range(offset, offset + limit - 1);
-
       final response = await paginatedQuery;
 
-      // Map the response
       List<Map<String, dynamic>> messages = (response as List).map((message) {
         dynamic postShare = message['post_share'];
         Map<String, dynamic>? postShareData;
-
         if (postShare != null && postShare is Map) {
           postShareData = Map<String, dynamic>.from(postShare);
         }
 
-        // FIXED: Handle both string and boolean for replied_message_sender
         final repliedMessageSenderValue = message['replied_message_sender'];
         String repliedMessageSender;
-
         if (repliedMessageSenderValue == null) {
           repliedMessageSender = 'Them';
         } else if (repliedMessageSenderValue is bool) {
@@ -203,20 +193,17 @@ class SupabaseMessagesMethods {
     }
   }
 
-  // ✅ FIXED: _sendStreakNotification now properly triggers a server notification
+  // Streak notification when streak increases
   Future<void> _sendStreakNotification(String chatId, String senderId,
       String receiverId, int streakCount) async {
     try {
-      // Get sender username
       final senderData = await _supabase
           .from('users')
           .select('username')
           .eq('uid', senderId)
           .single();
-
       final senderName = senderData['username'] ?? 'Someone';
 
-      // Send a real notification via the notification service
       await _notificationService.triggerServerNotification(
         type: 'streak_update',
         targetUserId: receiverId,
@@ -233,16 +220,93 @@ class SupabaseMessagesMethods {
     }
   }
 
-  String _getMessagePreview(Map<String, dynamic> message) {
-    if (message['type'] == 'post') {
-      return 'Shared a post';
+  // NEW: Check for expiring streaks and send warning notifications (throttled)
+  Future<void> checkAndSendStreakExpiryNotifications(
+      {bool force = false}) async {
+    if (!force && _lastExpiryCheckTime != null) {
+      final elapsed = DateTime.now().toUtc().difference(_lastExpiryCheckTime!);
+      if (elapsed < _expiryCheckThrottle) {
+        return; // throttle – do not run too often
+      }
     }
+    _lastExpiryCheckTime = DateTime.now().toUtc();
 
-    String text = message['message'] ?? '';
-    if (text.length > 30) {
-      return '${text.substring(0, 30)}...';
+    try {
+      final chats = await _supabase
+          .from('chats')
+          .select(
+              'id, participants, streak_count, last_mutual_exchange, streak_expiry_notified_at')
+          .gt('streak_count', 0)
+          .not('last_mutual_exchange', 'is', null);
+
+      final now = DateTime.now().toUtc();
+      const warningHours = 5;
+
+      for (final chat in chats) {
+        final lastMutualExchange =
+            DateTime.parse(chat['last_mutual_exchange'].toString()).toUtc();
+        final expiryTime = lastMutualExchange.add(Duration(hours: 24));
+        final timeLeft = expiryTime.difference(now);
+
+        if (timeLeft.isNegative) continue; // already expired
+        if (timeLeft.inHours > warningHours) continue; // not yet warning
+
+        final notifiedAtRaw = chat['streak_expiry_notified_at'];
+        DateTime? notifiedAt;
+        if (notifiedAtRaw != null) {
+          notifiedAt = DateTime.parse(notifiedAtRaw.toString()).toUtc();
+        }
+
+        // Only send if we haven't notified for this specific mutual exchange
+        if (notifiedAt == null || notifiedAt.isBefore(lastMutualExchange)) {
+          final participants = List<String>.from(chat['participants']);
+          final streakCount = chat['streak_count'] as int;
+
+          final usersData = await _supabase
+              .from('users')
+              .select('uid, username')
+              .inFilter('uid', participants);
+          final userMap = {
+            for (var u in usersData) u['uid']: u['username'] ?? 'Someone'
+          };
+
+          for (final uid in participants) {
+            final otherUsername = participants.firstWhere((id) => id != uid,
+                orElse: () => 'the other user');
+            final otherName = userMap[otherUsername] ?? 'the other user';
+
+            await _notificationService.triggerServerNotification(
+              type: 'streak_expiring',
+              targetUserId: uid,
+              title: '⏳ Streak Expiring Soon!',
+              body:
+                  'Your $streakCount-day streak with $otherName will expire in less than $warningHours hours. Send a message to keep it alive!',
+              customData: {
+                'chatId': chat['id'],
+                'streakCount': streakCount,
+                'expiresAt': expiryTime.toIso8601String(),
+                'otherUserId': otherUsername,
+              },
+            );
+          }
+
+          // Mark that we sent the warning for this expiry window
+          await _supabase
+              .from('chats')
+              .update({'streak_expiry_notified_at': now.toIso8601String()}).eq(
+                  'id', chat['id']);
+        }
+      }
+    } catch (e) {
+      // Silently fail – do not break other operations
     }
-    return text;
+  }
+
+  // Helper to get message preview
+  String _getMessagePreview(Map<String, dynamic> message) {
+    if (message['type'] == 'post') return 'Shared a post';
+    String text = message['message'] ?? '';
+    return text.length > 30 ? '${text.substring(0, 30)}...' : text;
   }
 
   Future<String> _getUsername(String userId) async {
@@ -268,16 +332,13 @@ class SupabaseMessagesMethods {
         .map((messages) => messages.map((message) {
               dynamic postShare = message['post_share'];
               Map<String, dynamic>? postShareData;
-
               if (postShare != null && postShare is Map) {
                 postShareData = Map<String, dynamic>.from(postShare);
               }
 
-              // FIXED: Handle both string and boolean for replied_message_sender
               final repliedMessageSenderValue =
                   message['replied_message_sender'];
               String repliedMessageSender;
-
               if (repliedMessageSenderValue == null) {
                 repliedMessageSender = 'Them';
               } else if (repliedMessageSenderValue is bool) {
@@ -324,15 +385,12 @@ class SupabaseMessagesMethods {
 
       dynamic postShare = message['post_share'];
       Map<String, dynamic>? postShareData;
-
       if (postShare != null && postShare is Map) {
         postShareData = Map<String, dynamic>.from(postShare);
       }
 
-      // FIXED: Handle both string and boolean for replied_message_sender
       final repliedMessageSenderValue = message['replied_message_sender'];
       String repliedMessageSender;
-
       if (repliedMessageSenderValue == null) {
         repliedMessageSender = 'Them';
       } else if (repliedMessageSenderValue is bool) {
@@ -374,13 +432,11 @@ class SupabaseMessagesMethods {
           .from('chats')
           .select('id, streak_count, last_mutual_exchange, participants')
           .contains('participants', [user1, user2]);
-
       if (chatResponse.isNotEmpty) {
         return chatResponse[0]['id'];
       }
 
       final newChatId = _uuid.v1();
-
       await _supabase.from('chats').insert({
         'id': newChatId,
         'participants': [user1, user2],
@@ -388,7 +444,6 @@ class SupabaseMessagesMethods {
         'streak_count': 0,
         'last_mutual_exchange': null,
       });
-
       return newChatId;
     } catch (e) {
       return e.toString();
@@ -425,7 +480,7 @@ class SupabaseMessagesMethods {
           .eq('receiver_id', currentUserId)
           .eq('is_read', false);
     } catch (e) {
-      // Error handled silently
+      // ignore
     }
   }
 
@@ -435,7 +490,7 @@ class SupabaseMessagesMethods {
           .from('messages')
           .update({'delivered': true}).eq('id', messageId);
     } catch (e) {
-      // Error handled silently
+      // ignore
     }
   }
 
@@ -445,7 +500,7 @@ class SupabaseMessagesMethods {
           .from('messages')
           .update({'is_read': true, 'delivered': true}).eq('id', messageId);
     } catch (e) {
-      // Error handled silently
+      // ignore
     }
   }
 
@@ -455,21 +510,18 @@ class SupabaseMessagesMethods {
           .from('chats')
           .select('id')
           .contains('participants', [uid]);
-
       if (chatsResponse.isNotEmpty) {
         final chatIds =
             chatsResponse.map((chat) => chat['id'] as String).toList();
-
         for (final chatId in chatIds) {
           await _supabase.from('messages').delete().eq('chat_id', chatId);
         }
-
         for (final chatId in chatIds) {
           await _supabase.from('chats').delete().eq('id', chatId);
         }
       }
     } catch (e) {
-      // Error handled silently
+      // ignore
     }
   }
 
@@ -500,7 +552,6 @@ class SupabaseMessagesMethods {
           .select('streak_count')
           .eq('id', chatId)
           .single();
-
       return response['streak_count'] ?? 0;
     } catch (e) {
       return 0;
@@ -513,7 +564,6 @@ class SupabaseMessagesMethods {
           .from('chats')
           .select('streak_count')
           .contains('participants', [user1, user2]).single();
-
       return chatResponse['streak_count'] ?? 0;
     } catch (e) {
       return 0;
