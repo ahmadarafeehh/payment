@@ -147,6 +147,64 @@ class _LightColors extends _ColorSet {
         );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pulsing skeleton bone – mirrors the style used in FeedSkeleton
+// ─────────────────────────────────────────────────────────────────────────────
+class _PulsingBone extends StatefulWidget {
+  final double width;
+  final double height;
+  final double borderRadius;
+
+  const _PulsingBone({
+    required this.width,
+    required this.height,
+    this.borderRadius = 6,
+  });
+
+  @override
+  State<_PulsingBone> createState() => _PulsingBoneState();
+}
+
+class _PulsingBoneState extends State<_PulsingBone>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 950),
+    )..repeat(reverse: true);
+    _opacity = Tween<double>(begin: 0.25, end: 0.55).animate(
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _opacity,
+      builder: (_, __) => Container(
+        width: widget.width == double.infinity ? null : widget.width,
+        height: widget.height,
+        decoration: BoxDecoration(
+          // Always white-ish so it reads on the dark video background
+          color: Colors.white.withOpacity(_opacity.value),
+          borderRadius: BorderRadius.circular(widget.borderRadius),
+        ),
+      ),
+    );
+  }
+}
+
 class PostCard extends StatefulWidget {
   final Map<String, dynamic> snap;
   final Function(Map<String, dynamic>)? onRateUpdate;
@@ -224,6 +282,9 @@ class _PostCardState extends State<PostCard>
   final ApiService _apiService = ApiService();
   final VideoManager _videoManager = VideoManager();
   final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
+
+  // ── NEW: tracks whether the async post-card data has finished loading ──
+  bool _isPostDataLoading = true;
 
   final List<String> _reportReasons = [
     'I just don\'t like it',
@@ -373,7 +434,6 @@ class _PostCardState extends State<PostCard>
   // ERROR LOGGING HELPERS
   // =========================================================================
 
-  // Logs to reactions_error (for reaction/emoji issues)
   Future<void> _logReactionError({
     required String operationType,
     String? userId,
@@ -388,12 +448,9 @@ class _PostCardState extends State<PostCard>
         'stack_trace': error is Error ? error.stackTrace?.toString() : null,
         'additional_data': additionalData,
       });
-    } catch (_) {
-      // Fail silently
-    }
+    } catch (_) {}
   }
 
-  // Logs to feed_errors (for post data loading issues)
   Future<void> _logFeedError({
     required String operationType,
     String? userId,
@@ -408,13 +465,11 @@ class _PostCardState extends State<PostCard>
         'stack_trace': error is Error ? error.stackTrace?.toString() : null,
         'additional_data': additionalData,
       });
-    } catch (_) {
-      // Fail silently
-    }
+    } catch (_) {}
   }
 
   // =========================================================================
-  // FETCH REACTION EMOJI FROM DATABASE (with error logging)
+  // FETCH REACTION EMOJI
   // =========================================================================
   Future<void> _fetchReactionEmoji() async {
     final existing = widget.snap['reaction_emoji']?.toString();
@@ -442,19 +497,25 @@ class _PostCardState extends State<PostCard>
         additionalData: {'postId': _postId},
         error: e,
       );
-      // Keep default emoji (❤️) – no user-facing error
     }
   }
 
   // =========================================================================
-  // RPC DATA LOADING (with feed error logging)
+  // RPC DATA LOADING
   // =========================================================================
   Future<void> _loadPostCardData() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
-    if (user == null) return;
+    if (user == null) {
+      // Nothing to load – clear the loading gate so the UI doesn't stay blank.
+      if (mounted) setState(() => _isPostDataLoading = false);
+      return;
+    }
 
     final postId = _postId;
-    if (postId.isEmpty) return;
+    if (postId.isEmpty) {
+      if (mounted) setState(() => _isPostDataLoading = false);
+      return;
+    }
 
     try {
       final response = await Supabase.instance.client.rpc(
@@ -490,21 +551,23 @@ class _PostCardState extends State<PostCard>
         if (_showFollowBadge) _followAnimController.forward();
 
         _isBlocked = data['isBlocked'] ?? false;
+
+        // ── Data is now fully loaded; clear the skeleton gate ──
+        _isPostDataLoading = false;
       });
 
       if (_isProfileVideo && !_isProfileVideoInitialized) {
         _initializeProfileVideo();
       }
     } catch (e) {
-      // Log failure to feed_errors – this means the post card cannot load
-      // essential data (ratings, follow status, etc.)
       await _logFeedError(
         operationType: 'load_post_card_data',
         userId: user.uid,
         additionalData: {'postId': _postId},
         error: e,
       );
-      // Keep existing UI; don't show error to user
+      // Even on error, lift the loading gate so the UI isn't permanently blank.
+      if (mounted) setState(() => _isPostDataLoading = false);
     }
   }
 
@@ -629,7 +692,7 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // RATING SUBMISSION (already logged inside SupabaseReactionsMethods)
+  // RATING SUBMISSION
   // =========================================================================
   void _handleRatingSubmitted(double rating) async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
@@ -1404,8 +1467,35 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // BOTTOM OVERLAY – shows voter count and the updated RatingBar
+  // BOTTOM OVERLAY
   // =========================================================================
+
+  /// Skeleton placeholder for the RatingBar area while post data is loading.
+  Widget _buildRatingBarSkeleton() {
+    return const SizedBox(
+      height: 48, // matches the approximate height of RatingBar
+      child: Row(
+        children: [
+          // Emoji circle placeholder
+          _PulsingBone(width: 36, height: 36, borderRadius: 18),
+          SizedBox(width: 10),
+          // Track placeholder
+          Expanded(
+            child: _PulsingBone(width: double.infinity, height: 14, borderRadius: 7),
+          ),
+          SizedBox(width: 10),
+          // Thumb/handle placeholder
+          _PulsingBone(width: 36, height: 36, borderRadius: 18),
+        ],
+      ),
+    );
+  }
+
+  /// Skeleton placeholder for the voter-count pill while post data is loading.
+  Widget _buildVoterCountSkeleton() {
+    return const _PulsingBone(width: 80, height: 28, borderRadius: 20);
+  }
+
   Widget _buildBottomOverlay(model.AppUser user, _ColorSet colors) {
     final double initialPos = _userRating == null ? 5.0 : _averageRating;
 
@@ -1414,18 +1504,25 @@ class _PostCardState extends State<PostCard>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          RatingBar(
-            averageRating: _averageRating,
-            reactionEmoji: _reactionEmoji,
-            initialThumbPosition: initialPos,
-            onRatingEnd: _handleRatingSubmitted,
-            hasUserRated: _userRating != null,
-            userRating: _userRating,
-            userProfilePhoto: user.photoUrl,
-          ),
+          // ── RatingBar OR its skeleton ──────────────────────────────────
+          if (_isPostDataLoading)
+            _buildRatingBarSkeleton()
+          else
+            RatingBar(
+              averageRating: _averageRating,
+              reactionEmoji: _reactionEmoji,
+              initialThumbPosition: initialPos,
+              onRatingEnd: _handleRatingSubmitted,
+              hasUserRated: _userRating != null,
+              userRating: _userRating,
+              userProfilePhoto: user.photoUrl,
+            ),
+
           const SizedBox(height: 8),
+
           Row(
             children: [
+              // ── Username ───────────────────────────────────────────────
               Expanded(
                 child: GestureDetector(
                   onTap: _navigateToProfile,
@@ -1451,36 +1548,44 @@ class _PostCardState extends State<PostCard>
                   ),
                 ),
               ),
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(20),
+
+              // ── Voter count pill OR its skeleton ───────────────────────
+              if (_isPostDataLoading)
+                _buildVoterCountSkeleton()
+              else
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                  child: _totalRatingsCount == 0
+                      ? Text(
+                          _isTestUser
+                              ? 'Start the Reaction'
+                              : 'Be the first to react',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        )
+                      : Text(
+                          '$_totalRatingsCount '
+                          '${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                 ),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                child: _totalRatingsCount == 0
-                    ? Text(
-                        _isTestUser
-                            ? 'Start the Reaction'
-                            : 'Be the first to react',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: Colors.white,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      )
-                    : Text(
-                        '${_totalRatingsCount} ${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: Colors.white,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-              ),
             ],
           ),
+
           const SizedBox(height: 8),
+
           if (widget.snap['description']?.toString().isNotEmpty ?? false)
             _buildCaptionWithVisibility(colors),
         ],
