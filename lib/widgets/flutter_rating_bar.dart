@@ -1,24 +1,11 @@
 import 'dart:math' as math;
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-
-// =============================================================================
-// EMOJI THUMB SHAPE
-//
-// FIX (lag): Previously the font size was changed on every paint frame
-// (fontSize = baseSize * scale), which forced TextPainter to re-lay-out
-// the glyph with a different font size every call — expensive.
-//
-// Fix: keep the TextPainter at a FIXED font size (baseSize) and apply the
-// scale with canvas.save/scale/restore instead. Layout is now stable; only
-// the GPU transform changes per frame → smooth.
-// =============================================================================
 
 class _EmojiThumbShape extends SliderComponentShape {
   final String emoji;
@@ -442,6 +429,29 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     });
   }
 
+  // --------------------------------------------------------------------------
+  // Error logging helper – logs only exceptions to reactions_error table
+  // --------------------------------------------------------------------------
+  Future<void> _logReactionError({
+    required String operationType,
+    String? userId,
+    Map<String, dynamic>? additionalData,
+    required dynamic error,
+  }) async {
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('reactions_error').insert({
+        'user_id': userId,
+        'operation_type': operationType,
+        'error_message': error.toString(),
+        'stack_trace': error is Error ? error.stackTrace?.toString() : null,
+        'additional_data': additionalData,
+      });
+    } catch (_) {
+      // Fail silently – error logging must not crash the app
+    }
+  }
+
   Future<void> _loadGuidanceFlag() async {
     if (widget.showGuidance != null) {
       setState(() => _guidanceLoaded = true);
@@ -473,6 +483,18 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
       });
       if (!_isDragging && _effectiveShowGuidance) _startNudge();
     } catch (e) {
+      // Log the error to reactions_error table
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final userId = userProvider.user?.uid;
+      await _logReactionError(
+        operationType: 'load_guidance_flag',
+        userId: userId,
+        additionalData: {
+          'hasUserRated': widget.hasUserRated,
+          'showGuidance': widget.showGuidance,
+        },
+        error: e,
+      );
       if (mounted) {
         setState(() {
           _isTestGroup = true;
