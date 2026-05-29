@@ -8,9 +8,9 @@ import 'package:provider/provider.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'dart:async';
 import 'package:video_player/video_player.dart';
-import 'package:Ratedly/providers/user_provider.dart'; // Add this import
+import 'package:Ratedly/providers/user_provider.dart';
 
-// VIDEO UTILS CLASS - Add this at the top
+// VIDEO UTILS CLASS
 class VideoUtils {
   static bool isVideoFile(String url) {
     if (url.isEmpty) return false;
@@ -25,7 +25,7 @@ class VideoUtils {
   }
 }
 
-// VIDEO PROFILE AVATAR WIDGET - Add this after VideoUtils
+// VIDEO PROFILE AVATAR WIDGET
 class VideoProfileAvatar extends StatefulWidget {
   final String videoUrl;
   final double radius;
@@ -49,7 +49,7 @@ class VideoProfileAvatar extends StatefulWidget {
 class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
-  bool _isVideoMuted = true; // Muted by default
+  bool _isVideoMuted = true;
 
   @override
   void initState() {
@@ -63,17 +63,12 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
     try {
       _videoController = VideoPlayerController.networkUrl(
         Uri.parse(widget.videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: true,
-        ),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
-
       await _videoController!.initialize();
-      // Muted by default as requested
       await _videoController!.setVolume(0.0);
       await _videoController!.setLooping(true);
       await _videoController!.play();
-
       if (mounted) {
         setState(() {
           _isVideoInitialized = true;
@@ -81,11 +76,7 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isVideoInitialized = false;
-        });
-      }
+      if (mounted) setState(() => _isVideoInitialized = false);
     }
   }
 
@@ -102,18 +93,13 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
         width: widget.radius * 2,
         height: widget.radius * 2,
         decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: widget.backgroundColor,
-        ),
+            shape: BoxShape.circle, color: widget.backgroundColor),
         child: Center(
           child: CircularProgressIndicator(
-            color: widget.iconColor,
-            strokeWidth: 2.0,
-          ),
+              color: widget.iconColor, strokeWidth: 2.0),
         ),
       );
     }
-
     return ClipOval(
       child: SizedBox(
         width: widget.radius * 2,
@@ -140,7 +126,6 @@ class _FeedMessagesColorSet {
   final Color appBarIconColor;
   final Color progressIndicatorColor;
   final Color unreadBadgeColor;
-
   _FeedMessagesColorSet({
     required this.textColor,
     required this.backgroundColor,
@@ -182,9 +167,7 @@ class _FeedMessagesLightColors extends _FeedMessagesColorSet {
 }
 
 class FeedMessages extends StatefulWidget {
-  // Remove the required currentUserId parameter since we'll get it from UserProvider
-  const FeedMessages({Key? key}) : super(key: key); // Changed this line
-
+  const FeedMessages({Key? key}) : super(key: key);
   @override
   _FeedMessagesState createState() => _FeedMessagesState();
 }
@@ -192,35 +175,29 @@ class FeedMessages extends StatefulWidget {
 class _FeedMessagesState extends State<FeedMessages>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   final SupabaseClient _supabase = Supabase.instance.client;
-
   List<Map<String, dynamic>> _existingChats = [];
   List<String> _blockedUsers = [];
   List<Map<String, dynamic>> _suggestedUsers = [];
-
   final Map<String, Map<String, dynamic>> _userCache = {};
   final Map<String, Map<String, dynamic>> _lastMessageCache = {};
   final Map<String, int> _unreadCountCache = {};
-
-  // Video controllers for profile pictures
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
-
   bool _isLoading = true;
   bool _showSuggestions = false;
   bool _loadingMore = false;
   bool _hasMoreChats = true;
-
-  String? _currentUserId; // Add this variable
+  String? _currentUserId;
 
   @override
   bool get wantKeepAlive => true;
 
   _FeedMessagesColorSet _getColors(ThemeProvider themeProvider) {
-    final isDarkMode = themeProvider.themeMode == ThemeMode.dark;
-    return isDarkMode ? _FeedMessagesDarkColors() : _FeedMessagesLightColors();
+    return themeProvider.themeMode == ThemeMode.dark
+        ? _FeedMessagesDarkColors()
+        : _FeedMessagesLightColors();
   }
 
-  // Check if profile image URL is a video
   bool _isProfileVideo(String url) {
     if (url.isEmpty) return false;
     final lowerUrl = url.toLowerCase();
@@ -233,66 +210,45 @@ class _FeedMessagesState extends State<FeedMessages>
             lowerUrl.contains('video'));
   }
 
-  // Initialize video controller for a profile picture
   Future<void> _initializeVideoController(
       String userId, String videoUrl) async {
     if (_videoControllers.containsKey(userId) ||
-        _videoControllersInitialized[userId] == true) {
-      return;
-    }
-
+        _videoControllersInitialized[userId] == true) return;
     try {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: true,
-        ),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
-
       _videoControllers[userId] = controller;
       _videoControllersInitialized[userId] = false;
-
       await controller.initialize();
-      // Muted by default as requested
       await controller.setVolume(0.0);
       await controller.setLooping(true);
       await controller.play();
-
       _videoControllersInitialized[userId] = true;
-
-      if (mounted) {
-        setState(() {});
-      }
+      if (mounted) setState(() {});
     } catch (e) {
       _videoControllers.remove(userId)?.dispose();
       _videoControllersInitialized.remove(userId);
     }
   }
 
-  // Dispose video controller
   void _disposeVideoController(String userId) {
-    if (_videoControllers.containsKey(userId)) {
-      _videoControllers[userId]?.dispose();
-      _videoControllers.remove(userId);
-      _videoControllersInitialized.remove(userId);
-    }
+    _videoControllers[userId]?.dispose();
+    _videoControllers.remove(userId);
+    _videoControllersInitialized.remove(userId);
   }
 
-  // Dispose all video controllers
   void _disposeAllVideoControllers() {
-    for (final controller in _videoControllers.values) {
-      controller.dispose();
-    }
+    for (final controller in _videoControllers.values) controller.dispose();
     _videoControllers.clear();
     _videoControllersInitialized.clear();
   }
 
-  // Pause all video controllers
   void _pauseAllVideos() {
     for (final controller in _videoControllers.values) {
-      if (controller.value.isInitialized && controller.value.isPlaying) {
+      if (controller.value.isInitialized && controller.value.isPlaying)
         controller.pause();
-      }
     }
   }
 
@@ -300,16 +256,12 @@ class _FeedMessagesState extends State<FeedMessages>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Don't load data here, wait for didChangeDependencies
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-
-    // Get the user ID from UserProvider
     final userProvider = Provider.of<UserProvider>(context, listen: false);
-
     if (userProvider.firebaseUid != null && _currentUserId == null) {
       _currentUserId = userProvider.firebaseUid;
       _loadInitialData();
@@ -319,85 +271,65 @@ class _FeedMessagesState extends State<FeedMessages>
       _currentUserId = userProvider.supabaseUid;
       _loadInitialData();
     } else if (_currentUserId == null) {
-      setState(() {
-        _isLoading = false;
-      });
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // ADDED: method to check expiring streaks (throttled by SupabaseMessagesMethods)
+  Future<void> _checkExpiringStreaks() async {
+    try {
+      final messagesMethods = SupabaseMessagesMethods();
+      await messagesMethods.checkAndSendStreakExpiryNotifications();
+    } catch (e) {
+      // silently fail – do not disrupt UI
     }
   }
 
   Future<void> _loadInitialData() async {
     if (!mounted || _currentUserId == null) return;
-
-    setState(() {
-      _isLoading = true;
-    });
-
+    setState(() => _isLoading = true);
     try {
-      await Future.wait([
-        _loadBlockedUsers(),
-        _loadChatsMinimal(),
-      ]);
-
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-
+      await Future.wait([_loadBlockedUsers(), _loadChatsMinimal()]);
+      if (mounted) setState(() => _isLoading = false);
       _loadAdditionalDataInBackground();
+      // ADDED: Check for expiring streaks after initial load (throttled)
+      _checkExpiringStreaks();
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _loadChatsMinimal() async {
     if (_currentUserId == null) return;
-
     try {
       final chats = await _supabase
           .from('chats')
           .select(
               'id, participants, last_message, last_updated, streak_count, streak_checked_at, last_mutual_exchange')
-          .contains('participants', [_currentUserId!]) // Use _currentUserId!
+          .contains('participants', [_currentUserId!])
           .order('last_updated', ascending: false)
           .limit(11);
-
       if (chats.isEmpty) {
         _existingChats = [];
         return;
       }
-
       final validChats = <Map<String, dynamic>>[];
       for (final chat in chats) {
         final participants = List<String>.from(chat['participants']);
-        final otherUserId = participants.firstWhere(
-          (id) => id != _currentUserId, // Use _currentUserId!
-          orElse: () => '',
-        );
-
+        final otherUserId = participants
+            .firstWhere((id) => id != _currentUserId, orElse: () => '');
         if (otherUserId.isNotEmpty && !_blockedUsers.contains(otherUserId)) {
           final chatCopy = Map<String, dynamic>.from(chat);
-
           chatCopy['last_mutual_exchange'] =
               _parseDateTime(chatCopy['last_mutual_exchange']);
-
-          if (chatCopy['streak_checked_at'] != null) {
+          if (chatCopy['streak_checked_at'] != null)
             chatCopy['streak_checked_at'] =
                 _parseDateTime(chatCopy['streak_checked_at']);
-          }
-
-          if (chatCopy['last_updated'] != null) {
+          if (chatCopy['last_updated'] != null)
             chatCopy['last_updated'] = _parseDateTime(chatCopy['last_updated']);
-          }
-
           validChats.add(chatCopy);
         }
       }
-
       if (mounted) {
         setState(() {
           _existingChats = validChats;
@@ -409,16 +341,12 @@ class _FeedMessagesState extends State<FeedMessages>
 
   Future<void> _loadAdditionalDataInBackground() async {
     if (_existingChats.isEmpty) return;
-
     final userIDs = <String>[];
     for (final chat in _existingChats) {
       final participants = List<String>.from(chat['participants']);
-      final otherUserId = participants.firstWhere(
-        (id) => id != _currentUserId, // Use _currentUserId!
-      );
+      final otherUserId = participants.firstWhere((id) => id != _currentUserId);
       userIDs.add(otherUserId);
     }
-
     await Future.wait([
       _loadUsersBatch(userIDs),
       _loadLastMessagesBatch(
@@ -426,29 +354,21 @@ class _FeedMessagesState extends State<FeedMessages>
       _loadUnreadCountsBatch(_existingChats),
       _loadSuggestions(),
     ]);
-
-    // Initialize video controllers for users with video profile pictures
     for (final userId in userIDs) {
       final userData = _userCache[userId];
       if (userData != null) {
         final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
-        if (_isProfileVideo(photoUrl)) {
+        if (_isProfileVideo(photoUrl))
           _initializeVideoController(userId, photoUrl);
-        }
       }
     }
   }
 
   Future<void> _loadUsersBatch(List<String> userIds) async {
     if (userIds.isEmpty) return;
-
     final users =
         await _supabase.from('users').select().inFilter('uid', userIds);
-
-    for (final user in users) {
-      _userCache[user['uid']] = user;
-    }
-
+    for (final user in users) _userCache[user['uid']] = user;
     for (final userId in userIds) {
       if (!_userCache.containsKey(userId)) {
         _userCache[userId] = {
@@ -459,21 +379,16 @@ class _FeedMessagesState extends State<FeedMessages>
         };
       }
     }
-
-    if (mounted) {
-      setState(() {});
-    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadLastMessagesBatch(List<String> chatIds) async {
     if (chatIds.isEmpty) return;
-
     final messages = await _supabase
         .from('messages')
         .select()
         .inFilter('chat_id', chatIds)
         .order('timestamp', ascending: false);
-
     final messagesByChat = <String, Map<String, dynamic>>{};
     for (final message in messages) {
       final chatId = message['chat_id'] as String;
@@ -484,43 +399,31 @@ class _FeedMessagesState extends State<FeedMessages>
       }
     }
     _lastMessageCache.addAll(messagesByChat);
-
-    if (mounted) {
-      setState(() {});
-    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadUnreadCountsBatch(List<Map<String, dynamic>> chats) async {
     for (final chat in chats) {
       final count = await SupabaseMessagesMethods()
-          .getUnreadCount(chat['id'], _currentUserId!) // Use _currentUserId!
+          .getUnreadCount(chat['id'], _currentUserId!)
           .first;
       _unreadCountCache[chat['id']] = count;
     }
-    if (mounted) {
-      setState(() {});
-    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadMoreChats() async {
-    if (!_hasMoreChats) return;
-    if (_loadingMore) return;
-
-    setState(() {
-      _loadingMore = true;
-    });
-
+    if (!_hasMoreChats || _loadingMore) return;
+    setState(() => _loadingMore = true);
     final start = _existingChats.length;
     final end = start + 10;
-
     final moreChats = await _supabase
         .from('chats')
         .select(
             'id, participants, last_message, last_updated, streak_count, streak_checked_at, last_mutual_exchange')
-        .contains('participants', [_currentUserId!]) // Use _currentUserId!
+        .contains('participants', [_currentUserId!])
         .order('last_updated', ascending: false)
         .range(start, end);
-
     if (moreChats.isEmpty) {
       setState(() {
         _hasMoreChats = false;
@@ -528,64 +431,44 @@ class _FeedMessagesState extends State<FeedMessages>
       });
       return;
     }
-
     final parsedChats = <Map<String, dynamic>>[];
     for (final chat in moreChats) {
       final chatCopy = Map<String, dynamic>.from(chat);
       chatCopy['last_mutual_exchange'] =
           _parseDateTime(chatCopy['last_mutual_exchange']);
-      if (chatCopy['streak_checked_at'] != null) {
+      if (chatCopy['streak_checked_at'] != null)
         chatCopy['streak_checked_at'] =
             _parseDateTime(chatCopy['streak_checked_at']);
-      }
-      if (chatCopy['last_updated'] != null) {
+      if (chatCopy['last_updated'] != null)
         chatCopy['last_updated'] = _parseDateTime(chatCopy['last_updated']);
-      }
       parsedChats.add(chatCopy);
     }
-
     setState(() {
       _existingChats.addAll(parsedChats);
       _loadingMore = false;
       _hasMoreChats = moreChats.length == 11;
     });
-
     _processNewChats(parsedChats);
   }
 
   void _processNewChats(List<Map<String, dynamic>> newChats) async {
     final newUserIds = <String>{};
     final newChatIds = <String>[];
-
     for (final chat in newChats) {
       final participants = List<String>.from(chat['participants']);
-      final otherUserId = participants.firstWhere(
-        (id) => id != _currentUserId, // Use _currentUserId!
-      );
-      if (!_userCache.containsKey(otherUserId)) {
-        newUserIds.add(otherUserId);
-      }
+      final otherUserId = participants.firstWhere((id) => id != _currentUserId);
+      if (!_userCache.containsKey(otherUserId)) newUserIds.add(otherUserId);
       newChatIds.add(chat['id'] as String);
     }
-
-    if (newUserIds.isNotEmpty) {
-      await _loadUsersBatch(newUserIds.toList());
-    }
-
-    if (newChatIds.isNotEmpty) {
-      await _loadLastMessagesBatch(newChatIds);
-    }
-
+    if (newUserIds.isNotEmpty) await _loadUsersBatch(newUserIds.toList());
+    if (newChatIds.isNotEmpty) await _loadLastMessagesBatch(newChatIds);
     await _loadUnreadCountsBatch(newChats);
-
-    // Initialize video controllers for new users with video profile pictures
     for (final userId in newUserIds) {
       final userData = _userCache[userId];
       if (userData != null) {
         final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
-        if (_isProfileVideo(photoUrl)) {
+        if (_isProfileVideo(photoUrl))
           _initializeVideoController(userId, photoUrl);
-        }
       }
     }
   }
@@ -598,6 +481,8 @@ class _FeedMessagesState extends State<FeedMessages>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _refreshData();
+      // ADDED: Check expiring streaks when app returns to foreground
+      _checkExpiringStreaks();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
       _pauseAllVideos();
@@ -606,129 +491,89 @@ class _FeedMessagesState extends State<FeedMessages>
 
   Future<void> _loadBlockedUsers() async {
     if (_currentUserId == null) return;
-
     try {
-      final blockedUsers = await SupabaseBlockMethods()
-          .getBlockedUsers(_currentUserId!); // Use _currentUserId!
-
-      if (mounted) {
-        setState(() {
-          _blockedUsers = blockedUsers;
-        });
-      }
+      final blockedUsers =
+          await SupabaseBlockMethods().getBlockedUsers(_currentUserId!);
+      if (mounted) setState(() => _blockedUsers = blockedUsers);
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _blockedUsers = [];
-        });
-      }
+      if (mounted) setState(() => _blockedUsers = []);
     }
   }
 
   Future<void> _loadSuggestions() async {
     if (_existingChats.length >= 3 || _currentUserId == null) return;
-
     final suggestedUserIds =
         await _getSuggestedUsers(3 - _existingChats.length);
-
     if (suggestedUserIds.isNotEmpty) {
       final users = await _supabase
           .from('users')
           .select()
           .inFilter('uid', suggestedUserIds);
-
       if (mounted) {
         setState(() {
           _suggestedUsers = users.cast<Map<String, dynamic>>();
           _showSuggestions = users.isNotEmpty;
         });
       }
-
-      // Initialize video controllers for suggested users with video profile pictures
       for (final user in users) {
         final userId = user['uid'] ?? '';
         final photoUrl = user['photoUrl'] ?? user['photo_url'] ?? '';
-        if (_isProfileVideo(photoUrl)) {
+        if (_isProfileVideo(photoUrl))
           _initializeVideoController(userId, photoUrl);
-        }
       }
     }
   }
 
   Future<List<String>> _getSuggestedUsers(int count) async {
     if (count <= 0 || _currentUserId == null) return [];
-
     final existingUserIds = _existingChats.map((chat) {
       final participants = List<String>.from(chat['participants']);
       return participants.firstWhere((id) => id != _currentUserId);
     }).toList();
-
     final followsData = await _supabase
         .from('follows')
         .select('follower_id, following_id')
-        .or('follower_id.eq.${_currentUserId},following_id.eq.${_currentUserId}'); // Use _currentUserId!
-
+        .or('follower_id.eq.${_currentUserId},following_id.eq.${_currentUserId}');
     final following = <String>[];
     final followers = <String>[];
-
     for (final follow in followsData) {
-      if (follow['follower_id'] == _currentUserId) {
-        // Use _currentUserId!
+      if (follow['follower_id'] == _currentUserId)
         following.add(follow['following_id'] as String);
-      }
-      if (follow['following_id'] == _currentUserId) {
-        // Use _currentUserId!
+      if (follow['following_id'] == _currentUserId)
         followers.add(follow['follower_id'] as String);
-      }
     }
-
     List<String> candidates = [...following, ...followers]
-        .where((id) => id != _currentUserId) // Use _currentUserId!
+        .where((id) => id != _currentUserId)
         .where((id) => !existingUserIds.contains(id))
         .where((id) => !_blockedUsers.contains(id))
         .toSet()
         .toList();
-
     return candidates.take(count).toList();
   }
 
   String _formatTimestamp(DateTime? timestamp) {
     if (timestamp == null) return 'Just now';
-
     try {
       final messageTimeUtc = timestamp.toUtc();
       final nowUtc = DateTime.now().toUtc();
       final difference = nowUtc.difference(messageTimeUtc);
-
       if (difference.isNegative) {
-        if (difference.inSeconds.abs() < 30) {
-          return 'Just now';
-        }
+        if (difference.inSeconds.abs() < 30) return 'Just now';
         final localTime = timestamp.toLocal();
         return '${localTime.hour.toString().padLeft(2, '0')}:${localTime.minute.toString().padLeft(2, '0')}';
       }
-
-      if (difference.inSeconds < 60) {
-        return 'Just now';
-      } else if (difference.inMinutes < 60) {
-        final minutes = difference.inMinutes;
-        return '$minutes ${minutes == 1 ? 'minute' : 'minutes'} ago';
-      } else if (difference.inHours < 24) {
-        final hours = difference.inHours;
-        return '$hours ${hours == 1 ? 'hour' : 'hours'} ago';
-      } else if (difference.inDays < 7) {
-        final days = difference.inDays;
-        return '$days ${days == 1 ? 'day' : 'days'} ago';
-      } else if (difference.inDays < 30) {
-        final weeks = (difference.inDays / 7).floor();
-        return '$weeks ${weeks == 1 ? 'week' : 'weeks'} ago';
-      } else if (difference.inDays < 365) {
-        final months = (difference.inDays / 30).floor();
-        return '$months ${months == 1 ? 'month' : 'months'} ago';
-      } else {
-        final years = (difference.inDays / 365).floor();
-        return '$years ${years == 1 ? 'year' : 'years'} ago';
-      }
+      if (difference.inSeconds < 60) return 'Just now';
+      if (difference.inMinutes < 60)
+        return '${difference.inMinutes} ${difference.inMinutes == 1 ? 'minute' : 'minutes'} ago';
+      if (difference.inHours < 24)
+        return '${difference.inHours} ${difference.inHours == 1 ? 'hour' : 'hours'} ago';
+      if (difference.inDays < 7)
+        return '${difference.inDays} ${difference.inDays == 1 ? 'day' : 'days'} ago';
+      if (difference.inDays < 30)
+        return '${(difference.inDays / 7).floor()} weeks ago';
+      if (difference.inDays < 365)
+        return '${(difference.inDays / 30).floor()} months ago';
+      return '${(difference.inDays / 365).floor()} years ago';
     } catch (e) {
       return 'Recently';
     }
@@ -739,9 +584,7 @@ class _FeedMessagesState extends State<FeedMessages>
       padding: const EdgeInsets.all(12),
       margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
       decoration: BoxDecoration(
-        color: colors.cardColor,
-        borderRadius: BorderRadius.circular(8),
-      ),
+          color: colors.cardColor, borderRadius: BorderRadius.circular(8)),
       child: Row(
         children: [
           Icon(Icons.block, color: Colors.red[400], size: 20),
@@ -750,9 +593,8 @@ class _FeedMessagesState extends State<FeedMessages>
             child: Text(
               'This conversation is unavailable due to blocking',
               style: TextStyle(
-                color: colors.textColor.withOpacity(0.6),
-                fontStyle: FontStyle.italic,
-              ),
+                  color: colors.textColor.withOpacity(0.6),
+                  fontStyle: FontStyle.italic),
             ),
           ),
         ],
@@ -765,40 +607,28 @@ class _FeedMessagesState extends State<FeedMessages>
     final hasValidPhoto =
         photoUrl.isNotEmpty && photoUrl != "default" && photoUrl != "null";
     final isVideo = hasValidPhoto && _isProfileVideo(photoUrl);
-
     if (!hasValidPhoto) {
       return CircleAvatar(
         radius: 21,
         backgroundColor: colors.cardColor,
-        child: Icon(
-          Icons.account_circle,
-          size: 42,
-          color: colors.iconColor,
-        ),
+        child: Icon(Icons.account_circle, size: 42, color: colors.iconColor),
       );
     }
-
     if (isVideo) {
       final controller = _videoControllers[userId];
       final isInitialized = _videoControllersInitialized[userId] == true;
-
       if (!isInitialized || controller == null) {
         return Container(
           width: 42,
           height: 42,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: colors.cardColor,
-          ),
+          decoration:
+              BoxDecoration(shape: BoxShape.circle, color: colors.cardColor),
           child: Center(
             child: CircularProgressIndicator(
-              color: colors.progressIndicatorColor,
-              strokeWidth: 2.0,
-            ),
+                color: colors.progressIndicatorColor, strokeWidth: 2.0),
           ),
         );
       }
-
       return ClipOval(
         child: SizedBox(
           width: 42,
@@ -814,8 +644,6 @@ class _FeedMessagesState extends State<FeedMessages>
         ),
       );
     }
-
-    // Regular image
     return CircleAvatar(
       radius: 21,
       backgroundColor: colors.cardColor,
@@ -828,13 +656,10 @@ class _FeedMessagesState extends State<FeedMessages>
     final username = userData['username'] ?? 'Unknown';
     final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
     final userId = userData['uid'] ?? '';
-
     return Container(
       decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: colors.cardColor, width: 0.5),
-        ),
-      ),
+          border:
+              Border(bottom: BorderSide(color: colors.cardColor, width: 0.5))),
       child: ListTile(
         leading: _buildUserAvatar(userId, photoUrl, colors),
         title: VerifiedUsernameWidget(
@@ -844,7 +669,6 @@ class _FeedMessagesState extends State<FeedMessages>
         ),
         trailing: Icon(Icons.person_add_alt_1, color: colors.iconColor),
         onTap: () async {
-          // Pause all videos before navigation
           _pauseAllVideos();
           final result = await Navigator.push(
             context,
@@ -856,10 +680,7 @@ class _FeedMessagesState extends State<FeedMessages>
               ),
             ),
           );
-
-          if (result == true) {
-            _refreshData();
-          }
+          if (result == true) _refreshData();
         },
       ),
     );
@@ -868,57 +689,35 @@ class _FeedMessagesState extends State<FeedMessages>
   Widget _buildChatItem(
       Map<String, dynamic> chat, _FeedMessagesColorSet colors) {
     final participants = List<String>.from(chat['participants']);
-    final otherUserId = participants.firstWhere(
-      (id) => id != _currentUserId, // Use _currentUserId!
-      orElse: () => '',
-    );
-
-    if (otherUserId.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    if (_blockedUsers.contains(otherUserId)) {
-      return const SizedBox.shrink();
-    }
-
+    final otherUserId =
+        participants.firstWhere((id) => id != _currentUserId, orElse: () => '');
+    if (otherUserId.isEmpty) return const SizedBox.shrink();
+    if (_blockedUsers.contains(otherUserId)) return const SizedBox.shrink();
     final userData = _userCache[otherUserId];
-    if (userData == null) {
-      return _buildDetailedChatSkeleton(colors);
-    }
-
+    if (userData == null) return _buildDetailedChatSkeleton(colors);
     final username = userData['username'] ?? 'Unknown User';
     final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
     final countryCode = userData['country']?.toString();
     final lastMessageData = _lastMessageCache[chat['id']];
     final streakCount = chat['streak_count'] ?? 0;
     final streakCheckedAt = chat['streak_checked_at'];
-
     final lastMutualExchange = _parseDateTime(chat['last_mutual_exchange']);
-
     String lastMessage = 'No messages yet';
     String timestampText = '';
     bool isCurrentUserSender = false;
     bool isMessageRead = false;
-
     if (lastMessageData != null) {
       isMessageRead = lastMessageData['is_read'] ?? false;
       lastMessage = lastMessageData['message'] ?? '';
-
       final timestamp = _parseDateTime(lastMessageData['timestamp']);
       timestampText = _formatTimestamp(timestamp);
-
-      isCurrentUserSender =
-          lastMessageData['sender_id'] == _currentUserId; // Use _currentUserId!
+      isCurrentUserSender = lastMessageData['sender_id'] == _currentUserId;
     }
-
     final unreadCount = _unreadCountCache[chat['id']] ?? 0;
-
     return Container(
       decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: colors.cardColor, width: 0.5),
-        ),
-      ),
+          border:
+              Border(bottom: BorderSide(color: colors.cardColor, width: 0.5))),
       child: ListTile(
         leading: _buildUserAvatar(otherUserId, photoUrl, colors),
         title: Row(
@@ -943,50 +742,34 @@ class _FeedMessagesState extends State<FeedMessages>
         subtitle: Row(
           children: [
             if (isCurrentUserSender)
-              Icon(
-                isMessageRead ? Icons.done_all : Icons.done,
-                size: 16,
-                color: colors.textColor.withOpacity(0.6),
-              ),
+              Icon(isMessageRead ? Icons.done_all : Icons.done,
+                  size: 16, color: colors.textColor.withOpacity(0.6)),
             Expanded(
-              child: Text(
-                lastMessage,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: colors.textColor.withOpacity(0.6)),
-              ),
+              child: Text(lastMessage,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: colors.textColor.withOpacity(0.6))),
             ),
             const SizedBox(width: 8),
-            Text(
-              timestampText,
-              style: TextStyle(
-                color: colors.textColor.withOpacity(0.6),
-                fontSize: 12,
-              ),
-            ),
+            Text(timestampText,
+                style: TextStyle(
+                    color: colors.textColor.withOpacity(0.6), fontSize: 12)),
           ],
         ),
         trailing: unreadCount > 0
             ? Container(
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
-                  color: colors.unreadBadgeColor,
-                  shape: BoxShape.circle,
-                ),
-                child: Text(
-                  unreadCount.toString(),
-                  style: TextStyle(color: colors.textColor, fontSize: 12),
-                ),
+                    color: colors.unreadBadgeColor, shape: BoxShape.circle),
+                child: Text(unreadCount.toString(),
+                    style: TextStyle(color: colors.textColor, fontSize: 12)),
               )
             : null,
         onTap: () async {
-          // Pause all videos before navigation
           _pauseAllVideos();
-          await SupabaseMessagesMethods().markMessagesAsRead(
-              chat['id'], _currentUserId!); // Use _currentUserId!
-
+          await SupabaseMessagesMethods()
+              .markMessagesAsRead(chat['id'], _currentUserId!);
           _unreadCountCache[chat['id']] = 0;
           setState(() {});
-
           final result = await Navigator.push(
             context,
             MaterialPageRoute(
@@ -997,10 +780,7 @@ class _FeedMessagesState extends State<FeedMessages>
               ),
             ),
           );
-
-          if (result == true) {
-            _refreshData();
-          }
+          if (result == true) _refreshData();
         },
       ),
     );
@@ -1009,45 +789,35 @@ class _FeedMessagesState extends State<FeedMessages>
   Widget _buildDetailedChatSkeleton(_FeedMessagesColorSet colors) {
     return Container(
       decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: colors.cardColor, width: 0.5),
-        ),
-      ),
+          border:
+              Border(bottom: BorderSide(color: colors.cardColor, width: 0.5))),
       child: ListTile(
         leading: CircleAvatar(
-          radius: 21,
-          backgroundColor: colors.cardColor.withOpacity(0.5),
-        ),
+            radius: 21, backgroundColor: colors.cardColor.withOpacity(0.5)),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              height: 14,
-              width: 120,
-              decoration: BoxDecoration(
-                color: colors.cardColor.withOpacity(0.5),
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
+                height: 14,
+                width: 120,
+                decoration: BoxDecoration(
+                    color: colors.cardColor.withOpacity(0.5),
+                    borderRadius: BorderRadius.circular(4))),
             const SizedBox(height: 6),
             Container(
-              height: 12,
-              width: 180,
-              decoration: BoxDecoration(
-                color: colors.cardColor.withOpacity(0.4),
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
+                height: 12,
+                width: 180,
+                decoration: BoxDecoration(
+                    color: colors.cardColor.withOpacity(0.4),
+                    borderRadius: BorderRadius.circular(4))),
           ],
         ),
         trailing: Container(
-          width: 40,
-          height: 20,
-          decoration: BoxDecoration(
-            color: colors.cardColor.withOpacity(0.4),
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
+            width: 40,
+            height: 20,
+            decoration: BoxDecoration(
+                color: colors.cardColor.withOpacity(0.4),
+                borderRadius: BorderRadius.circular(10))),
       ),
     );
   }
@@ -1055,169 +825,123 @@ class _FeedMessagesState extends State<FeedMessages>
   Widget _buildSuggestionSkeleton(_FeedMessagesColorSet colors) {
     return Container(
       decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: colors.cardColor, width: 0.5),
-        ),
-      ),
+          border:
+              Border(bottom: BorderSide(color: colors.cardColor, width: 0.5))),
       child: ListTile(
         leading: CircleAvatar(
-          radius: 21,
-          backgroundColor: colors.cardColor.withOpacity(0.5),
-        ),
+            radius: 21, backgroundColor: colors.cardColor.withOpacity(0.5)),
         title: Container(
-          height: 16,
-          width: 100,
-          decoration: BoxDecoration(
-            color: colors.cardColor.withOpacity(0.5),
-            borderRadius: BorderRadius.circular(4),
-          ),
-        ),
+            height: 16,
+            width: 100,
+            decoration: BoxDecoration(
+                color: colors.cardColor.withOpacity(0.5),
+                borderRadius: BorderRadius.circular(4))),
         trailing: Container(
-          width: 24,
-          height: 24,
-          decoration: BoxDecoration(
-            color: colors.cardColor.withOpacity(0.4),
-            shape: BoxShape.circle,
-          ),
-        ),
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+                color: colors.cardColor.withOpacity(0.4),
+                shape: BoxShape.circle)),
       ),
     );
   }
 
   Widget _buildSectionHeaderSkeleton(_FeedMessagesColorSet colors) {
     return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
-        child: Container(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+      child: Container(
           height: 18,
           width: 80,
           decoration: BoxDecoration(
-            color: colors.cardColor.withOpacity(0.6),
-            borderRadius: BorderRadius.circular(4),
-          ),
-        ));
+              color: colors.cardColor.withOpacity(0.6),
+              borderRadius: BorderRadius.circular(4))),
+    );
   }
 
   Widget _buildEmptyStateMessage(_FeedMessagesColorSet colors) {
     return Center(
-        child: Padding(
-      padding: const EdgeInsets.all(32.0),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.chat_bubble_outline,
-            size: 80,
-            color: colors.textColor.withOpacity(0.4),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'No messages yet',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w500,
-              color: colors.textColor.withOpacity(0.8),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Start a conversation with someone!\nYour messages will appear here.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 16,
-              color: colors.textColor.withOpacity(0.6),
-              height: 1.4,
-            ),
-          ),
-        ],
+      child: Padding(
+        padding: const EdgeInsets.all(32.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.chat_bubble_outline,
+                size: 80, color: colors.textColor.withOpacity(0.4)),
+            const SizedBox(height: 24),
+            Text('No messages yet',
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w500,
+                    color: colors.textColor.withOpacity(0.8))),
+            const SizedBox(height: 12),
+            Text(
+                'Start a conversation with someone!\nYour messages will appear here.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 16,
+                    color: colors.textColor.withOpacity(0.6),
+                    height: 1.4)),
+          ],
+        ),
       ),
-    ));
+    );
   }
 
   Widget _buildNotSignedInMessage(_FeedMessagesColorSet colors) {
     return Center(
-        child: Padding(
-      padding: const EdgeInsets.all(32.0),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.person_off,
-            size: 80,
-            color: colors.textColor.withOpacity(0.4),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'Please sign in',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w500,
-              color: colors.textColor.withOpacity(0.8),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'You need to be signed in to view messages',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 16,
-              color: colors.textColor.withOpacity(0.6),
-              height: 1.4,
-            ),
-          ),
-        ],
+      child: Padding(
+        padding: const EdgeInsets.all(32.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.person_off,
+                size: 80, color: colors.textColor.withOpacity(0.4)),
+            const SizedBox(height: 24),
+            Text('Please sign in',
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w500,
+                    color: colors.textColor.withOpacity(0.8))),
+            const SizedBox(height: 12),
+            Text('You need to be signed in to view messages',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 16,
+                    color: colors.textColor.withOpacity(0.6),
+                    height: 1.4)),
+          ],
+        ),
       ),
-    ));
+    );
   }
 
   DateTime? _parseDateTime(dynamic dateValue) {
     if (dateValue == null) return null;
-
-    if (dateValue is DateTime) {
-      return dateValue;
-    }
-
-    if (dateValue is String) {
-      try {
-        return DateTime.tryParse(dateValue);
-      } catch (e) {
-        return null;
-      }
-    }
-
-    if (dateValue is int) {
-      return DateTime.fromMillisecondsSinceEpoch(dateValue);
-    }
-
+    if (dateValue is DateTime) return dateValue;
+    if (dateValue is String) return DateTime.tryParse(dateValue);
+    if (dateValue is int) return DateTime.fromMillisecondsSinceEpoch(dateValue);
     return null;
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
-
     final themeProvider = Provider.of<ThemeProvider>(context);
     final colors = _getColors(themeProvider);
-
-    // Get user ID from UserProvider if not already set
     if (_currentUserId == null) {
       final userProvider = Provider.of<UserProvider>(context, listen: false);
       if (userProvider.firebaseUid != null) {
         _currentUserId = userProvider.firebaseUid;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            _loadInitialData();
-          }
+          if (mounted) _loadInitialData();
         });
       } else if (userProvider.supabaseUid != null) {
         _currentUserId = userProvider.supabaseUid;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            _loadInitialData();
-          }
+          if (mounted) _loadInitialData();
         });
       }
     }
-
     return Scaffold(
       backgroundColor: colors.backgroundColor,
       appBar: AppBar(
@@ -1251,28 +975,18 @@ class _FeedMessagesState extends State<FeedMessages>
   }
 
   Widget _buildContent(_FeedMessagesColorSet colors) {
-    if (_currentUserId == null) {
-      return _buildNotSignedInMessage(colors);
-    }
-
+    if (_currentUserId == null) return _buildNotSignedInMessage(colors);
     final hasChats = _existingChats.isNotEmpty;
     final hasSuggestions = _showSuggestions && _suggestedUsers.isNotEmpty;
-
-    if (!hasChats && !hasSuggestions) {
-      return _buildEmptyStateMessage(colors);
-    }
-
+    if (!hasChats && !hasSuggestions) return _buildEmptyStateMessage(colors);
     final totalItemCount = _existingChats.length +
         _suggestedUsers.length +
         (_hasMoreChats ? 1 : 0);
-
     return NotificationListener<ScrollNotification>(
       onNotification: (scrollNotification) {
         if (scrollNotification is ScrollEndNotification) {
           final metrics = scrollNotification.metrics;
-          if (metrics.extentAfter < 500) {
-            _loadMoreChats();
-          }
+          if (metrics.extentAfter < 500) _loadMoreChats();
         }
         return false;
       },
@@ -1280,12 +994,11 @@ class _FeedMessagesState extends State<FeedMessages>
         itemCount: totalItemCount,
         itemBuilder: (context, index) {
           if (index < _existingChats.length) {
-            final chat = _existingChats[index];
-            return _buildChatItem(chat, colors);
+            return _buildChatItem(_existingChats[index], colors);
           } else if (index < _existingChats.length + _suggestedUsers.length) {
             final suggestionIndex = index - _existingChats.length;
-            final userData = _suggestedUsers[suggestionIndex];
-            return _buildSuggestionItem(userData, colors);
+            return _buildSuggestionItem(
+                _suggestedUsers[suggestionIndex], colors);
           } else {
             return _buildLoadingIndicator(colors);
           }
@@ -1298,10 +1011,8 @@ class _FeedMessagesState extends State<FeedMessages>
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: Center(
-        child: CircularProgressIndicator(
-          color: colors.progressIndicatorColor,
-        ),
-      ),
+          child:
+              CircularProgressIndicator(color: colors.progressIndicatorColor)),
     );
   }
 }
@@ -1311,7 +1022,6 @@ class SafeStreakExpiryIndicator extends StatefulWidget {
   final dynamic streakCheckedAt;
   final dynamic lastMutualExchange;
   final _FeedMessagesColorSet colors;
-
   const SafeStreakExpiryIndicator({
     Key? key,
     required this.streakCount,
@@ -1319,7 +1029,6 @@ class SafeStreakExpiryIndicator extends StatefulWidget {
     required this.lastMutualExchange,
     required this.colors,
   }) : super(key: key);
-
   @override
   _SafeStreakExpiryIndicatorState createState() =>
       _SafeStreakExpiryIndicatorState();
@@ -1336,9 +1045,8 @@ class _SafeStreakExpiryIndicatorState extends State<SafeStreakExpiryIndicator> {
   void initState() {
     super.initState();
     _parseDateTime();
-    _timer = Timer.periodic(const Duration(seconds: 30), (_) {
-      _updateExpiryStatus();
-    });
+    _timer = Timer.periodic(
+        const Duration(seconds: 30), (_) => _updateExpiryStatus());
     _updateExpiryStatus();
   }
 
@@ -1346,16 +1054,8 @@ class _SafeStreakExpiryIndicatorState extends State<SafeStreakExpiryIndicator> {
     DateTime? parseDynamicDateTime(dynamic value) {
       if (value == null) return null;
       if (value is DateTime) return value;
-      if (value is String) {
-        try {
-          return DateTime.tryParse(value);
-        } catch (e) {
-          return null;
-        }
-      }
-      if (value is int) {
-        return DateTime.fromMillisecondsSinceEpoch(value);
-      }
+      if (value is String) return DateTime.tryParse(value);
+      if (value is int) return DateTime.fromMillisecondsSinceEpoch(value);
       return null;
     }
 
@@ -1368,11 +1068,9 @@ class _SafeStreakExpiryIndicatorState extends State<SafeStreakExpiryIndicator> {
           _parsedLastMutualExchange!.add(const Duration(hours: 24));
       final now = DateTime.now().toUtc();
       final timeLeft = streakExpiryTime.difference(now);
-
       final newIsAboutToExpire = timeLeft.inHours <= 5 && timeLeft.inHours > 0;
       final newHasExpired = timeLeft.isNegative;
       String newTimeLeftText = '';
-
       if (newIsAboutToExpire) {
         if (timeLeft.inHours > 0) {
           newTimeLeftText = '${timeLeft.inHours}h ${timeLeft.inMinutes % 60}m';
@@ -1382,7 +1080,6 @@ class _SafeStreakExpiryIndicatorState extends State<SafeStreakExpiryIndicator> {
       } else if (newHasExpired) {
         newTimeLeftText = 'Expired';
       }
-
       if (newIsAboutToExpire != _isAboutToExpire ||
           newHasExpired != _hasExpired ||
           newTimeLeftText != _timeLeftText) {
@@ -1423,14 +1120,12 @@ class _SafeStreakExpiryIndicatorState extends State<SafeStreakExpiryIndicator> {
   @override
   Widget build(BuildContext context) {
     if (widget.streakCount == 0) return const SizedBox.shrink();
-
-    String emoji = '🔥'; // Active streak (not expiring soon)
+    String emoji = '🔥';
     if (_hasExpired) {
-      emoji = '💀'; // CHANGED: From 💥 to 💀 (skull emoji)
+      emoji = '💀';
     } else if (_isAboutToExpire) {
-      emoji = '⏳'; // CHANGED: From 🔥 to ⏳ (hourglass emoji)
+      emoji = '⏳';
     }
-
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -1451,10 +1146,7 @@ class _SafeStreakExpiryIndicatorState extends State<SafeStreakExpiryIndicator> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            emoji,
-            style: const TextStyle(fontSize: 12),
-          ),
+          Text(emoji, style: const TextStyle(fontSize: 12)),
           const SizedBox(width: 4),
           Text(
             '${widget.streakCount}',
