@@ -22,7 +22,28 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
-import 'package:Ratedly/services/iap_service.dart'; // ADDED for premium check
+import 'package:Ratedly/services/iap_service.dart';
+
+// -----------------------------------------------------------------------------
+// FEED ERROR LOGGER – logs only to feed_errors table
+// -----------------------------------------------------------------------------
+Future<void> _logFeedError({
+  required String operationType,
+  String? userId,
+  String? errorMessage,
+  Map<String, dynamic>? additionalData,
+}) async {
+  try {
+    await Supabase.instance.client.from('feed_errors').insert({
+      'user_id': userId,
+      'operation_type': operationType,
+      'error_message': errorMessage,
+      'additional_data': additionalData,
+    });
+  } catch (_) {
+    // Fail silently
+  }
+}
 
 class _ColorSet {
   final Color textColor;
@@ -87,9 +108,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   bool _isLoading = true;
   bool _isLoadingMore = false;
 
-  // FIX 3 — _offsetForYou is no longer used for For You pagination;
-  // user_post_views handles exclusion server-side.  We keep _offsetFollowing
-  // for the Following tab which still uses cursor-based pagination.
   int _offsetFollowing = 0;
 
   bool _hasMoreFollowing = true;
@@ -121,7 +139,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   List<Map<String, dynamic>> _nextForYouBatch = [];
   bool _nextBatchLoaded = false;
-  Timer? _prefetchTimer; // FIX 2 — delayed prefetch timer
+  Timer? _prefetchTimer;
 
   static const int _mediaPreloadAhead = 4;
   static const int _mediaPreloadBehind = 2;
@@ -873,12 +891,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               }
             }
 
-            // FIX 4 — Flush cached posts into user_post_views immediately so
-            // the DB-side seen filter stays in sync even if the app was killed
-            // before the previous session's view records were committed.
             final userId = currentUserId;
             if (userId != null && userId.isNotEmpty) {
-              for (final p in posts.take(3)) {
+              for (final p in posts!.take(3)) {
                 final id = p['postId']?.toString() ?? '';
                 if (id.isNotEmpty) _pendingViews.add(id);
               }
@@ -1081,7 +1096,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   // MODIFIED: premium check added to prevent loading ads for premium users
   // ===========================================================================
   void _loadInterstitialAd() async {
-    // Don't load ads for premium users
     final isPremium = await IAPService().isPurchased();
     if (isPremium) return;
 
@@ -1114,7 +1128,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   // MODIFIED: premium check added to prevent showing ads for premium users
   // ===========================================================================
   void _showInterstitialAd() async {
-    // Don't show ads for premium users
     final isPremium = await IAPService().isPurchased();
     if (isPremium) return;
 
@@ -1214,8 +1227,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       }
 
       if (_cacheLoaded && _forYouPosts.isNotEmpty) {
-        // FIX 2 — schedule the prefetch with a delay so in-flight view records
-        // have time to commit to user_post_views before we query the DB.
         _schedulePrefetch();
         if (currentUserId == null || currentUserId!.isEmpty) {
           _blockedUsers = [];
@@ -1245,10 +1256,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
-  // FIX 2 — Prefetch helper: waits 3 seconds before firing so that the views
-  // recorded for the current batch have time to land in user_post_views.  This
-  // prevents the prefetch RPC from seeing posts that are about to be marked as
-  // seen, which was the root cause of seen posts reappearing.
   void _schedulePrefetch() {
     _prefetchTimer?.cancel();
     _prefetchTimer = Timer(const Duration(seconds: 3), () async {
@@ -1258,11 +1265,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     });
   }
 
-  // FIX 1 — The next batch now uses the same offset as the current feed
-  // position (not _offsetForYou + _initialBatchSize), because _offsetForYou
-  // is no longer used for For You pagination.  The SQL relies on
-  // user_post_views for exclusion, so passing offset 0 is correct: every call
-  // will naturally skip already-seen posts server-side.
   Future<List<Map<String, dynamic>>> _loadNextForYouBatch() async {
     final userId = currentUserId;
     if (userId == null || userId.isEmpty) return [];
@@ -1271,7 +1273,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       final raw = await _supabase.rpc('get_for_you_feed_test', params: {
         'current_user_id': userId,
         'excluded_users': excludedUsers,
-        // FIX 3 — always offset 0; user_post_views handles deduplication.
         'page_offset': 0,
         'page_limit': _initialBatchSize,
       });
@@ -1337,7 +1338,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // MAIN DATA LOADER
+  // MAIN DATA LOADER (with feed error logging)
   // ===========================================================================
 
   Future<void> _loadData({bool loadMore = false}) async {
@@ -1347,8 +1348,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       return;
     }
 
-    // FIX 2 — Flush any pending view records before fetching more posts so
-    // the DB exclusion filter sees the most up-to-date seen set.
     if (loadMore && _pendingViews.isNotEmpty) {
       await _recordPendingViews();
     }
@@ -1364,9 +1363,11 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       }
 
       final excludedUsers = [..._blockedUsers, userId];
+      bool rpcSuccess = true;
+      dynamic rpcError;
 
       if (_selectedTab == 0) {
-        // ── Following tab: uses cursor-based offset pagination ──────────────
+        // Following tab
         if (_followingIds.isEmpty) {
           setState(() {
             _hasMoreFollowing = false;
@@ -1391,24 +1392,51 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               return m;
             }).toList();
             newPosts = await _enrichPostsWithEditMetadata(rawPosts);
+          } else {
+            rpcSuccess = false;
+            rpcError = 'Invalid response format';
           }
-        } catch (rpcErr) {}
+        } catch (rpcErr) {
+          rpcSuccess = false;
+          rpcError = rpcErr;
+          // Log RPC error
+          await _logFeedError(
+            operationType: 'following_feed_rpc_error',
+            userId: userId,
+            errorMessage: rpcErr.toString(),
+            additionalData: {
+              'offset': _offsetFollowing,
+              'following_count': _followingIds.length,
+            },
+          );
+        }
         _offsetFollowing += newPosts.length;
         _hasMoreFollowing = newPosts.isNotEmpty;
+
+        // If no posts and user follows someone, log empty feed
+        if (!loadMore &&
+            newPosts.isEmpty &&
+            _followingIds.isNotEmpty &&
+            rpcSuccess) {
+          await _logFeedError(
+            operationType: 'load_following_empty',
+            userId: userId,
+            additionalData: {
+              'following_ids_count': _followingIds.length,
+              'offset': _offsetFollowing,
+            },
+          );
+        }
       } else {
-        // ── For You tab: offset is always 0; SQL uses user_post_views ────────
+        // For You tab
         try {
           final raw = await _supabase.rpc('get_for_you_feed_test', params: {
             'current_user_id': userId,
             'excluded_users': excludedUsers,
-            // FIX 3 — offset always 0 for For You; the SQL OFFSET clauses have
-            // been removed from the stored function; exclusion is handled
-            // entirely by the LEFT JOIN on user_post_views.
             'page_offset': 0,
             'page_limit': _initialBatchSize,
           });
           final res = _unwrapResponse(raw);
-
           if (res is List) {
             final rawPosts = res.map<Map<String, dynamic>>((post) {
               final m = <String, dynamic>{};
@@ -1423,15 +1451,34 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               return m;
             }).toList();
             newPosts = await _enrichPostsWithEditMetadata(rawPosts);
+          } else {
+            rpcSuccess = false;
+            rpcError = 'Invalid response format';
           }
         } catch (rpcErr) {
-          // RPC error
+          rpcSuccess = false;
+          rpcError = rpcErr;
+          await _logFeedError(
+            operationType: 'for_you_feed_rpc_error',
+            userId: userId,
+            errorMessage: rpcErr.toString(),
+            additionalData: {'load_more': loadMore},
+          );
         }
 
         _hasMoreForYou = newPosts.isNotEmpty;
 
-        // FIX 2 — Replace the immediate unawaited prefetch with a delayed one
-        // so view records have time to commit before the next RPC call.
+        // Log empty feed only if it's initial load (not loadMore) and there are no posts
+        if (!loadMore && newPosts.isEmpty && rpcSuccess) {
+          await _logFeedError(
+            operationType: 'load_for_you_empty',
+            userId: userId,
+            additionalData: {
+              'excluded_users_count': excludedUsers.length,
+            },
+          );
+        }
+
         _schedulePrefetch();
       }
 
@@ -1454,7 +1501,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
                 loadMore ? [..._followingPosts, ...newPosts] : newPosts;
           } else {
             if (loadMore) {
-              // Dedupe by postId to guard against any overlap between batches.
               final existingIds = _forYouPosts
                   .map((p) => p['postId']?.toString())
                   .whereType<String>()
@@ -1535,6 +1581,18 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         });
       }
     } catch (e) {
+      // General load error
+      await _logFeedError(
+        operationType: 'load_data_general_error',
+        userId: currentUserId,
+        errorMessage: e.toString(),
+        additionalData: {
+          'selected_tab': _selectedTab,
+          'load_more': loadMore,
+          'for_you_posts_count': _forYouPosts.length,
+          'following_posts_count': _followingPosts.length,
+        },
+      );
       if (mounted) {
         setState(() {
           _isLoadingMore = false;
