@@ -1,3 +1,4 @@
+// lib/screens/Profile_page/other_user_profile.dart
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -460,6 +461,182 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           );
         }),
       ],
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // MISSING METHODS ADDED (copied from current_profile_screen.dart)
+  // --------------------------------------------------------------------------
+  Widget _buildPostVideoPlayer(
+      String videoUrl, _OtherProfileColorSet colors, VideoEditResult? editResult) {
+    final controller = _getVideoController(videoUrl);
+    final isInitialized = _isVideoControllerInitialized(videoUrl);
+
+    if (!isInitialized || controller == null) {
+      return Container(
+          color: colors.avatarBackgroundColor,
+          child: Center(child: CircularProgressIndicator(color: colors.progressIndicatorColor)));
+    }
+
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(
+          child: ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: controller.value.size.width,
+                  height: controller.value.size.height,
+                  child: VideoPlayer(controller),
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (editResult != null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: LayoutBuilder(
+                builder: (context, constraints) =>
+                    _buildEditOverlayLayer(editResult, constraints),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  Widget _buildPostImage(
+      String imageUrl, _OtherProfileColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    Widget baseImage = ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: editResult == null
+          ? Image.network(
+              imageUrl,
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+              errorBuilder: (_, __, ___) => Container(
+                color: colors.avatarBackgroundColor,
+                child: Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+              ),
+            )
+          : ColorFiltered(
+              colorFilter: ColorFilter.matrix(matrix),
+              child: Transform.rotate(
+                angle: quarters * math.pi / 2,
+                child: Image.network(
+                  imageUrl,
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                  errorBuilder: (_, __, ___) => Container(
+                    color: colors.avatarBackgroundColor,
+                    child: Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+                  ),
+                ),
+              ),
+            ),
+    );
+
+    if (editResult == null) return baseImage;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(child: baseImage),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: LayoutBuilder(
+              builder: (context, constraints) =>
+                  _buildEditOverlayLayer(editResult, constraints),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildGalleryVideoPlayer(
+      String videoUrl, _OtherProfileColorSet colors, VideoEditResult? editResult) {
+    final controller = _getVideoController(videoUrl);
+    final isInitialized = _isVideoControllerInitialized(videoUrl);
+
+    if (!isInitialized || controller == null) {
+      return Container(
+          color: colors.avatarBackgroundColor,
+          child: Center(child: CircularProgressIndicator(color: colors.progressIndicatorColor)));
+    }
+
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(
+          child: ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: controller.value.size.width,
+                  height: controller.value.size.height,
+                  child: VideoPlayer(controller),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildGalleryCoverImage(
+      String url, _OtherProfileColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    if (editResult == null) {
+      return Image.network(
+        url,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Container(
+          decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              color: colors.avatarBackgroundColor.withOpacity(0.5)),
+          child: Icon(Icons.collections, size: 40, color: colors.errorTextColor),
+        ),
+      );
+    }
+
+    return ColorFiltered(
+      colorFilter: ColorFilter.matrix(matrix),
+      child: Transform.rotate(
+        angle: quarters * math.pi / 2,
+        child: Image.network(
+          url,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                color: colors.avatarBackgroundColor.withOpacity(0.5)),
+            child: Icon(Icons.collections, size: 40, color: colors.errorTextColor),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1183,7 +1360,10 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         operation: 'checkMutualFollowAfterFollow',
         error: e,
         stack: stack,
-        additionalData: {'currentUserId': currentUserId, 'targetUid': widget.uid},
+        additionalData: {
+          'currentUserId': currentUserId,
+          'targetUid': widget.uid
+        },
       );
     }
   }
