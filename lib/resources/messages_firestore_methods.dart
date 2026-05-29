@@ -203,6 +203,7 @@ class SupabaseMessagesMethods {
     }
   }
 
+  // ✅ FIXED: _sendStreakNotification now properly triggers a server notification
   Future<void> _sendStreakNotification(String chatId, String senderId,
       String receiverId, int streakCount) async {
     try {
@@ -215,17 +216,18 @@ class SupabaseMessagesMethods {
 
       final senderName = senderData['username'] ?? 'Someone';
 
-      // Prepare notification data
-      final notificationData = {
-        'title': '🔥 Streak Updated!',
-        'body': '$senderName: Streak is now $streakCount days! Keep it going!',
-        'data': {
-          'type': 'streak_update',
+      // Send a real notification via the notification service
+      await _notificationService.triggerServerNotification(
+        type: 'streak_update',
+        targetUserId: receiverId,
+        title: '🔥 Streak Updated!',
+        body: '$senderName: Streak is now $streakCount days! Keep it going!',
+        customData: {
           'chatId': chatId,
           'streakCount': streakCount,
           'senderId': senderId,
         },
-      };
+      );
     } catch (e) {
       // Streak notification error handled silently
     }
