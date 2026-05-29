@@ -1,20 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart'; // ← ADD THIS
 import 'package:intl/intl.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
-import 'package:Ratedly/resources/comments_methods.dart'; // <-- ADDED
+import 'package:Ratedly/resources/comments_methods.dart';
 import 'package:Ratedly/resources/block_firestore_methods.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:provider/provider.dart';
-import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:video_player/video_player.dart';
 
+// ============================================================================
+// Expandable Text Widget
+// ============================================================================
 class ExpandableText extends StatefulWidget {
   final String text;
   final TextStyle style;
@@ -65,6 +65,9 @@ class _ExpandableTextState extends State<ExpandableText> {
   }
 }
 
+// ============================================================================
+// Video Utilities
+// ============================================================================
 class VideoUtils {
   static bool isVideoFile(String url) {
     if (url.isEmpty) return false;
@@ -79,6 +82,9 @@ class VideoUtils {
   }
 }
 
+// ============================================================================
+// Video Profile Avatar
+// ============================================================================
 class VideoProfileAvatar extends StatefulWidget {
   final String videoUrl;
   final double radius;
@@ -168,7 +174,9 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
   }
 }
 
-// ── TikTok-style follow badge — same design & behaviour as PostCard ──────────
+// ============================================================================
+// TikTok-style follow badge
+// ============================================================================
 class _FollowBadge extends StatefulWidget {
   final String ownerUid;
   final String currentUserId;
@@ -369,7 +377,7 @@ class _FollowBadgeState extends State<_FollowBadge>
   }
 }
 
-// Stacks avatar + TikTok badge: badge centre sits on bottom edge of avatar
+// Helper: stacks avatar + TikTok badge
 Widget _buildAvatarWithFollow({
   required Widget avatar,
   required double avatarDiameter,
@@ -395,6 +403,9 @@ Widget _buildAvatarWithFollow({
   );
 }
 
+// ============================================================================
+// CommentCard Widget
+// ============================================================================
 class CommentCard extends StatefulWidget {
   final dynamic snap;
   final String currentUserId;
@@ -467,6 +478,31 @@ class _CommentCardState extends State<CommentCard> {
     super.dispose();
   }
 
+  // --------------------------------------------------------------------------
+  // Error logging helper – logs only exceptions to comments_error table
+  // --------------------------------------------------------------------------
+  Future<void> _logCommentError({
+    required String operationType,
+    String? userId,
+    Map<String, dynamic>? additionalData,
+    required dynamic error,
+  }) async {
+    try {
+      await Supabase.instance.client.from('comments_error').insert({
+        'user_id': userId ?? widget.currentUserId,
+        'operation_type': operationType,
+        'error_message': error.toString(),
+        'stack_trace': error is Error ? error.stackTrace?.toString() : null,
+        'additional_data': additionalData,
+      });
+    } catch (_) {
+      // Fail silently – error logging must not crash the app
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // UI helpers
+  // --------------------------------------------------------------------------
   Color _getTextColor() => const Color(0xFFd9d9d9);
   Color _getCardColor() =>
       widget.forcedTransparent ? Colors.transparent : const Color(0xFF121212);
@@ -504,6 +540,9 @@ class _CommentCardState extends State<CommentCard> {
         backgroundImage: NetworkImage(photoUrl));
   }
 
+  // --------------------------------------------------------------------------
+  // Data fetching with error logging
+  // --------------------------------------------------------------------------
   Future<void> _fetchLikeStatus() async {
     try {
       final likeCheck = await Supabase.instance.client
@@ -516,13 +555,165 @@ class _CommentCardState extends State<CommentCard> {
                   widget.snap.id)
           .eq('uid', widget.currentUserId)
           .maybeSingle();
-      setState(() => _isLiked = likeCheck != null);
+      if (mounted) setState(() => _isLiked = likeCheck != null);
     } catch (e) {
-      if (kDebugMode) print('Error fetching like status: $e');
-      setState(() => _isLiked = false);
+      await _logCommentError(
+        operationType: 'fetch_comment_like_status',
+        userId: widget.currentUserId,
+        additionalData: {
+          'commentId': widget.snap['commentId'] ??
+              widget.snap['commentid'] ??
+              widget.snap.id,
+        },
+        error: e,
+      );
+      if (mounted) setState(() => _isLiked = false);
     }
   }
 
+  Future<void> _fetchReplyLikesStatus() async {
+    try {
+      final replyIds = _replies.map((r) => r['id'].toString()).toList();
+      if (replyIds.isEmpty) return;
+      setState(() {
+        for (var id in replyIds) _replyLikes[id] = false;
+      });
+      final res = await Supabase.instance.client
+          .from('reply_likes')
+          .select('reply_id')
+          .eq('uid', widget.currentUserId)
+          .inFilter('reply_id', replyIds);
+      if (mounted) {
+        setState(() {
+          for (var like in res) _replyLikes[like['reply_id']] = true;
+        });
+      }
+    } catch (e) {
+      await _logCommentError(
+        operationType: 'fetch_reply_likes_status',
+        userId: widget.currentUserId,
+        additionalData: {
+          'commentId': widget.snap['commentId'] ??
+              widget.snap['commentid'] ??
+              widget.snap.id,
+          'replyIds': _replies.map((r) => r['id']).toList(),
+        },
+        error: e,
+      );
+    }
+  }
+
+  void _subscribeToReplies() {
+    final commentId =
+        widget.snap['commentId'] ?? widget.snap['commentid'] ?? widget.snap.id;
+    _repliesSub = Supabase.instance.client
+        .from('replies')
+        .stream(primaryKey: ['id'])
+        .eq('commentid', commentId)
+        .listen(
+          (List<Map<String, dynamic>> data) async {
+            if (mounted) {
+              setState(() {
+                _replies = data;
+                for (var reply in _replies) {
+                  final replyId = reply['id'].toString();
+                  final dynamic rawCount = reply['like_count'] ?? 0;
+                  _replyLikeCounts[replyId] = (rawCount is num)
+                      ? rawCount.toInt()
+                      : int.tryParse(rawCount.toString()) ?? 0;
+                }
+              });
+              await _fetchReplyLikesStatus();
+            }
+          },
+          onError: (error) async {
+            await _logCommentError(
+              operationType: 'replies_stream_error',
+              userId: widget.currentUserId,
+              additionalData: {'commentId': commentId},
+              error: error,
+            );
+          },
+        );
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchReplies(String commentId) async {
+    try {
+      dynamic res;
+      try {
+        res = await Supabase.instance.client
+            .from('replies')
+            .select()
+            .eq('commentid', commentId)
+            .order('like_count', ascending: false);
+      } catch (_) {
+        res = await Supabase.instance.client
+            .from('replies')
+            .select()
+            .eq('commentid', commentId);
+      }
+      if (res == null) return [];
+      dynamic raw = res;
+      if (raw is Map && raw.containsKey('data')) raw = raw['data'];
+      if (raw is List) {
+        final list = raw
+            .map<Map<String, dynamic>>(
+                (e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+        list.sort((a, b) {
+          final na = a['like_count'] ?? 0;
+          final nb = b['like_count'] ?? 0;
+          final ia =
+              (na is num) ? na.toInt() : int.tryParse(na.toString()) ?? 0;
+          final ib =
+              (nb is num) ? nb.toInt() : int.tryParse(nb.toString()) ?? 0;
+          return ib.compareTo(ia);
+        });
+        return list;
+      }
+    } catch (e) {
+      await _logCommentError(
+        operationType: 'fetch_replies',
+        userId: widget.currentUserId,
+        additionalData: {'commentId': commentId},
+        error: e,
+      );
+    }
+    return [];
+  }
+
+  Future<Map<String, dynamic>?> _fetchUser(String uid) async {
+    try {
+      final res = await Supabase.instance.client
+          .from('users')
+          .select()
+          .eq('uid', uid)
+          .maybeSingle();
+      if (res == null) return null;
+      if (res is Map) {
+        if (res.containsKey('data')) {
+          final d = res['data'];
+          if (d is Map) return Map<String, dynamic>.from(d);
+          if (d is List && d.isNotEmpty) return Map<String, dynamic>.from(d[0]);
+        } else {
+          return Map<String, dynamic>.from(res);
+        }
+      }
+      return null;
+    } catch (e) {
+      await _logCommentError(
+        operationType: 'fetch_user_for_comment',
+        userId: widget.currentUserId,
+        additionalData: {'uid': uid},
+        error: e,
+      );
+    }
+    return null;
+  }
+
+  // --------------------------------------------------------------------------
+  // Interactive actions
+  // --------------------------------------------------------------------------
   Future<void> _deleteComment(BuildContext context) async {
     final textColor = _getTextColor();
     final cardColor = _getCardColor();
@@ -545,7 +736,6 @@ class _CommentCardState extends State<CommentCard> {
     );
     if (confirmed ?? false) {
       try {
-        // CHANGED: use SupabaseCommentsMethods instead of SupabasePostsMethods
         await SupabaseCommentsMethods().deleteComment(
           widget.postId,
           widget.snap['commentId'] ??
@@ -607,7 +797,6 @@ class _CommentCardState extends State<CommentCard> {
                           widget.snap['commentid'] ??
                           widget.snap.id;
                       try {
-                        // CHANGED: use SupabaseCommentsMethods
                         final res =
                             await SupabaseCommentsMethods().reportComment(
                           postId: widget.postId,
@@ -640,142 +829,9 @@ class _CommentCardState extends State<CommentCard> {
     widget.onRepliesExpanded?.call(newCount);
   }
 
-  Future<Map<String, dynamic>?> _fetchUser(String uid) async {
-    try {
-      final res = await Supabase.instance.client
-          .from('users')
-          .select()
-          .eq('uid', uid)
-          .maybeSingle();
-      if (res == null) return null;
-      if (res is Map) {
-        if (res.containsKey('data')) {
-          final d = res['data'];
-          if (d is Map) return Map<String, dynamic>.from(d);
-          if (d is List && d.isNotEmpty) return Map<String, dynamic>.from(d[0]);
-        } else {
-          return Map<String, dynamic>.from(res);
-        }
-      }
-      return null;
-    } catch (e) {
-      if (kDebugMode) print('fetchUser error: $e');
-    }
-    return null;
-  }
-
-  Future<void> _fetchReplyLikesStatus() async {
-    try {
-      final replyIds = _replies.map((r) => r['id'].toString()).toList();
-      if (replyIds.isEmpty) return;
-      setState(() {
-        for (var id in replyIds) _replyLikes[id] = false;
-      });
-      final res = await Supabase.instance.client
-          .from('reply_likes')
-          .select('reply_id')
-          .eq('uid', widget.currentUserId)
-          .inFilter('reply_id', replyIds);
-      setState(() {
-        for (var like in res) _replyLikes[like['reply_id']] = true;
-      });
-    } catch (e) {
-      if (kDebugMode) print('Error fetching reply likes: $e');
-    }
-  }
-
-  void _subscribeToReplies() {
-    final commentId =
-        widget.snap['commentId'] ?? widget.snap['commentid'] ?? widget.snap.id;
-    _repliesSub = Supabase.instance.client
-        .from('replies')
-        .stream(primaryKey: ['id'])
-        .eq('commentid', commentId)
-        .listen((List<Map<String, dynamic>> data) async {
-          if (mounted) {
-            setState(() {
-              _replies = data;
-              for (var reply in _replies) {
-                final replyId = reply['id'].toString();
-                final dynamic rawCount = reply['like_count'] ?? 0;
-                _replyLikeCounts[replyId] = (rawCount is num)
-                    ? rawCount.toInt()
-                    : int.tryParse(rawCount.toString()) ?? 0;
-              }
-            });
-            await _fetchReplyLikesStatus();
-          }
-        });
-  }
-
-  Future<List<Map<String, dynamic>>> _fetchReplies(String commentId) async {
-    try {
-      dynamic res;
-      try {
-        res = await Supabase.instance.client
-            .from('replies')
-            .select()
-            .eq('commentid', commentId)
-            .order('like_count', ascending: false);
-      } catch (_) {
-        res = await Supabase.instance.client
-            .from('replies')
-            .select()
-            .eq('commentid', commentId);
-      }
-      if (res == null) return [];
-      dynamic raw = res;
-      if (raw is Map && raw.containsKey('data')) raw = raw['data'];
-      if (raw is List) {
-        final list = raw
-            .map<Map<String, dynamic>>(
-                (e) => Map<String, dynamic>.from(e as Map))
-            .toList();
-        list.sort((a, b) {
-          final na = a['like_count'] ?? 0;
-          final nb = b['like_count'] ?? 0;
-          final ia =
-              (na is num) ? na.toInt() : int.tryParse(na.toString()) ?? 0;
-          final ib =
-              (nb is num) ? nb.toInt() : int.tryParse(nb.toString()) ?? 0;
-          return ib.compareTo(ia);
-        });
-        return list;
-      }
-    } catch (e) {
-      if (kDebugMode) print('fetchReplies exception: $e');
-    }
-    return [];
-  }
-
-  Widget _buildRepliesList() {
-    if (_replies.isEmpty) return const SizedBox.shrink();
-    final visibleReplies = _replies.take(_repliesToShow).toList();
-    final textColor = _getTextColor();
-    return Column(
-      children: [
-        ...visibleReplies.map((data) => _buildReplyItem(data)),
-        if (_replies.length > _repliesToShow)
-          GestureDetector(
-            onTap: _expandReplies,
-            child: Padding(
-              padding: const EdgeInsets.only(left: 40, top: 8),
-              child: Row(
-                children: [
-                  Icon(Icons.keyboard_arrow_down,
-                      size: 16, color: textColor.withOpacity(0.6)),
-                  const SizedBox(width: 4),
-                  Text('Show more',
-                      style: TextStyle(
-                          fontSize: 12, color: textColor.withOpacity(0.6))),
-                ],
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
+  // --------------------------------------------------------------------------
+  // Reply item builder
+  // --------------------------------------------------------------------------
   Widget _buildReplyItem(Map<String, dynamic> data) {
     final String replyId = (data['id'] ?? '').toString();
     final String replyUid = (data['uid'] ?? '').toString();
@@ -825,7 +881,6 @@ class _CommentCardState extends State<CommentCard> {
           children: [
             Row(
               children: [
-                // ── Reply avatar + TikTok follow badge ───────────────────
                 FutureBuilder<Map<String, dynamic>?>(
                   future: _fetchUser(replyUid),
                   builder: (ctx, userSnap) {
@@ -890,7 +945,6 @@ class _CommentCardState extends State<CommentCard> {
                               prevCount + (prevLike ? -1 : 1);
                         });
                         try {
-                          // CHANGED: use SupabaseCommentsMethods
                           final result =
                               await SupabaseCommentsMethods().likeReply(
                             postId: widget.postId,
@@ -945,7 +999,6 @@ class _CommentCardState extends State<CommentCard> {
                     onSelected: (choice) async {
                       if (choice == 'delete') {
                         try {
-                          // CHANGED: use SupabaseCommentsMethods
                           final res =
                               await SupabaseCommentsMethods().deleteReply(
                             postId: widget.postId,
@@ -1023,15 +1076,39 @@ class _CommentCardState extends State<CommentCard> {
     );
   }
 
+  Widget _buildRepliesList() {
+    if (_replies.isEmpty) return const SizedBox.shrink();
+    final visibleReplies = _replies.take(_repliesToShow).toList();
+    final textColor = _getTextColor();
+    return Column(
+      children: [
+        ...visibleReplies.map((data) => _buildReplyItem(data)),
+        if (_replies.length > _repliesToShow)
+          GestureDetector(
+            onTap: _expandReplies,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 40, top: 8),
+              child: Row(
+                children: [
+                  Icon(Icons.keyboard_arrow_down,
+                      size: 16, color: textColor.withOpacity(0.6)),
+                  const SizedBox(width: 4),
+                  Text('Show more',
+                      style: TextStyle(
+                          fontSize: 12, color: textColor.withOpacity(0.6))),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Main build
+  // --------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    final likesDynamic = widget.snap['likes'] ?? widget.snap['Likes'] ?? [];
-    final List<String> likes = (likesDynamic is String)
-        ? (likesDynamic.isEmpty
-            ? <String>[]
-            : List<String>.from(jsonDecode(likesDynamic) as List))
-        : List<String>.from(likesDynamic as List<dynamic>);
-
     final dynamic rawLikeCount =
         widget.snap['like_count'] ?? widget.snap['likecount'] ?? 0;
     final int likeCount = (rawLikeCount is num)
@@ -1067,7 +1144,6 @@ class _CommentCardState extends State<CommentCard> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ── Avatar + TikTok follow badge ─────────────────────────
                   FutureBuilder<Map<String, dynamic>?>(
                     future: _fetchUser(ownerUid),
                     builder: (context, userSnapshot) {
@@ -1094,7 +1170,6 @@ class _CommentCardState extends State<CommentCard> {
                       );
                     },
                   ),
-                  // ── Comment content ──────────────────────────────────────
                   Expanded(
                     child: Padding(
                       padding: const EdgeInsets.only(left: 16),
@@ -1239,7 +1314,6 @@ class _CommentCardState extends State<CommentCard> {
                             );
                           }
                           try {
-                            // CHANGED: use SupabaseCommentsMethods
                             await SupabaseCommentsMethods().likeComment(
                               widget.postId,
                               widget.snap['commentId'] ??
