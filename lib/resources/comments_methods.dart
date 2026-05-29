@@ -8,25 +8,25 @@ class SupabaseCommentsMethods {
   final Uuid _uuid = const Uuid();
 
   // ===========================================================================
-  // ERROR LOGGING HELPER
+  // ERROR LOGGING HELPER (logs only to comments_error table)
   // ===========================================================================
-  Future<void> _logPostError({
+  Future<void> _logCommentError({
     required String operationType,
     String? userId,
-    String? mediaUrl,
-    required dynamic error,
     Map<String, dynamic>? additionalData,
+    required dynamic error,
   }) async {
     try {
-      await _supabase.from('posts_errors').insert({
+      await _supabase.from('comments_error').insert({
         'user_id': userId,
         'operation_type': operationType,
-        'media_url': mediaUrl,
         'error_message': error.toString(),
         'stack_trace': error is Error ? error.stackTrace?.toString() : null,
         'additional_data': additionalData,
       });
-    } catch (_) {}
+    } catch (_) {
+      // Fail silently – we don't want error logging to crash the app
+    }
   }
 
   dynamic _unwrap(dynamic res) {
@@ -62,7 +62,7 @@ class SupabaseCommentsMethods {
           .from('posts')
           .update({'commentsCount': updated}).eq('postId', postId);
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'change_comments_count',
         error: e,
         additionalData: {'postId': postId, 'delta': delta},
@@ -119,7 +119,7 @@ class SupabaseCommentsMethods {
       res = 'success';
     } catch (e) {
       res = e.toString();
-      await _logPostError(
+      await _logCommentError(
         operationType: 'post_comment',
         userId: uid,
         error: e,
@@ -157,7 +157,7 @@ class SupabaseCommentsMethods {
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'create_comment_notification',
         userId: commenterUid,
         error: e,
@@ -181,7 +181,7 @@ class SupabaseCommentsMethods {
       res = 'success';
     } catch (err) {
       res = err.toString();
-      await _logPostError(
+      await _logCommentError(
         operationType: 'delete_comment',
         error: err,
         additionalData: {'postId': postId, 'commentId': commentId},
@@ -287,7 +287,7 @@ class SupabaseCommentsMethods {
 
       return 'success';
     } catch (err) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'like_comment',
         userId: uid,
         error: err,
@@ -317,7 +317,7 @@ class SupabaseCommentsMethods {
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'create_comment_like_notification',
         userId: likerUid,
         error: e,
@@ -341,7 +341,7 @@ class SupabaseCommentsMethods {
           .eq('custom_data->>commentId', commentId)
           .eq('custom_data->>likerUid', likerUid);
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'delete_comment_like_notification',
         userId: likerUid,
         error: e,
@@ -368,7 +368,7 @@ class SupabaseCommentsMethods {
       });
       return 'success';
     } catch (err) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'report_comment',
         error: err,
         additionalData: {
@@ -440,7 +440,7 @@ class SupabaseCommentsMethods {
 
       return 'success';
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'post_reply',
         userId: uid,
         error: e,
@@ -468,7 +468,7 @@ class SupabaseCommentsMethods {
           .eq('custom_data->>replyId', replyId);
       return 'success';
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'delete_reply',
         error: e,
         additionalData: {
@@ -563,7 +563,7 @@ class SupabaseCommentsMethods {
         return {'action': 'liked', 'like_count': newCount, 'is_liked': true};
       }
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'like_reply',
         userId: uid,
         error: e,
@@ -593,7 +593,7 @@ class SupabaseCommentsMethods {
           .eq('custom_data->>replyId', replyId)
           .eq('custom_data->>likerUid', likerUid);
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'delete_reply_like_notification',
         userId: likerUid,
         error: e,
@@ -651,7 +651,7 @@ class SupabaseCommentsMethods {
         },
       );
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'create_reply_notification',
         userId: replierUid,
         error: e,
@@ -710,7 +710,7 @@ class SupabaseCommentsMethods {
         },
       );
     } catch (e) {
-      await _logPostError(
+      await _logCommentError(
         operationType: 'create_reply_like_notification',
         userId: likerUid,
         error: e,
