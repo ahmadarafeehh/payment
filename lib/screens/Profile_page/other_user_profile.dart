@@ -18,7 +18,7 @@ import 'package:Ratedly/screens/Profile_page/gallery_post_view_screen.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
-import 'package:Ratedly/screens/Profile_page/edit_shared.dart'; // ✅ Import shared editing classes
+import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 // -----------------------------------------------------------------------------
 // Color definitions (same as original)
@@ -251,6 +251,29 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   DateTime? _lastLoadMoreTime;
   static const Duration _loadMoreCooldown = Duration(milliseconds: 500);
 
+  // --------------------------------------------------------------------------
+  // ERROR LOGGING HELPER (inserts into profile_errors table)
+  // --------------------------------------------------------------------------
+  Future<void> _logProfileError({
+    required String operation,
+    required dynamic error,
+    StackTrace? stack,
+    Map<String, dynamic>? additionalData,
+  }) async {
+    try {
+      await _supabase.from('profile_errors').insert({
+        'user_id': widget.uid,
+        'operation_type': operation,
+        'error_message': error.toString(),
+        'stack_trace': stack?.toString(),
+        'additional_data': additionalData,
+      });
+    } catch (logError) {
+      // Silently fail – don't let logging break the user experience
+      print('Failed to log profile error: $logError');
+    }
+  }
+
   Future<void> _sendLog(Map<String, dynamic> payload) async {
     try {
       _currentSessionId ??= DateTime.now().microsecondsSinceEpoch.toString();
@@ -266,7 +289,14 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         'elapsed_ms': elapsedMs,
         ...payload,
       });
-    } catch (_) {}
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'sendLog',
+        error: e,
+        stack: stack,
+        additionalData: {'payload': payload},
+      );
+    }
   }
 
   _OtherProfileColorSet _getColors(ThemeProvider themeProvider) {
@@ -306,7 +336,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     if (meta == null) return null;
     try {
       return VideoEditResult.fromJson(meta, File(''));
-    } catch (_) {
+    } catch (e, stack) {
+      _logProfileError(
+        operation: 'parseEditResult',
+        error: e,
+        stack: stack,
+        additionalData: {'postId': post['postId']},
+      );
       return null;
     }
   }
@@ -339,11 +375,23 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
           if (mounted) setState(() {});
         });
-      }).catchError((_) {
+      }).catchError((e, stack) {
+        _logProfileError(
+          operation: 'initializeVideoController_then',
+          error: e,
+          stack: stack,
+          additionalData: {'videoUrl': videoUrl},
+        );
         _videoControllers.remove(videoUrl)?.dispose();
         _videoControllersInitialized.remove(videoUrl);
       });
-    } catch (_) {
+    } catch (e, stack) {
+      _logProfileError(
+        operation: 'initializeVideoController',
+        error: e,
+        stack: stack,
+        additionalData: {'videoUrl': videoUrl},
+      );
       _videoControllers.remove(videoUrl)?.dispose();
       _videoControllersInitialized.remove(videoUrl);
     }
@@ -442,7 +490,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           _isProfileVideoMuted = false;
         });
       }
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'initializeProfileVideo',
+        error: e,
+        stack: stack,
+        additionalData: {'videoUrl': videoUrl},
+      );
       if (mounted) setState(() => _isProfileVideoInitialized = false);
     }
   }
@@ -531,7 +585,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     if (_profileVideoController != null && _isProfileVideoInitialized) {
       try {
         _profileVideoController!.setVolume(0.0);
-      } catch (_) {}
+      } catch (e, stack) {
+        _logProfileError(
+          operation: 'muteProfileVideo',
+          error: e,
+          stack: stack,
+        );
+      }
     }
   }
 
@@ -539,7 +599,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     if (_profileVideoController != null && _isProfileVideoInitialized) {
       try {
         _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
-      } catch (_) {}
+      } catch (e, stack) {
+        _logProfileError(
+          operation: 'unmuteProfileVideo',
+          error: e,
+          stack: stack,
+        );
+      }
     }
   }
 
@@ -548,7 +614,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       setState(() => _isProfileVideoMuted = !_isProfileVideoMuted);
       try {
         _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
-      } catch (_) {}
+      } catch (e, stack) {
+        _logProfileError(
+          operation: 'toggleProfileVideoMute',
+          error: e,
+          stack: stack,
+        );
+      }
     }
   }
 
@@ -616,7 +688,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         _loadBlockStatus(),
       ]);
       if (!_isBlocked && mounted) await _loadRelationshipData();
-    } catch (e) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadDataInParallel',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid},
+      );
       unawaited(_sendLog({
         'event_type': 'load_error',
         'error_message': e.toString(),
@@ -651,7 +729,14 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         final photoUrl = userResponse['photoUrl'] ?? '';
         if (_isVideoFile(photoUrl)) _initializeProfileVideo(photoUrl);
       }
-    } catch (_) {}
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadUserData',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid},
+      );
+    }
   }
 
   Future<void> _loadGalleriesData() async {
@@ -667,7 +752,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         if (_isVideoFile(url)) _initializeVideoController(url);
       }
       if (mounted) setState(() => _galleries = galleriesResponse);
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadGalleriesData',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid},
+      );
       if (mounted) setState(() => _galleries = []);
     }
   }
@@ -746,7 +837,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           _isFirstLoad = false;
         });
       }
-    } catch (e) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadPostsCountAndFirstBatch',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid},
+      );
       unawaited(_sendLog({
         'event_type': 'api_error',
         'error_message': e.toString(),
@@ -805,7 +902,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           );
         });
       }
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadBlockStatus',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid},
+      );
       if (mounted) {
         setState(() {
           _isBlockedByMe = false;
@@ -878,7 +981,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           _isMutualFollow = results[2] != null && results[4] != null;
         });
       }
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadRelationshipData',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid},
+      );
       if (mounted) {
         setState(() {
           followers = 0;
@@ -961,7 +1070,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       } else {
         if (mounted) setState(() => _hasMorePosts = false);
       }
-    } catch (e) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadMorePosts',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid, 'offset': _postsOffset},
+      );
       unawaited(_sendLog({
         'event_type': 'api_error',
         'batch_index': batchIndex,
@@ -988,223 +1103,19 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
       _preInitializeVideoControllers(newPosts);
       return List<Map<String, dynamic>>.from(newPosts);
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadMorePostsForFeed',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid, 'currentCount': currentCount},
+      );
       return [];
     }
   }
 
   // --------------------------------------------------------------
-  // Thumbnail builders (identical to current profile screen)
-  // --------------------------------------------------------------
-  Widget _buildPostVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
-      [VideoEditResult? editResult]) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.avatarBackgroundColor,
-          child: Center(
-              child: CircularProgressIndicator(
-                  color: colors.progressIndicatorColor, strokeWidth: 1.5)));
-    }
-
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                    width: controller.value.size.width,
-                    height: controller.value.size.height,
-                    child: VideoPlayer(controller)),
-              ),
-            ),
-          ),
-        ),
-        if (editResult != null)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: LayoutBuilder(
-                builder: (context, constraints) =>
-                    _buildEditOverlayLayer(editResult, constraints),
-              ),
-            ),
-          ),
-      ]),
-    );
-  }
-
-  Widget _buildPostImage(String imageUrl, _OtherProfileColorSet colors,
-      [VideoEditResult? editResult]) {
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    Widget baseImage = ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: editResult == null
-          ? Image.network(
-              imageUrl,
-              fit: BoxFit.cover,
-              loadingBuilder: (context, child, loadingProgress) {
-                if (loadingProgress == null) return child;
-                return Container(
-                  color: colors.avatarBackgroundColor,
-                  child: Center(
-                    child: CircularProgressIndicator(
-                      value: loadingProgress.expectedTotalBytes != null
-                          ? loadingProgress.cumulativeBytesLoaded /
-                              (loadingProgress.expectedTotalBytes ?? 1)
-                          : null,
-                      color: colors.progressIndicatorColor,
-                      strokeWidth: 1.5,
-                    ),
-                  ),
-                );
-              },
-              errorBuilder: (_, __, ___) => Container(
-                color: colors.avatarBackgroundColor,
-                child: Center(
-                    child: Icon(Icons.broken_image,
-                        color: colors.errorTextColor, size: 20)),
-              ),
-            )
-          : ColorFiltered(
-              colorFilter: ColorFilter.matrix(matrix),
-              child: Transform.rotate(
-                angle: quarters * math.pi / 2,
-                child: Image.network(
-                  imageUrl,
-                  fit: BoxFit.cover,
-                  loadingBuilder: (context, child, loadingProgress) {
-                    if (loadingProgress == null) return child;
-                    return Container(
-                      color: colors.avatarBackgroundColor,
-                      child: Center(
-                        child: CircularProgressIndicator(
-                          value: loadingProgress.expectedTotalBytes != null
-                              ? loadingProgress.cumulativeBytesLoaded /
-                                  (loadingProgress.expectedTotalBytes ?? 1)
-                              : null,
-                          color: colors.progressIndicatorColor,
-                          strokeWidth: 1.5,
-                        ),
-                      ),
-                    );
-                  },
-                  errorBuilder: (_, __, ___) => Container(
-                    color: colors.avatarBackgroundColor,
-                    child: Center(
-                        child: Icon(Icons.broken_image,
-                            color: colors.errorTextColor, size: 20)),
-                  ),
-                ),
-              ),
-            ),
-    );
-
-    if (editResult == null) return baseImage;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(child: baseImage),
-        Positioned.fill(
-          child: IgnorePointer(
-            child: LayoutBuilder(
-              builder: (context, constraints) =>
-                  _buildEditOverlayLayer(editResult, constraints),
-            ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildGalleryVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
-      [VideoEditResult? editResult]) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.avatarBackgroundColor,
-          child: Center(
-              child: CircularProgressIndicator(
-                  color: colors.progressIndicatorColor, strokeWidth: 1.5)));
-    }
-
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                    width: controller.value.size.width,
-                    height: controller.value.size.height,
-                    child: VideoPlayer(controller)),
-              ),
-            ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildGalleryCoverImage(String imageUrl, _OtherProfileColorSet colors,
-      [VideoEditResult? editResult]) {
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    if (editResult == null) {
-      return Image.network(
-        imageUrl,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => Container(
-          decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              color: colors.avatarBackgroundColor.withOpacity(0.5)),
-          child:
-              Icon(Icons.collections, size: 40, color: colors.errorTextColor),
-        ),
-      );
-    }
-
-    return ColorFiltered(
-      colorFilter: ColorFilter.matrix(matrix),
-      child: Transform.rotate(
-        angle: quarters * math.pi / 2,
-        child: Image.network(
-          imageUrl,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                color: colors.avatarBackgroundColor.withOpacity(0.5)),
-            child:
-                Icon(Icons.collections, size: 40, color: colors.errorTextColor),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // --------------------------------------------------------------
-  // Follow / Message / Report (unchanged)
+  // Follow / Message / Report (unchanged except logging)
   // --------------------------------------------------------------
   void _otherHandleFollow() async {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
@@ -1237,7 +1148,16 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           _checkMutualFollowAfterFollow();
         }
       }
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'otherHandleFollow',
+        error: e,
+        stack: stack,
+        additionalData: {
+          'currentUserId': currentUserId,
+          'targetUid': widget.uid,
+        },
+      );
       if (mounted) {
         showSnackBar(
             context, "Please try again or contact us at ratedly9@gmail.com");
@@ -1250,13 +1170,22 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     final String? currentUserId =
         userProvider.firebaseUid ?? userProvider.supabaseUid;
     if (currentUserId == null || currentUserId.isEmpty) return;
-    final result = await _supabase
-        .from('user_following')
-        .select()
-        .eq('user_id', widget.uid)
-        .eq('following_id', currentUserId)
-        .maybeSingle();
-    if (mounted) setState(() => _isMutualFollow = result != null);
+    try {
+      final result = await _supabase
+          .from('user_following')
+          .select()
+          .eq('user_id', widget.uid)
+          .eq('following_id', currentUserId)
+          .maybeSingle();
+      if (mounted) setState(() => _isMutualFollow = result != null);
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'checkMutualFollowAfterFollow',
+        error: e,
+        stack: stack,
+        additionalData: {'currentUserId': currentUserId, 'targetUid': widget.uid},
+      );
+    }
   }
 
   void _otherNavigateToMessaging() async {
@@ -1358,7 +1287,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         Navigator.pop(context);
         showSnackBar(context, 'Report submitted. Thank you!');
       }
-    } catch (_) {
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'submitProfileReport',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid, 'reason': reason},
+      );
       if (mounted) {
         showSnackBar(
             context, 'Please try again or contact us at ratedly9@gmail.com');
@@ -1937,7 +1872,14 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       if (coverMeta != null) {
         try {
           coverEditResult = VideoEditResult.fromJson(coverMeta, File(''));
-        } catch (_) {}
+        } catch (e, stack) {
+          _logProfileError(
+            operation: 'buildGalleryItem_parseEditResult',
+            error: e,
+            stack: stack,
+            additionalData: {'galleryId': gallery['id']},
+          );
+        }
       }
     }
 
@@ -1985,7 +1927,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
               });
             });
           }
-        } catch (e) {
+        } catch (e, stack) {
+          await _logProfileError(
+            operation: 'galleryItem_onTap',
+            error: e,
+            stack: stack,
+            additionalData: {'galleryId': gallery['id']},
+          );
           if (mounted) {
             showSnackBar(context, 'Failed to load gallery posts: $e');
           }
@@ -2116,7 +2064,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
                         ),
                       );
                     }
-                  } catch (_) {
+                  } catch (e, stack) {
+                    await _logProfileError(
+                      operation: 'block_user_popup',
+                      error: e,
+                      stack: stack,
+                      additionalData: {'uid': widget.uid},
+                    );
                     if (mounted) {
                       showSnackBar(context,
                           "Please try again or contact us at ratedly9@gmail.com");
@@ -2136,7 +2090,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
                       });
                       showSnackBar(context, "Follower removed successfully");
                     }
-                  } catch (_) {
+                  } catch (e, stack) {
+                    await _logProfileError(
+                      operation: 'remove_follower_popup',
+                      error: e,
+                      stack: stack,
+                      additionalData: {'uid': widget.uid},
+                    );
                     if (mounted) {
                       showSnackBar(context,
                           "Please try again or contact us at ratedly9@gmail.com");
