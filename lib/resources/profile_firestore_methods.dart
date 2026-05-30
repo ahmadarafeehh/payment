@@ -586,18 +586,15 @@ class SupabaseProfileMethods {
   }
 
   // ==========================================================================
-  // FINAL WORKING ACCOUNT DELETION – matches all schemas
+  // FINAL WORKING ACCOUNT DELETION – matches all schemas + cleans up chats/streaks
   // ==========================================================================
   Future<String> deleteEntireUserAccount(
       String uid, firebase_auth.AuthCredential? credential) async {
     String res = "Some error occurred";
 
     try {
-      final userSel = await _supabase
-          .from('users')
-          .select()
-          .eq('uid', uid)
-          .maybeSingle();
+      final userSel =
+          await _supabase.from('users').select().eq('uid', uid).maybeSingle();
       final userData = _unwrap(userSel) ?? userSel;
 
       if (userData == null) throw Exception("User record not found");
@@ -616,7 +613,9 @@ class SupabaseProfileMethods {
 
       // 1. Delete profile picture/video from storage
       String? profilePhoto = userData['photoUrl']?.toString();
-      if (profilePhoto != null && profilePhoto.isNotEmpty && profilePhoto != 'default') {
+      if (profilePhoto != null &&
+          profilePhoto.isNotEmpty &&
+          profilePhoto != 'default') {
         await deleteProfileMedia(profilePhoto);
       }
 
@@ -640,15 +639,53 @@ class SupabaseProfileMethods {
 
       // 7. Delete follow requests (sent & received)
       await _supabase.from('user_follow_request').delete().eq('user_id', uid);
-      await _supabase.from('user_follow_request').delete().eq('requester_id', uid);
+      await _supabase
+          .from('user_follow_request')
+          .delete()
+          .eq('requester_id', uid);
 
       // 8. Delete profile views (as viewer & as target)
       await _supabase.from('user_profile_views').delete().eq('user_id', uid);
-      await _supabase.from('user_profile_views').delete().eq('profileowneruid', uid);
+      await _supabase
+          .from('user_profile_views')
+          .delete()
+          .eq('profileowneruid', uid);
 
       // 9. Delete notifications
       await _supabase.from('notifications').delete().eq('target_user_id', uid);
       await _deleteUserActorNotifications(uid);
+
+      // ========== NEW: Clean up chats and streaks ==========
+      // Find all chats where the user is a participant
+      final chatsResponse = await _supabase
+          .from('chats')
+          .select('id, participants')
+          .filter('participants', 'cs', '{$uid}');
+
+      final chats = _unwrap(chatsResponse) ?? chatsResponse;
+      if (chats is List && chats.isNotEmpty) {
+        for (final chat in chats) {
+          final participants = List<String>.from(chat['participants']);
+          participants.remove(uid);
+
+          if (participants.isEmpty) {
+            // No other participants – delete the chat entirely
+            await _supabase.from('chats').delete().eq('id', chat['id']);
+          } else {
+            // Keep the chat for the remaining participant(s), but remove the deleted user
+            // and reset all streak-related data
+            await _supabase.from('chats').update({
+              'participants': participants,
+              'streak_count': 0,
+              'last_streak_update_date': null,
+              'current_streak_period_start': null,
+              'last_mutual_exchange': null,
+              'streak_expiry_notified_at': null,
+            }).eq('id', chat['id']);
+          }
+        }
+      }
+      // ========== End of chat cleanup ==========
 
       // 10. Delete the user record itself (cascades to foreign keys where defined)
       await _supabase.from('users').delete().eq('uid', uid);
