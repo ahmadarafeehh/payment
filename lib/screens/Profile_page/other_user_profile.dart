@@ -244,9 +244,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   bool _hasLoaded = false;
 
-  // Logging (optional, kept from original)
-  String? _currentSessionId;
-  DateTime? _screenOpenAt;
   final Set<String> _loggedPostRenders = {};
 
   DateTime? _lastLoadMoreTime;
@@ -272,31 +269,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     } catch (logError) {
       // Silently fail – don't let logging break the user experience
       print('Failed to log profile error: $logError');
-    }
-  }
-
-  Future<void> _sendLog(Map<String, dynamic> payload) async {
-    try {
-      _currentSessionId ??= DateTime.now().microsecondsSinceEpoch.toString();
-      final int elapsedMs =
-          _screenOpenAt != null && !payload.containsKey('elapsed_ms')
-              ? DateTime.now().difference(_screenOpenAt!).inMilliseconds
-              : (payload['elapsed_ms'] as int? ?? 0);
-      await _supabase.from('profile_screen_logs').insert({
-        'session_id': _currentSessionId,
-        'user_id': widget.uid,
-        'platform': Platform.isIOS ? 'ios' : 'android',
-        'created_at': DateTime.now().toIso8601String(),
-        'elapsed_ms': elapsedMs,
-        ...payload,
-      });
-    } catch (e, stack) {
-      await _logProfileError(
-        operation: 'sendLog',
-        error: e,
-        stack: stack,
-        additionalData: {'payload': payload},
-      );
     }
   }
 
@@ -849,13 +821,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   // Data loading (identical logic to current profile screen)
   // --------------------------------------------------------------
   Future<void> _loadDataInParallel() async {
-    _screenOpenAt = DateTime.now();
-    await _sendLog({
-      'event_type': 'screen_open',
-      'client_timestamp': _screenOpenAt!.toIso8601String(),
-      'elapsed_ms': 0,
-    });
-
     setState(() => isLoading = true);
     try {
       await Future.wait([
@@ -872,10 +837,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         stack: stack,
         additionalData: {'uid': widget.uid},
       );
-      unawaited(_sendLog({
-        'event_type': 'load_error',
-        'error_message': e.toString(),
-      }));
       if (mounted) {
         showSnackBar(
             context, "Please try again or contact us at ratedly9@gmail.com");
@@ -883,18 +844,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
-
-    unawaited(_sendLog({
-      'event_type': 'screen_ready',
-      'post_count': postLen,
-      'extra': {
-        'displayed_posts': _displayedPosts.length,
-        'has_more_posts': _hasMorePosts,
-        'galleries_count': _galleries.length,
-        'is_blocked': _isBlocked,
-        'is_following': isFollowing,
-      },
-    }));
   }
 
   Future<void> _loadUserData() async {
@@ -941,13 +890,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   Future<void> _loadPostsCountAndFirstBatch() async {
-    final countStart = DateTime.now();
-    unawaited(_sendLog({
-      'event_type': 'api_request',
-      'client_timestamp': countStart.toIso8601String(),
-      'extra': {'query': 'posts_count', 'uid': widget.uid},
-    }));
-
     try {
       final countResponse = await _supabase
           .from('posts')
@@ -956,27 +898,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .count(CountOption.exact);
       final totalPostCount = countResponse.count;
 
-      unawaited(_sendLog({
-        'event_type': 'api_response',
-        'post_count': totalPostCount,
-        'duration_ms': DateTime.now().difference(countStart).inMilliseconds,
-        'status_code': 200,
-        'extra': {'query': 'posts_count'},
-      }));
-
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
-
-      final batchStart = DateTime.now();
-      unawaited(_sendLog({
-        'event_type': 'api_request',
-        'client_timestamp': batchStart.toIso8601String(),
-        'extra': {
-          'query': 'initial_posts_batch',
-          'limit': postsLimit,
-          'uid': widget.uid,
-        },
-      }));
 
       final initialPosts = await _supabase
           .from('posts')
@@ -985,23 +908,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .eq('uid', widget.uid)
           .order('datePublished', ascending: false)
           .range(0, postsLimit - 1);
-
-      final int videoCount =
-          initialPosts.where((p) => _isVideoFile(p['postUrl'] ?? '')).length;
-      final int imageCount = initialPosts.length - videoCount;
-
-      unawaited(_sendLog({
-        'event_type': 'batch_fetched',
-        'batch_index': 0,
-        'post_count': initialPosts.length,
-        'duration_ms': DateTime.now().difference(batchStart).inMilliseconds,
-        'status_code': 200,
-        'extra': {
-          'total_posts_on_profile': totalPostCount,
-          'video_count': videoCount,
-          'image_count': imageCount,
-        },
-      }));
 
       _preInitializeVideoControllers(initialPosts);
 
@@ -1021,12 +927,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         stack: stack,
         additionalData: {'uid': widget.uid},
       );
-      unawaited(_sendLog({
-        'event_type': 'api_error',
-        'error_message': e.toString(),
-        'duration_ms': DateTime.now().difference(countStart).inMilliseconds,
-        'extra': {'query': 'posts_count_or_initial_batch'},
-      }));
       if (mounted) {
         setState(() {
           _displayedPosts = [];
@@ -1180,35 +1080,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   Future<void> _loadMorePosts() async {
     if (_lastLoadMoreTime != null) {
       final elapsed = DateTime.now().difference(_lastLoadMoreTime!);
-      if (elapsed < _loadMoreCooldown) {
-        unawaited(_sendLog({
-          'event_type': 'load_more_throttled',
-          'extra': {
-            'elapsed_ms': elapsed.inMilliseconds,
-            'cooldown_ms': _loadMoreCooldown.inMilliseconds,
-          },
-        }));
-        return;
-      }
+      if (elapsed < _loadMoreCooldown) return;
     }
 
     if (!_hasMorePosts || _isLoadingMore) return;
 
     _lastLoadMoreTime = DateTime.now();
     setState(() => _isLoadingMore = true);
-
-    final batchStart = DateTime.now();
-    final int batchIndex = _postsOffset ~/ _subsequentPostsLimit;
-    unawaited(_sendLog({
-      'event_type': 'api_request',
-      'batch_index': batchIndex,
-      'client_timestamp': batchStart.toIso8601String(),
-      'extra': {
-        'query': 'load_more_posts',
-        'range_start': _postsOffset,
-        'range_end': _postsOffset + _subsequentPostsLimit - 1,
-      },
-    }));
 
     try {
       final newPosts = await _supabase
@@ -1218,23 +1096,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .eq('uid', widget.uid)
           .order('datePublished', ascending: false)
           .range(_postsOffset, _postsOffset + _subsequentPostsLimit - 1);
-
-      final int videoCount =
-          newPosts.where((p) => _isVideoFile(p['postUrl'] ?? '')).length;
-      final int imageCount = newPosts.length - videoCount;
-
-      unawaited(_sendLog({
-        'event_type': 'batch_fetched',
-        'batch_index': batchIndex,
-        'post_count': newPosts.length,
-        'duration_ms': DateTime.now().difference(batchStart).inMilliseconds,
-        'status_code': 200,
-        'extra': {
-          'video_count': videoCount,
-          'image_count': imageCount,
-          'new_total_displayed': _displayedPosts.length + newPosts.length,
-        },
-      }));
 
       _preInitializeVideoControllers(newPosts);
 
@@ -1254,13 +1115,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         stack: stack,
         additionalData: {'uid': widget.uid, 'offset': _postsOffset},
       );
-      unawaited(_sendLog({
-        'event_type': 'api_error',
-        'batch_index': batchIndex,
-        'error_message': e.toString(),
-        'duration_ms': DateTime.now().difference(batchStart).inMilliseconds,
-        'extra': {'query': 'load_more_posts'},
-      }));
       if (mounted) showSnackBar(context, 'Failed to load more posts');
     } finally {
       if (mounted) setState(() => _isLoadingMore = false);
@@ -1950,23 +1804,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     final isVideo = _isVideoFile(postUrl);
     final editResult = _parseEditResult(post);
     final postId = post['postId']?.toString() ?? '';
-
-    if (postId.isNotEmpty && !_loggedPostRenders.contains(postId)) {
-      _loggedPostRenders.add(postId);
-      unawaited(_sendLog({
-        'event_type': 'post_render',
-        'post_id': postId,
-        'thumbnail_url': postUrl,
-        'extra': {
-          'classified_as': isVideo ? 'video' : 'image',
-          'controller_ready':
-              isVideo ? _isVideoControllerInitialized(postUrl) : true,
-          'has_edit_metadata': editResult != null,
-          'grid_index': _displayedPosts
-              .indexWhere((p) => p['postId']?.toString() == postId),
-        },
-      }));
-    }
 
     if (_isBlocked) {
       return Container(
