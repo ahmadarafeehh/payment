@@ -229,8 +229,8 @@ class _FollowBadgeState extends State<_FollowBadge>
 
       // A/B test body — only fires when follow badge tapped on a rating notification
       final body = isTestGroup
-          ? '@$followerUsername followed you after your rating.'
-          : '@$followerUsername followed you after you rated their post.';
+          ? '@$followerUsername followed you after your reaction.'
+          : '@$followerUsername followed you after you reacted to their post.';
 
       NotificationService().triggerServerNotification(
         type: 'follow',
