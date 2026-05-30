@@ -5,7 +5,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:Ratedly/resources/storage_methods.dart';
 import 'package:Ratedly/services/notification_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 class SupabasePostsMethods {
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -524,90 +523,6 @@ class SupabasePostsMethods {
         additionalData: {'postId': postId, 'reason': reason},
       );
       return err.toString();
-    }
-  }
-
-  // ----------------------
-  // First-post nudge notification
-  // ----------------------
-  Future<void> scheduleFirstPostNudge(String userId) async {
-    try {
-      final userRow = await _supabase
-          .from('users')
-          .select('test')
-          .eq('uid', userId)
-          .maybeSingle();
-
-      final bool isTestGroup = userRow?['test'] ?? false;
-      if (!isTestGroup) return;
-
-      final existing = await _supabase
-          .from('posts')
-          .select('postId')
-          .eq('uid', userId)
-          .limit(1)
-          .maybeSingle();
-      if (existing != null) return;
-
-      final prefs = await SharedPreferences.getInstance();
-      final sendAt = DateTime.now()
-          .toUtc()
-          .add(const Duration(seconds: 59))
-          .toIso8601String();
-      await prefs.setString('nudge_send_at_$userId', sendAt);
-      await prefs.setString('nudge_user_id', userId);
-
-      Future.delayed(const Duration(seconds: 59), () async {
-        await trySendNudge();
-      });
-    } catch (e) {
-      await _logPostError(
-        operationType: 'schedule_first_post_nudge',
-        userId: userId,
-        error: e,
-      );
-    }
-  }
-
-  Future<void> trySendNudge() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final userId = prefs.getString('nudge_user_id');
-      if (userId == null || userId.isEmpty) return;
-
-      final sendAtStr = prefs.getString('nudge_send_at_$userId');
-      if (sendAtStr == null) return;
-
-      final sendAt = DateTime.parse(sendAtStr);
-      if (DateTime.now().toUtc().isBefore(sendAt)) return;
-
-      final check = await _supabase
-          .from('posts')
-          .select('postId')
-          .eq('uid', userId)
-          .limit(1)
-          .maybeSingle();
-
-      await prefs.remove('nudge_send_at_$userId');
-      await prefs.remove('nudge_user_id');
-
-      if (check != null) return;
-
-      await _notificationService.triggerServerNotification(
-        type: 'first_post_nudge',
-        targetUserId: userId,
-        title: 'Don\'t miss out!',
-        body: '⏳ You\'re missing reactions by not posting yet — fix that now.',
-        customData: {
-          'nudgeType': 'first_post',
-          'userId': userId,
-        },
-      );
-    } catch (e) {
-      await _logPostError(
-        operationType: 'try_send_nudge',
-        error: e,
-      );
     }
   }
 }
