@@ -23,17 +23,6 @@ typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
     int currentCount);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Supabase logger — fire-and-forget insert into `vertical`
-// ─────────────────────────────────────────────────────────────────────────────
-Future<void> _log(Map<String, dynamic> payload) async {
-  try {
-    await Supabase.instance.client.from('vertical').insert(payload);
-  } catch (_) {
-    // never crash the UI because of a logging failure
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Reaction error logger — logs only exceptions to `reactions_error` table
 // ─────────────────────────────────────────────────────────────────────────────
 Future<void> _logReactionError({
@@ -87,9 +76,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   bool _hasMore = false;
   bool _loadingMore = false;
 
-  // One session ID per screen open so you can group rows in the DB.
-  final String _sessionId = DateTime.now().microsecondsSinceEpoch.toString();
-
   bool _isVideoUrl(String url) {
     final u = url.toLowerCase();
     return u.endsWith('.mp4') ||
@@ -113,24 +99,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
     _pageController.addListener(_onPageScroll);
-
-    // Log every post in the initial list so we know what types loaded.
-    for (int i = 0; i < _posts.length; i++) {
-      final url = _posts[i]['postUrl']?.toString() ?? '';
-      _log({
-        'session_id': _sessionId,
-        'event_type': 'feed_init_post',
-        'post_id': _posts[i]['postId']?.toString(),
-        'is_video': _isVideoUrl(url),
-        'post_url': url,
-        'page_index': i,
-        'total_posts': _posts.length,
-        'extra': {
-          'initial_index': widget.initialIndex,
-          'has_more': _hasMore,
-        },
-      });
-    }
   }
 
   @override
@@ -145,27 +113,10 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     final page = rawPage.round();
 
     if (page != _currentIndex) {
-      _log({
-        'session_id': _sessionId,
-        'event_type': 'page_changed',
-        'page_index': page,
-        'raw_page': rawPage,
-        'total_posts': _posts.length,
-        'extra': {
-          'from_index': _currentIndex,
-          'to_index': page,
-        },
-      });
       setState(() => _currentIndex = page);
     }
 
     if (page >= _posts.length - 3 && _hasMore && !_loadingMore) {
-      _log({
-        'session_id': _sessionId,
-        'event_type': 'load_more_triggered',
-        'page_index': page,
-        'total_posts': _posts.length,
-      });
       _triggerLoadMore();
     }
   }
@@ -175,15 +126,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     setState(() => _loadingMore = true);
     try {
       final batch = await widget.onLoadMore(_posts.length);
-      _log({
-        'session_id': _sessionId,
-        'event_type': 'load_more_result',
-        'total_posts': _posts.length + batch.length,
-        'extra': {
-          'batch_size': batch.length,
-          'has_more_after': batch.isNotEmpty,
-        },
-      });
       if (mounted) {
         setState(() {
           _posts.addAll(batch);
@@ -192,22 +134,11 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         });
       }
     } catch (e) {
-      _log({
-        'session_id': _sessionId,
-        'event_type': 'load_more_error',
-        'extra': {'error': e.toString()},
-      });
       if (mounted) setState(() => _loadingMore = false);
     }
   }
 
   void _onPostDeleted(int index) {
-    _log({
-      'session_id': _sessionId,
-      'event_type': 'post_deleted',
-      'post_id': _posts[index]['postId']?.toString(),
-      'page_index': index,
-    });
     widget.onPostDeleted?.call();
     if (!mounted) return;
     setState(() {
@@ -276,7 +207,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
             post: _posts[index],
             userData: widget.userData,
             isActive: index == _currentIndex,
-            sessionId: _sessionId,
             onPostDeleted: widget.onPostDeleted != null
                 ? () => _onPostDeleted(index)
                 : null,
@@ -294,7 +224,6 @@ class _FeedPostPage extends StatefulWidget {
   final Map<String, dynamic> post;
   final Map<String, dynamic> userData;
   final bool isActive;
-  final String sessionId;
   final VoidCallback? onPostDeleted;
 
   const _FeedPostPage({
@@ -302,7 +231,6 @@ class _FeedPostPage extends StatefulWidget {
     required this.post,
     required this.userData,
     required this.isActive,
-    required this.sessionId,
     this.onPostDeleted,
   }) : super(key: key);
 
@@ -351,43 +279,17 @@ class _FeedPostPageState extends State<_FeedPostPage>
         u.contains('video=true');
   }
 
-  // Convenience wrapper that pre-fills the fields common to every row.
-  void _sendLog(String eventType, {Map<String, dynamic>? extra}) {
-    _log({
-      'session_id': widget.sessionId,
-      'event_type': eventType,
-      'post_id': _postId,
-      'is_video': _isVideo,
-      'is_active': widget.isActive,
-      'post_url': _postUrl,
-      'is_video_init': _isVideoInitialized,
-      'is_video_loading': _isVideoLoading,
-      if (extra != null) 'extra': extra,
-    });
-  }
-
   @override
   void initState() {
     super.initState();
     _parseEditMetadata();
     _fetchAllData();
-
-    _sendLog('page_init', extra: {
-      'has_edit_metadata': widget.post['video_edit_metadata'] != null,
-    });
-
     if (widget.isActive) _onBecomeActive();
   }
 
   @override
   void didUpdateWidget(_FeedPostPage old) {
     super.didUpdateWidget(old);
-    if (widget.isActive != old.isActive) {
-      _sendLog('active_state_changed', extra: {
-        'from': old.isActive,
-        'to': widget.isActive,
-      });
-    }
     if (widget.isActive && !old.isActive) {
       _onBecomeActive();
     } else if (!widget.isActive && old.isActive) {
@@ -397,7 +299,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
 
   @override
   void dispose() {
-    _sendLog('page_dispose');
     _videoController?.pause();
     _videoController?.dispose();
     _videoController = null;
@@ -405,11 +306,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   void _onBecomeActive() {
-    _sendLog('become_active');
     if (_isVideo) {
       if (_isVideoInitialized) {
         _videoController?.play();
-        _sendLog('video_play_resumed');
       } else if (!_isVideoLoading) {
         _initVideo();
       }
@@ -417,7 +316,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   void _onBecomeInactive() {
-    _sendLog('become_inactive');
     _videoController?.pause();
   }
 
@@ -430,7 +328,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
           : Map<String, dynamic>.from(raw as Map);
       _editResult = VideoEditResult.fromJson(map, File(''));
     } catch (e) {
-      _sendLog('edit_metadata_parse_error', extra: {'error': e.toString()});
+      // ignore
     }
   }
 
@@ -483,7 +381,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         additionalData: {'postId': _postId},
         error: e,
       );
-      _sendLog('fetch_ratings_error', extra: {'error': e.toString()});
       if (mounted) setState(() => _isLoadingRatings = false);
     }
   }
@@ -509,7 +406,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         additionalData: {'postId': _postId},
         error: e,
       );
-      _sendLog('fetch_emoji_error', extra: {'error': e.toString()});
     }
   }
 
@@ -527,24 +423,15 @@ class _FeedPostPageState extends State<_FeedPostPage>
         setState(() => _commentCount = comments.length + replies.length);
       }
     } catch (e) {
-      // Not a reaction error, but still log to vertical for diagnostics
-      _sendLog('fetch_comments_error', extra: {'error': e.toString()});
+      // ignore
     }
   }
 
   Future<void> _initVideo() async {
     if (_isVideoLoading || _isVideoInitialized || _postUrl.isEmpty) {
-      _sendLog('video_init_skipped', extra: {
-        'reason': _isVideoLoading
-            ? 'already_loading'
-            : _isVideoInitialized
-                ? 'already_initialized'
-                : 'empty_url',
-      });
       return;
     }
 
-    _sendLog('video_init_start');
     setState(() => _isVideoLoading = true);
 
     try {
@@ -555,27 +442,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
 
       await controller.initialize();
 
-      final ar = controller.value.aspectRatio;
-      final size = controller.value.size;
-
-      _log({
-        'session_id': widget.sessionId,
-        'event_type': 'video_init_complete',
-        'post_id': _postId,
-        'is_video': true,
-        'is_active': widget.isActive,
-        'post_url': _postUrl,
-        'aspect_ratio': ar,
-        'is_video_init': true,
-        'is_video_loading': false,
-        'extra': {
-          'video_width': size.width,
-          'video_height': size.height,
-          'duration_seconds': controller.value.duration.inSeconds,
-          'note': 'Check content_taller_than_screen in the build log row',
-        },
-      });
-
       controller.setLooping(true);
       if (mounted) {
         setState(() {
@@ -585,14 +451,11 @@ class _FeedPostPageState extends State<_FeedPostPage>
         });
         if (widget.isActive) {
           controller.play();
-          _sendLog('video_autoplay_after_init');
         }
       } else {
         controller.dispose();
-        _sendLog('video_init_unmounted_before_setState');
       }
     } catch (e) {
-      _sendLog('video_init_error', extra: {'error': e.toString()});
       if (mounted) setState(() => _isVideoLoading = false);
     }
   }
@@ -690,31 +553,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     final matrix = _buildColorMatrix();
     final quarters = _editResult?.rotationQuarters ?? 0;
     final description = widget.post['description']?.toString() ?? '';
-
-    final screenHeight = MediaQuery.of(context).size.height;
-    final screenWidth = MediaQuery.of(context).size.width;
-    if (_isVideo && _isVideoInitialized && _videoController != null) {
-      final ar = _videoController!.value.aspectRatio;
-      final videoWidgetHeight = screenWidth / ar;
-      final contentTaller = videoWidgetHeight > screenHeight;
-      _log({
-        'session_id': widget.sessionId,
-        'event_type': 'build_video_layout',
-        'post_id': _postId,
-        'is_video': true,
-        'is_active': widget.isActive,
-        'aspect_ratio': ar,
-        'screen_height': screenHeight,
-        'screen_width': screenWidth,
-        'content_taller_than_screen': contentTaller,
-        'is_video_init': _isVideoInitialized,
-        'is_video_loading': _isVideoLoading,
-        'extra': {
-          'video_widget_height': videoWidgetHeight,
-          'swipe_likely_broken': contentTaller,
-        },
-      });
-    }
 
     return SingleChildScrollView(
       physics: const ClampingScrollPhysics(),
