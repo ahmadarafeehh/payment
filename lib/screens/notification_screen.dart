@@ -216,10 +216,10 @@ class _FollowBadgeState extends State<_FollowBadge>
           followerRow?['username']?.toString() ?? 'Someone';
       final bool isTestGroup = followerRow?['test'] ?? false;
 
-      // Insert in-app follow notification for the person being followed
+      // CHANGED: type is now 'follow_from_rating' instead of 'follow'
       await _supabase.from('notifications').insert({
         'target_user_id': widget.ownerUid,
-        'type': 'follow',
+        'type': 'follow_from_rating',
         'custom_data': {
           'followerId': widget.currentUserId,
           'context': 'post_rating',
@@ -259,10 +259,10 @@ class _FollowBadgeState extends State<_FollowBadge>
           followerRow?['username']?.toString() ?? 'Someone';
       final bool isTestGroup = followerRow?['test'] ?? false;
 
-      // Insert in-app follow notification for the person being followed
+      // CHANGED: type is now 'follow_from_comment' instead of 'follow'
       await _supabase.from('notifications').insert({
         'target_user_id': widget.ownerUid,
-        'type': 'follow',
+        'type': 'follow_from_comment',
         'custom_data': {
           'followerId': widget.currentUserId,
           'context': 'comment',
@@ -801,6 +801,10 @@ class _FastNotificationListState extends State<_FastNotificationList> {
         return customData['likerUid'] ?? customData['liker_uid'];
       case 'follow':
         return customData['followerId'] ?? customData['follower_id'];
+      // ADDED: two new contextual follow types
+      case 'follow_from_rating':
+      case 'follow_from_comment':
+        return customData['followerId'] ?? customData['follower_id'];
       case 'reply':
         return customData['replierUid'] ?? customData['replier_uid'];
       case 'reply_like':
@@ -996,6 +1000,10 @@ class _FastNotificationItem extends StatelessWidget {
         return customData['likerUid'] ?? customData['liker_uid'] ?? '';
       case 'follow':
         return customData['followerId'] ?? customData['follower_id'] ?? '';
+      // ADDED: two new contextual follow types
+      case 'follow_from_rating':
+      case 'follow_from_comment':
+        return customData['followerId'] ?? customData['follower_id'] ?? '';
       case 'reply':
         return customData['replierUid'] ?? customData['replier_uid'] ?? '';
       case 'reply_like':
@@ -1086,7 +1094,17 @@ class _FastNotificationItem extends StatelessWidget {
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
       case 'follow':
+        // Generic direct follow — unchanged
         title = '$username started following you';
+        onTap = () => _navigateToProfile(context, userId);
+        break;
+      // ADDED: contextual follow messages
+      case 'follow_from_rating':
+        title = '$username started following you after reacting to your post';
+        onTap = () => _navigateToProfile(context, userId);
+        break;
+      case 'follow_from_comment':
+        title = '$username started following you after commenting on your post';
         onTap = () => _navigateToProfile(context, userId);
         break;
       case 'reply':
