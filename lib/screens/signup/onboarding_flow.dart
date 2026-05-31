@@ -50,8 +50,13 @@ class _OnboardingFlowState extends State<OnboardingFlow>
   final _auth = firebase_auth.FirebaseAuth.instance;
 
   Map<String, dynamic>? _userData;
-  bool _isLoading = true;
+
+  // No longer starts as true — we show the age screen immediately
+  bool _isLoading = false;
   bool _hasRequiredFields = false;
+
+  // Tracks whether the background check has finished
+  bool _backgroundCheckDone = false;
 
   String? _userId;
 
@@ -68,21 +73,21 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     _stepStart = DateTime.now();
   }
 
-  int get _totalElapsed =>
-      DateTime.now().difference(_flowStart).inSeconds;
+  int get _totalElapsed => DateTime.now().difference(_flowStart).inSeconds;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _flowStart = DateTime.now();
-    _checkUserStatus();
+
+    // Fire the DB check in the background immediately — don't await it
+    _checkUserStatusInBackground();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    // If user is disposing without completing, log locally
     if (!_hasRequiredFields && _userId != null) {
       DebugLogger.logEvent(
           'ONBOARDING_FLOW_DISPOSE [$_userId] at step=$_currentStep after ${_totalElapsed}s — '
@@ -104,7 +109,9 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     }
   }
 
-  Future<void> _checkUserStatus() async {
+  /// Runs the DB check entirely in the background.
+  /// The age screen is already visible while this executes.
+  Future<void> _checkUserStatusInBackground() async {
     try {
       _advanceStep('resolving_user');
 
@@ -116,12 +123,14 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       } else if (supabaseSession != null) {
         _userId = supabaseSession.user.id;
       } else {
-        DebugLogger.logEvent('ONBOARDING_FLOW: no user found — redirecting to login');
-        if (mounted) setState(() => _isLoading = false);
+        DebugLogger.logEvent(
+            'ONBOARDING_FLOW: no user found — will redirect to login');
+        if (mounted) setState(() => _backgroundCheckDone = true);
         return;
       }
 
-      DebugLogger.logEvent('ONBOARDING_FLOW: checking status for userId=$_userId');
+      DebugLogger.logEvent(
+          'ONBOARDING_FLOW: background checking status for userId=$_userId');
       _advanceStep('db_fetch');
 
       final response = await _supabase
@@ -130,39 +139,48 @@ class _OnboardingFlowState extends State<OnboardingFlow>
           .eq('uid', _userId!)
           .maybeSingle();
 
-      if (mounted) {
-        setState(() {
-          _userData = response;
-          _isLoading = false;
-          if (response != null) {
-            _hasRequiredFields = _hasCompletedOnboarding(response);
-          }
-        });
-      }
+      if (!mounted) return;
 
-      if (_hasRequiredFields) {
+      final alreadyComplete =
+          response != null && _hasCompletedOnboarding(response);
+
+      setState(() {
+        _userData = response;
+        _backgroundCheckDone = true;
+        _hasRequiredFields = alreadyComplete;
+      });
+
+      if (alreadyComplete) {
         DebugLogger.logEvent(
-            'ONBOARDING_FLOW [$_userId]: already complete — calling onComplete');
+            'ONBOARDING_FLOW [$_userId]: already complete (background check) — '
+            'waiting briefly before redirecting home');
         _advanceStep('completed');
-        widget.onComplete();
+
+        // Small delay so the age screen doesn't flash jarringly
+        // before we redirect a returning user who completed onboarding
+        await Future.delayed(const Duration(milliseconds: 150));
+
+        if (mounted) widget.onComplete();
       } else {
         _advanceStep('age_screen');
         DebugLogger.logEvent(
-            'ONBOARDING_FLOW [$_userId]: incomplete — showing age screen '
+            'ONBOARDING_FLOW [$_userId]: incomplete (background check) — '
+            'staying on age screen. '
             'username=${response?['username']} dob=${response?['dateOfBirth']} gender=${response?['gender']}');
       }
     } catch (e, stack) {
       DebugLogger.logError('ONBOARDING_CHECK', e);
 
-      // PGRST116 = no row found — this is expected for brand new users, NOT an error
+      // PGRST116 = no row found — expected for brand new users, NOT an error
       if (e is PostgrestException && e.code == 'PGRST116') {
         DebugLogger.logEvent(
-            'ONBOARDING_FLOW [$_userId]: no user record (PGRST116) — new user, showing age screen');
+            'ONBOARDING_FLOW [$_userId]: no user record (PGRST116) — '
+            'new user, staying on age screen');
         if (mounted) {
           setState(() {
             _userData = null;
             _hasRequiredFields = false;
-            _isLoading = false;
+            _backgroundCheckDone = true;
           });
         }
         _advanceStep('age_screen_new_user');
@@ -178,7 +196,8 @@ class _OnboardingFlowState extends State<OnboardingFlow>
             'elapsed_seconds': _totalElapsed,
           },
         );
-        if (mounted) setState(() => _isLoading = false);
+        // Even on error we keep the age screen visible — don't crash the user
+        if (mounted) setState(() => _backgroundCheckDone = true);
         widget.onError(e);
       }
     }
@@ -219,35 +238,27 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     final firebaseUser = _auth.currentUser;
     final supabaseSession = _supabase.auth.currentSession;
 
-    if (firebaseUser == null && supabaseSession == null) {
+    // No auth session at all — send to login
+    if (firebaseUser == null &&
+        supabaseSession == null &&
+        _backgroundCheckDone) {
       DebugLogger.logEvent(
           'ONBOARDING_FLOW: build() — no auth session, redirecting to LoginScreen');
       return const LoginScreen();
     }
 
-    if (_isLoading) {
-      return _buildLoadingScreen();
-    }
-
+    // Background check confirmed onboarding is done — show home
+    // (the widget.onComplete() call handles navigation, but this
+    // acts as a safety net in case build fires before the callback)
     if (_hasRequiredFields) {
       return const ResponsiveLayout(
         mobileScreenLayout: MobileScreenLayout(),
       );
     }
 
+    // Show the age screen immediately — background check runs in parallel
     return AgeVerificationScreen(
       onComplete: _handleAgeVerificationComplete,
-    );
-  }
-
-  Widget _buildLoadingScreen() {
-    return const Scaffold(
-      backgroundColor: Color(0xFF121212),
-      body: Center(
-        child: CircularProgressIndicator(
-          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-        ),
-      ),
     );
   }
 }
