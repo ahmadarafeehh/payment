@@ -275,6 +275,10 @@ class _PostCardState extends State<PostCard>
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
   bool _isVideoLoading = false;
+  // ── FIX: explicit failure flag – "Video not available" is shown ONLY when
+  //    this is true, never during the startup window before _isVideoLoading
+  //    has been set to true.
+  bool _videoLoadFailed = false;
   bool _isMuted = false;
 
   VideoPlayerController? _profileVideoController;
@@ -391,6 +395,7 @@ class _PostCardState extends State<PostCard>
       if (widget.preloadedVideoController != null && widget.isVideoPreloaded) {
         _videoController = widget.preloadedVideoController;
         _isVideoInitialized = true;
+        _videoLoadFailed = false;
         _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
         _videoController!.addListener(_videoListener);
         _videoController!.setLooping(true);
@@ -411,8 +416,11 @@ class _PostCardState extends State<PostCard>
           _pauseVideo();
         }
       } else {
+        // Mark as loading immediately so the 50 ms delay window never falls
+        // through to the "Video not available" branch.
+        _isVideoLoading = true;
         Future.delayed(const Duration(milliseconds: 50), () {
-          if (mounted && _isVideo && !_isVideoInitialized && !_isVideoLoading) {
+          if (mounted && _isVideo && !_isVideoInitialized) {
             unawaited(_initializeVideoPlayer());
           }
         });
@@ -844,8 +852,17 @@ class _PostCardState extends State<PostCard>
   // VIDEO PLAYER
   // =========================================================================
   Future<void> _initializeVideoPlayer() async {
-    if (_isVideoLoading || _isVideoInitialized) return;
-    setState(() => _isVideoLoading = true);
+    if (_isVideoLoading && !_videoLoadFailed) {
+      // Already in progress (flag set in initState) – just initialise.
+    } else if (_isVideoInitialized) {
+      return;
+    }
+
+    setState(() {
+      _isVideoLoading = true;
+      _videoLoadFailed = false; // reset on every attempt
+    });
+
     try {
       final videoUrl = widget.snap['postUrl']?.toString() ?? '';
       if (videoUrl.isEmpty) throw Exception('Empty video URL');
@@ -863,6 +880,7 @@ class _PostCardState extends State<PostCard>
         setState(() {
           _isVideoInitialized = true;
           _isVideoLoading = false;
+          _videoLoadFailed = false;
         });
         if (widget.isVisible) {
           _playVideo();
@@ -871,7 +889,13 @@ class _PostCardState extends State<PostCard>
         }
       }
     } catch (e) {
-      if (mounted) setState(() => _isVideoLoading = false);
+      if (mounted) {
+        setState(() {
+          _isVideoLoading = false;
+          // Only now do we allow the "Video not available" UI to render.
+          _videoLoadFailed = true;
+        });
+      }
     }
   }
 
@@ -1617,6 +1641,7 @@ class _PostCardState extends State<PostCard>
       child: Stack(
         fit: StackFit.expand,
         children: [
+          // ── Case 1: video is ready ──────────────────────────────────────
           if (_isVideoInitialized)
             GestureDetector(
               onTap: _toggleVideoPlayback,
@@ -1708,6 +1733,8 @@ class _PostCardState extends State<PostCard>
                 },
               ),
             )
+
+          // ── Case 2: actively loading (spinner) ─────────────────────────
           else if (_isVideoLoading)
             Container(
               color: Colors.black,
@@ -1725,7 +1752,9 @@ class _PostCardState extends State<PostCard>
                 ),
               ),
             )
-          else
+
+          // ── Case 3: confirmed failure – show error message ──────────────
+          else if (_videoLoadFailed)
             Container(
               color: Colors.black,
               child: Center(
@@ -1739,7 +1768,15 @@ class _PostCardState extends State<PostCard>
                   ],
                 ),
               ),
-            ),
+            )
+
+          // ── Case 4: startup window – neither loaded nor failed yet.
+          //    Use the same skeleton color passed in from FeedScreen so the
+          //    background matches the surrounding skeleton UI seamlessly.
+          else
+            ColoredBox(color: widget.skeletonColor ?? const Color(0xFF333333)),
+
+          // ── Play button overlay (shown when paused on an initialised video)
           if (_isVideoInitialized && !_isVideoPlaying)
             GestureDetector(
               onTap: _playVideo,
@@ -1773,8 +1810,7 @@ class _PostCardState extends State<PostCard>
     // ── FIX: use the passed-in skeletonColor (same tone as FeedSkeleton)
     //    instead of Colors.black so the placeholder never flashes black
     //    during the async load window.
-    final placeholderColor =
-        widget.skeletonColor ?? const Color(0xFF1C1C1C);
+    final placeholderColor = widget.skeletonColor ?? const Color(0xFF1C1C1C);
 
     final imageUrl = widget.snap['postUrl']?.toString() ?? '';
     if (widget.preloadedImageProvider != null && widget.isImagePreloaded) {
