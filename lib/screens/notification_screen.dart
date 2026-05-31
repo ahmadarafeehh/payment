@@ -1063,10 +1063,9 @@ class _FastNotificationItem extends StatelessWidget {
         final postId = _extractPostId();
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
+      // ── CHANGED: removed rating variable and subtitle, updated title text ──
       case 'post_rating':
-        final rating = (customData['rating'] as num?)?.toDouble() ?? 0.0;
-        title = '$username rated your post';
-        subtitle = 'Rating: ${rating.toStringAsFixed(1)}';
+        title = '$username reacted to your post';
         final postId = _extractPostId();
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
