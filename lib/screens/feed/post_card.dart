@@ -215,6 +215,9 @@ class PostCard extends StatefulWidget {
   final bool isVideoPreloaded;
   final ImageProvider? preloadedImageProvider;
   final bool isImagePreloaded;
+  // ── FIX: receives the skeleton/background color from FeedScreen so the
+  //    Scaffold and image placeholder never flash black during loading.
+  final Color? skeletonColor;
 
   const PostCard({
     Key? key,
@@ -227,6 +230,7 @@ class PostCard extends StatefulWidget {
     this.isVideoPreloaded = false,
     this.preloadedImageProvider,
     this.isImagePreloaded = false,
+    this.skeletonColor,
   }) : super(key: key);
 
   @override
@@ -283,7 +287,7 @@ class _PostCardState extends State<PostCard>
   final VideoManager _videoManager = VideoManager();
   final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
 
-  // ── NEW: tracks whether the async post-card data has finished loading ──
+  // Tracks whether the async post-card data has finished loading.
   bool _isPostDataLoading = true;
 
   final List<String> _reportReasons = [
@@ -506,7 +510,6 @@ class _PostCardState extends State<PostCard>
   Future<void> _loadPostCardData() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
     if (user == null) {
-      // Nothing to load – clear the loading gate so the UI doesn't stay blank.
       if (mounted) setState(() => _isPostDataLoading = false);
       return;
     }
@@ -552,7 +555,6 @@ class _PostCardState extends State<PostCard>
 
         _isBlocked = data['isBlocked'] ?? false;
 
-        // ── Data is now fully loaded; clear the skeleton gate ──
         _isPostDataLoading = false;
       });
 
@@ -566,7 +568,6 @@ class _PostCardState extends State<PostCard>
         additionalData: {'postId': _postId},
         error: e,
       );
-      // Even on error, lift the loading gate so the UI isn't permanently blank.
       if (mounted) setState(() => _isPostDataLoading = false);
     }
   }
@@ -1473,18 +1474,16 @@ class _PostCardState extends State<PostCard>
   /// Skeleton placeholder for the RatingBar area while post data is loading.
   Widget _buildRatingBarSkeleton() {
     return const SizedBox(
-      height: 48, // matches the approximate height of RatingBar
+      height: 48,
       child: Row(
         children: [
-          // Emoji circle placeholder
           _PulsingBone(width: 36, height: 36, borderRadius: 18),
           SizedBox(width: 10),
-          // Track placeholder
           Expanded(
-            child: _PulsingBone(width: double.infinity, height: 14, borderRadius: 7),
+            child: _PulsingBone(
+                width: double.infinity, height: 14, borderRadius: 7),
           ),
           SizedBox(width: 10),
-          // Thumb/handle placeholder
           _PulsingBone(width: 36, height: 36, borderRadius: 18),
         ],
       ),
@@ -1767,7 +1766,16 @@ class _PostCardState extends State<PostCard>
     );
   }
 
+  // =========================================================================
+  // IMAGE CONTENT
+  // =========================================================================
   Widget _buildImageContent(_ColorSet colors) {
+    // ── FIX: use the passed-in skeletonColor (same tone as FeedSkeleton)
+    //    instead of Colors.black so the placeholder never flashes black
+    //    during the async load window.
+    final placeholderColor =
+        widget.skeletonColor ?? const Color(0xFF1C1C1C);
+
     final imageUrl = widget.snap['postUrl']?.toString() ?? '';
     if (widget.preloadedImageProvider != null && widget.isImagePreloaded) {
       return Container(
@@ -1780,9 +1788,9 @@ class _PostCardState extends State<PostCard>
     return CachedNetworkImage(
       imageUrl: imageUrl,
       fit: BoxFit.cover,
-      placeholder: (context, url) => Container(color: Colors.black),
+      placeholder: (context, url) => Container(color: placeholderColor),
       errorWidget: (context, url, error) => Container(
-        color: Colors.black,
+        color: placeholderColor,
         child: Center(
             child:
                 Icon(Icons.broken_image, size: 48, color: Colors.grey[300]!)),
@@ -1793,6 +1801,9 @@ class _PostCardState extends State<PostCard>
     );
   }
 
+  // =========================================================================
+  // BUILD
+  // =========================================================================
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -1810,8 +1821,13 @@ class _PostCardState extends State<PostCard>
     final user = Provider.of<UserProvider>(context).user;
     if (user == null) return const SizedBox.shrink();
 
+    // ── FIX: use skeletonColor as the Scaffold background so the area
+    //    behind the image never flashes black while the card data or
+    //    image is still loading.
+    final scaffoldBg = widget.skeletonColor ?? const Color(0xFF1C1C1C);
+
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: scaffoldBg,
       body: Stack(
         children: [
           _buildMediaContent(colors),
