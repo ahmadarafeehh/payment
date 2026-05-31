@@ -1994,7 +1994,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           return Container(
             width: double.infinity,
             height: double.infinity,
-            color: colors.backgroundColor,
+            // ── FIX: use the skeleton color as the page background so there
+            //    is never a black flash while PostCard is loading its data.
+            color: colors.skeletonColor,
             child: PostCard(
               snap: post,
               isVisible: isVisible,
@@ -2004,6 +2006,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               isVideoPreloaded: _isVideoPreloadedAndReady(post),
               preloadedImageProvider: _getPreloadedImageProvider(postUrl),
               isImagePreloaded: _isImagePreloadedAndReady(post),
+              // Pass the skeleton color so PostCard uses it for its own
+              // Scaffold background and image placeholder instead of black.
+              skeletonColor: colors.skeletonColor,
             ),
           );
         },
