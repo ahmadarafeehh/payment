@@ -102,10 +102,18 @@ class SupabaseMessagesMethods {
 
       // 6. Send push notification for the new message
       try {
+        // Fetch sender's username for the notification title
+        final senderData = await _supabase
+            .from('users')
+            .select('username')
+            .eq('uid', senderId)
+            .single();
+        final senderName = senderData['username'] ?? 'Someone';
+
         await _notificationService.triggerServerNotification(
           type: 'message',
           targetUserId: receiverId,
-          title: 'New Message',
+          title: '$senderName sent you a message',
           body:
               message.length > 30 ? '${message.substring(0, 30)}...' : message,
           customData: {
