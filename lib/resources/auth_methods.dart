@@ -6,6 +6,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
+import 'package:firebase_messaging/firebase_messaging.dart' as firebase_messaging;
 import 'package:Ratedly/resources/storage_methods.dart';
 import 'package:Ratedly/models/user.dart';
 import 'package:country_detector/country_detector.dart';
@@ -189,7 +190,7 @@ class AuthMethods {
             'country': null,
             'migrated': true,
             'supabase_uid': session.user.id,
-            'test': Random().nextBool(), // ← randomly assign A/B test group
+            'test': Random().nextBool(),
           }, onConflict: 'uid');
         } catch (e) {
           // ignore
@@ -260,6 +261,13 @@ class AuthMethods {
         );
       }
 
+      // ── Fetch FCM token to save alongside profile ─────────────────────────
+      String? fcmToken;
+      try {
+        final messaging = firebase_messaging.FirebaseMessaging.instance;
+        fcmToken = await messaging.getToken();
+      } catch (_) {}
+
       final payload = {
         'uid': session.user.id,
         'email': session.user.email,
@@ -271,10 +279,11 @@ class AuthMethods {
         'createdAt': DateTime.now().toIso8601String(),
         'dateOfBirth': dateOfBirth.toIso8601String(),
         'gender': gender,
-        'isVerified': false, // ✅ FIX: blue check earned via referrals only
+        'isVerified': false,
         'migrated': true,
         'supabase_uid': session.user.id,
         'blockedUsers': <dynamic>[],
+        if (fcmToken != null) 'fcmToken': fcmToken,
       };
 
       await _supabase.from('users').upsert(payload, onConflict: 'uid');
@@ -482,7 +491,7 @@ class AuthMethods {
           'createdAt': DateTime.now().toIso8601String(),
           'dateOfBirth': null,
           'gender': null,
-          'isVerified': false, // ✅ FIX: never auto-verify on signup
+          'isVerified': false,
           'blockedUsers': <dynamic>[],
           'country': null,
           'migrated': false,
@@ -572,7 +581,7 @@ class AuthMethods {
         'createdAt': DateTime.now().toIso8601String(),
         'dateOfBirth': dateOfBirth.toIso8601String(),
         'gender': gender,
-        'isVerified': false, // ✅ FIX: blue check earned via referrals only
+        'isVerified': false,
         'migrated': false,
         'blockedUsers': <dynamic>[],
       };
@@ -732,7 +741,6 @@ class AuthMethods {
   Future<String> signInWithGoogle() async {
     String? email;
     try {
-      // 1. Get Google account
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
       if (googleUser == null) return "cancelled";
 
@@ -747,13 +755,11 @@ class AuthMethods {
         return "Google sign‑in failed: no ID token";
       }
 
-      // 2. Query Supabase users by email
       final List<dynamic> userRecords = await _supabase
           .from('users')
           .select('uid, migrated, supabase_uid')
           .eq('email', email);
 
-      // 3. Check for a Supabase Auth user (has supabase_uid)
       final Map<String, dynamic>? supabaseUserRecord =
           userRecords.cast<Map<String, dynamic>?>().firstWhere(
                 (record) => record?['supabase_uid'] != null,
@@ -773,7 +779,6 @@ class AuthMethods {
         return await _checkSupabaseUserOnboarding();
       }
 
-      // 4. Check for a Firebase user (migrated == false)
       final Map<String, dynamic>? firebaseUserRecord =
           userRecords.cast<Map<String, dynamic>?>().firstWhere(
                 (record) => record?['migrated'] == false,
@@ -815,7 +820,7 @@ class AuthMethods {
             'createdAt': DateTime.now().toIso8601String(),
             'dateOfBirth': null,
             'gender': null,
-            'isVerified': false, // ✅ FIX: never auto-verify on signup
+            'isVerified': false,
             'blockedUsers': <dynamic>[],
             'country': null,
             'migrated': false,
@@ -834,7 +839,6 @@ class AuthMethods {
         return hasCompletedOnboarding ? "success" : "onboarding_required";
       }
 
-      // 5. No existing user → sign up with Supabase (new user)
       final AuthResponse response = await _supabase.auth.signInWithIdToken(
         provider: OAuthProvider.google,
         idToken: idToken,
@@ -904,7 +908,7 @@ class AuthMethods {
             'createdAt': DateTime.now().toIso8601String(),
             'dateOfBirth': null,
             'gender': null,
-            'isVerified': false, // ✅ FIX: never auto-verify on signup
+            'isVerified': false,
             'blockedUsers': <dynamic>[],
             'country': null,
             'migrated': false,
