@@ -10,6 +10,34 @@ import 'dart:async';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 
+// ============================================================================
+// ERROR LOGGING HELPER – logs only to messages_error table
+// ============================================================================
+Future<void> _logMessageError({
+  required String operationType,
+  String? userId,
+  String? chatId,
+  String? messageId,
+  Map<String, dynamic>? additionalData,
+  required dynamic error,
+}) async {
+  try {
+    await Supabase.instance.client.from('messages_error').insert({
+      'user_id': userId,
+      'operation_type': operationType,
+      'error_message': error.toString(),
+      'stack_trace': error is Error ? error.stackTrace?.toString() : null,
+      'additional_data': {
+        if (chatId != null) 'chatId': chatId,
+        if (messageId != null) 'messageId': messageId,
+        ...?additionalData,
+      },
+    });
+  } catch (_) {
+    // Fail silently – error logging must not crash the app
+  }
+}
+
 // VIDEO UTILS CLASS
 class VideoUtils {
   static bool isVideoFile(String url) {
@@ -228,6 +256,12 @@ class _FeedMessagesState extends State<FeedMessages>
       _videoControllersInitialized[userId] = true;
       if (mounted) setState(() {});
     } catch (e) {
+      await _logMessageError(
+        operationType: 'initialize_video_controller',
+        userId: userId,
+        additionalData: {'videoUrl': videoUrl},
+        error: e,
+      );
       _videoControllers.remove(userId)?.dispose();
       _videoControllersInitialized.remove(userId);
     }
@@ -275,13 +309,16 @@ class _FeedMessagesState extends State<FeedMessages>
     }
   }
 
-  // ADDED: method to check expiring streaks (throttled by SupabaseMessagesMethods)
   Future<void> _checkExpiringStreaks() async {
     try {
       final messagesMethods = SupabaseMessagesMethods();
       await messagesMethods.checkAndSendStreakExpiryNotifications();
     } catch (e) {
-      // silently fail – do not disrupt UI
+      await _logMessageError(
+        operationType: 'check_expiring_streaks',
+        userId: _currentUserId,
+        error: e,
+      );
     }
   }
 
@@ -292,9 +329,13 @@ class _FeedMessagesState extends State<FeedMessages>
       await Future.wait([_loadBlockedUsers(), _loadChatsMinimal()]);
       if (mounted) setState(() => _isLoading = false);
       _loadAdditionalDataInBackground();
-      // ADDED: Check for expiring streaks after initial load (throttled)
       _checkExpiringStreaks();
     } catch (e) {
+      await _logMessageError(
+        operationType: 'load_initial_data',
+        userId: _currentUserId,
+        error: e,
+      );
       if (mounted) setState(() => _isLoading = false);
     }
   }
@@ -318,7 +359,7 @@ class _FeedMessagesState extends State<FeedMessages>
         final participants = List<String>.from(chat['participants']);
         final otherUserId = participants
             .firstWhere((id) => id != _currentUserId, orElse: () => '');
-        if (otherUserId.isNotEmpty && !_blockedUsers.contains(otherUserId)) {
+        if (otherUserId.isNotEmpty) {
           final chatCopy = Map<String, dynamic>.from(chat);
           chatCopy['last_mutual_exchange'] =
               _parseDateTime(chatCopy['last_mutual_exchange']);
@@ -336,7 +377,13 @@ class _FeedMessagesState extends State<FeedMessages>
           _hasMoreChats = chats.length == 11;
         });
       }
-    } catch (e) {}
+    } catch (e) {
+      await _logMessageError(
+        operationType: 'load_chats_minimal',
+        userId: _currentUserId,
+        error: e,
+      );
+    }
   }
 
   Future<void> _loadAdditionalDataInBackground() async {
@@ -347,67 +394,102 @@ class _FeedMessagesState extends State<FeedMessages>
       final otherUserId = participants.firstWhere((id) => id != _currentUserId);
       userIDs.add(otherUserId);
     }
-    await Future.wait([
-      _loadUsersBatch(userIDs),
-      _loadLastMessagesBatch(
-          _existingChats.map((c) => c['id'] as String).toList()),
-      _loadUnreadCountsBatch(_existingChats),
-      _loadSuggestions(),
-    ]);
-    for (final userId in userIDs) {
-      final userData = _userCache[userId];
-      if (userData != null) {
-        final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
-        if (_isProfileVideo(photoUrl))
-          _initializeVideoController(userId, photoUrl);
+    try {
+      await Future.wait([
+        _loadUsersBatch(userIDs),
+        _loadLastMessagesBatch(
+            _existingChats.map((c) => c['id'] as String).toList()),
+        _loadUnreadCountsBatch(_existingChats),
+        _loadSuggestions(),
+      ]);
+      for (final userId in userIDs) {
+        final userData = _userCache[userId];
+        if (userData != null) {
+          final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
+          if (_isProfileVideo(photoUrl))
+            _initializeVideoController(userId, photoUrl);
+        }
       }
+    } catch (e) {
+      await _logMessageError(
+        operationType: 'load_additional_data_background',
+        userId: _currentUserId,
+        error: e,
+      );
     }
   }
 
   Future<void> _loadUsersBatch(List<String> userIds) async {
     if (userIds.isEmpty) return;
-    final users =
-        await _supabase.from('users').select().inFilter('uid', userIds);
-    for (final user in users) _userCache[user['uid']] = user;
-    for (final userId in userIds) {
-      if (!_userCache.containsKey(userId)) {
-        _userCache[userId] = {
-          'uid': userId,
-          'username': 'Not Found',
-          'photoUrl': 'default',
-          'photo_url': 'default'
-        };
+    try {
+      final users =
+          await _supabase.from('users').select().inFilter('uid', userIds);
+      for (final user in users) _userCache[user['uid']] = user;
+      for (final userId in userIds) {
+        if (!_userCache.containsKey(userId)) {
+          _userCache[userId] = {
+            'uid': userId,
+            'username': 'Not Found',
+            'photoUrl': 'default',
+            'photo_url': 'default'
+          };
+        }
       }
+      if (mounted) setState(() {});
+    } catch (e) {
+      await _logMessageError(
+        operationType: 'load_users_batch',
+        userId: _currentUserId,
+        additionalData: {'userIds': userIds.take(10).toList()},
+        error: e,
+      );
     }
-    if (mounted) setState(() {});
   }
 
   Future<void> _loadLastMessagesBatch(List<String> chatIds) async {
     if (chatIds.isEmpty) return;
-    final messages = await _supabase
-        .from('messages')
-        .select()
-        .inFilter('chat_id', chatIds)
-        .order('timestamp', ascending: false);
-    final messagesByChat = <String, Map<String, dynamic>>{};
-    for (final message in messages) {
-      final chatId = message['chat_id'] as String;
-      if (!messagesByChat.containsKey(chatId)) {
-        final messageCopy = Map<String, dynamic>.from(message);
-        messageCopy['timestamp'] = _parseDateTime(message['timestamp']);
-        messagesByChat[chatId] = messageCopy;
+    try {
+      final messages = await _supabase
+          .from('messages')
+          .select()
+          .inFilter('chat_id', chatIds)
+          .order('timestamp', ascending: false);
+      final messagesByChat = <String, Map<String, dynamic>>{};
+      for (final message in messages) {
+        final chatId = message['chat_id'] as String;
+        if (!messagesByChat.containsKey(chatId)) {
+          final messageCopy = Map<String, dynamic>.from(message);
+          messageCopy['timestamp'] = _parseDateTime(message['timestamp']);
+          messagesByChat[chatId] = messageCopy;
+        }
       }
+      _lastMessageCache.addAll(messagesByChat);
+      if (mounted) setState(() {});
+    } catch (e) {
+      await _logMessageError(
+        operationType: 'load_last_messages_batch',
+        userId: _currentUserId,
+        additionalData: {'chatIds': chatIds.take(10).toList()},
+        error: e,
+      );
     }
-    _lastMessageCache.addAll(messagesByChat);
-    if (mounted) setState(() {});
   }
 
   Future<void> _loadUnreadCountsBatch(List<Map<String, dynamic>> chats) async {
     for (final chat in chats) {
-      final count = await SupabaseMessagesMethods()
-          .getUnreadCount(chat['id'], _currentUserId!)
-          .first;
-      _unreadCountCache[chat['id']] = count;
+      try {
+        final count = await SupabaseMessagesMethods()
+            .getUnreadCount(chat['id'], _currentUserId!)
+            .first;
+        _unreadCountCache[chat['id']] = count;
+      } catch (e) {
+        await _logMessageError(
+          operationType: 'load_unread_count_batch',
+          userId: _currentUserId,
+          chatId: chat['id'],
+          error: e,
+        );
+      }
     }
     if (mounted) setState(() {});
   }
@@ -415,43 +497,52 @@ class _FeedMessagesState extends State<FeedMessages>
   Future<void> _loadMoreChats() async {
     if (!_hasMoreChats || _loadingMore) return;
     setState(() => _loadingMore = true);
-    final start = _existingChats.length;
-    final end = start + 10;
-    final moreChats = await _supabase
-        .from('chats')
-        .select(
-            'id, participants, last_message, last_updated, streak_count, streak_checked_at, last_mutual_exchange')
-        .contains('participants', [_currentUserId!])
-        .order('last_updated', ascending: false)
-        .range(start, end);
-    if (moreChats.isEmpty) {
+    try {
+      final start = _existingChats.length;
+      final end = start + 10;
+      final moreChats = await _supabase
+          .from('chats')
+          .select(
+              'id, participants, last_message, last_updated, streak_count, streak_checked_at, last_mutual_exchange')
+          .contains('participants', [_currentUserId!])
+          .order('last_updated', ascending: false)
+          .range(start, end);
+      if (moreChats.isEmpty) {
+        setState(() {
+          _hasMoreChats = false;
+          _loadingMore = false;
+        });
+        return;
+      }
+      final parsedChats = <Map<String, dynamic>>[];
+      for (final chat in moreChats) {
+        final chatCopy = Map<String, dynamic>.from(chat);
+        chatCopy['last_mutual_exchange'] =
+            _parseDateTime(chatCopy['last_mutual_exchange']);
+        if (chatCopy['streak_checked_at'] != null)
+          chatCopy['streak_checked_at'] =
+              _parseDateTime(chatCopy['streak_checked_at']);
+        if (chatCopy['last_updated'] != null)
+          chatCopy['last_updated'] = _parseDateTime(chatCopy['last_updated']);
+        parsedChats.add(chatCopy);
+      }
       setState(() {
-        _hasMoreChats = false;
+        _existingChats.addAll(parsedChats);
         _loadingMore = false;
+        _hasMoreChats = moreChats.length == 11;
       });
-      return;
+      await _processNewChats(parsedChats);
+    } catch (e) {
+      await _logMessageError(
+        operationType: 'load_more_chats',
+        userId: _currentUserId,
+        error: e,
+      );
+      setState(() => _loadingMore = false);
     }
-    final parsedChats = <Map<String, dynamic>>[];
-    for (final chat in moreChats) {
-      final chatCopy = Map<String, dynamic>.from(chat);
-      chatCopy['last_mutual_exchange'] =
-          _parseDateTime(chatCopy['last_mutual_exchange']);
-      if (chatCopy['streak_checked_at'] != null)
-        chatCopy['streak_checked_at'] =
-            _parseDateTime(chatCopy['streak_checked_at']);
-      if (chatCopy['last_updated'] != null)
-        chatCopy['last_updated'] = _parseDateTime(chatCopy['last_updated']);
-      parsedChats.add(chatCopy);
-    }
-    setState(() {
-      _existingChats.addAll(parsedChats);
-      _loadingMore = false;
-      _hasMoreChats = moreChats.length == 11;
-    });
-    _processNewChats(parsedChats);
   }
 
-  void _processNewChats(List<Map<String, dynamic>> newChats) async {
+  Future<void> _processNewChats(List<Map<String, dynamic>> newChats) async {
     final newUserIds = <String>{};
     final newChatIds = <String>[];
     for (final chat in newChats) {
@@ -460,16 +551,24 @@ class _FeedMessagesState extends State<FeedMessages>
       if (!_userCache.containsKey(otherUserId)) newUserIds.add(otherUserId);
       newChatIds.add(chat['id'] as String);
     }
-    if (newUserIds.isNotEmpty) await _loadUsersBatch(newUserIds.toList());
-    if (newChatIds.isNotEmpty) await _loadLastMessagesBatch(newChatIds);
-    await _loadUnreadCountsBatch(newChats);
-    for (final userId in newUserIds) {
-      final userData = _userCache[userId];
-      if (userData != null) {
-        final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
-        if (_isProfileVideo(photoUrl))
-          _initializeVideoController(userId, photoUrl);
+    try {
+      if (newUserIds.isNotEmpty) await _loadUsersBatch(newUserIds.toList());
+      if (newChatIds.isNotEmpty) await _loadLastMessagesBatch(newChatIds);
+      await _loadUnreadCountsBatch(newChats);
+      for (final userId in newUserIds) {
+        final userData = _userCache[userId];
+        if (userData != null) {
+          final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
+          if (_isProfileVideo(photoUrl))
+            _initializeVideoController(userId, photoUrl);
+        }
       }
+    } catch (e) {
+      await _logMessageError(
+        operationType: 'process_new_chats',
+        userId: _currentUserId,
+        error: e,
+      );
     }
   }
 
@@ -481,7 +580,6 @@ class _FeedMessagesState extends State<FeedMessages>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _refreshData();
-      // ADDED: Check expiring streaks when app returns to foreground
       _checkExpiringStreaks();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
@@ -496,31 +594,44 @@ class _FeedMessagesState extends State<FeedMessages>
           await SupabaseBlockMethods().getBlockedUsers(_currentUserId!);
       if (mounted) setState(() => _blockedUsers = blockedUsers);
     } catch (e) {
+      await _logMessageError(
+        operationType: 'load_blocked_users',
+        userId: _currentUserId,
+        error: e,
+      );
       if (mounted) setState(() => _blockedUsers = []);
     }
   }
 
   Future<void> _loadSuggestions() async {
     if (_existingChats.length >= 3 || _currentUserId == null) return;
-    final suggestedUserIds =
-        await _getSuggestedUsers(3 - _existingChats.length);
-    if (suggestedUserIds.isNotEmpty) {
-      final users = await _supabase
-          .from('users')
-          .select()
-          .inFilter('uid', suggestedUserIds);
-      if (mounted) {
-        setState(() {
-          _suggestedUsers = users.cast<Map<String, dynamic>>();
-          _showSuggestions = users.isNotEmpty;
-        });
+    try {
+      final suggestedUserIds =
+          await _getSuggestedUsers(3 - _existingChats.length);
+      if (suggestedUserIds.isNotEmpty) {
+        final users = await _supabase
+            .from('users')
+            .select()
+            .inFilter('uid', suggestedUserIds);
+        if (mounted) {
+          setState(() {
+            _suggestedUsers = users.cast<Map<String, dynamic>>();
+            _showSuggestions = users.isNotEmpty;
+          });
+        }
+        for (final user in users) {
+          final userId = user['uid'] ?? '';
+          final photoUrl = user['photoUrl'] ?? user['photo_url'] ?? '';
+          if (_isProfileVideo(photoUrl))
+            _initializeVideoController(userId, photoUrl);
+        }
       }
-      for (final user in users) {
-        final userId = user['uid'] ?? '';
-        final photoUrl = user['photoUrl'] ?? user['photo_url'] ?? '';
-        if (_isProfileVideo(photoUrl))
-          _initializeVideoController(userId, photoUrl);
-      }
+    } catch (e) {
+      await _logMessageError(
+        operationType: 'load_suggestions',
+        userId: _currentUserId,
+        error: e,
+      );
     }
   }
 
@@ -530,25 +641,35 @@ class _FeedMessagesState extends State<FeedMessages>
       final participants = List<String>.from(chat['participants']);
       return participants.firstWhere((id) => id != _currentUserId);
     }).toList();
-    final followsData = await _supabase
-        .from('follows')
-        .select('follower_id, following_id')
-        .or('follower_id.eq.${_currentUserId},following_id.eq.${_currentUserId}');
-    final following = <String>[];
-    final followers = <String>[];
-    for (final follow in followsData) {
-      if (follow['follower_id'] == _currentUserId)
-        following.add(follow['following_id'] as String);
-      if (follow['following_id'] == _currentUserId)
-        followers.add(follow['follower_id'] as String);
+    try {
+      final followsData = await _supabase
+          .from('follows')
+          .select('follower_id, following_id')
+          .or('follower_id.eq.${_currentUserId},following_id.eq.${_currentUserId}');
+      final following = <String>[];
+      final followers = <String>[];
+      for (final follow in followsData) {
+        if (follow['follower_id'] == _currentUserId)
+          following.add(follow['following_id'] as String);
+        if (follow['following_id'] == _currentUserId)
+          followers.add(follow['follower_id'] as String);
+      }
+      List<String> candidates = [...following, ...followers]
+          .where((id) => id != _currentUserId)
+          .where((id) => !existingUserIds.contains(id))
+          .where((id) => !_blockedUsers.contains(id))
+          .toSet()
+          .toList();
+      return candidates.take(count).toList();
+    } catch (e) {
+      await _logMessageError(
+        operationType: 'get_suggested_users',
+        userId: _currentUserId,
+        additionalData: {'count': count},
+        error: e,
+      );
+      return [];
     }
-    List<String> candidates = [...following, ...followers]
-        .where((id) => id != _currentUserId)
-        .where((id) => !existingUserIds.contains(id))
-        .where((id) => !_blockedUsers.contains(id))
-        .toSet()
-        .toList();
-    return candidates.take(count).toList();
   }
 
   String _formatTimestamp(DateTime? timestamp) {
@@ -577,29 +698,6 @@ class _FeedMessagesState extends State<FeedMessages>
     } catch (e) {
       return 'Recently';
     }
-  }
-
-  Widget _buildBlockedMessageItem(_FeedMessagesColorSet colors) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-      decoration: BoxDecoration(
-          color: colors.cardColor, borderRadius: BorderRadius.circular(8)),
-      child: Row(
-        children: [
-          Icon(Icons.block, color: Colors.red[400], size: 20),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              'This conversation is unavailable due to blocking',
-              style: TextStyle(
-                  color: colors.textColor.withOpacity(0.6),
-                  fontStyle: FontStyle.italic),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   Widget _buildUserAvatar(
@@ -692,12 +790,19 @@ class _FeedMessagesState extends State<FeedMessages>
     final otherUserId =
         participants.firstWhere((id) => id != _currentUserId, orElse: () => '');
     if (otherUserId.isEmpty) return const SizedBox.shrink();
-    if (_blockedUsers.contains(otherUserId)) return const SizedBox.shrink();
+
+    final isBlocked = _blockedUsers.contains(otherUserId);
+
     final userData = _userCache[otherUserId];
     if (userData == null) return _buildDetailedChatSkeleton(colors);
-    final username = userData['username'] ?? 'Unknown User';
+
+    // If blocked, show anonymous display name with no country or verification
+    final String displayUsername =
+        isBlocked ? 'Reactly User' : (userData['username'] ?? 'Unknown User');
     final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
-    final countryCode = userData['country']?.toString();
+    final String? countryCode =
+        isBlocked ? null : userData['country']?.toString();
+
     final lastMessageData = _lastMessageCache[chat['id']];
     final streakCount = chat['streak_count'] ?? 0;
     final streakCheckedAt = chat['streak_checked_at'];
@@ -723,12 +828,19 @@ class _FeedMessagesState extends State<FeedMessages>
         title: Row(
           children: [
             Expanded(
-              child: VerifiedUsernameWidget(
-                username: username,
-                uid: otherUserId,
-                countryCode: countryCode,
-                style: TextStyle(color: colors.textColor),
-              ),
+              child: isBlocked
+                  // Plain text for blocked users — no verified badge, no country flag
+                  ? Text(
+                      displayUsername,
+                      style: TextStyle(color: colors.textColor),
+                      overflow: TextOverflow.ellipsis,
+                    )
+                  : VerifiedUsernameWidget(
+                      username: displayUsername,
+                      uid: otherUserId,
+                      countryCode: countryCode,
+                      style: TextStyle(color: colors.textColor),
+                    ),
             ),
             if (streakCount > 0)
               SafeStreakExpiryIndicator(
@@ -766,21 +878,32 @@ class _FeedMessagesState extends State<FeedMessages>
             : null,
         onTap: () async {
           _pauseAllVideos();
-          await SupabaseMessagesMethods()
-              .markMessagesAsRead(chat['id'], _currentUserId!);
-          _unreadCountCache[chat['id']] = 0;
-          setState(() {});
-          final result = await Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => MessagingScreen(
-                recipientUid: otherUserId,
-                recipientUsername: username,
-                recipientPhotoUrl: photoUrl,
+          try {
+            await SupabaseMessagesMethods()
+                .markMessagesAsRead(chat['id'], _currentUserId!);
+            _unreadCountCache[chat['id']] = 0;
+            setState(() {});
+            final result = await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => MessagingScreen(
+                  recipientUid: otherUserId,
+                  recipientUsername: isBlocked
+                      ? 'Reactly User'
+                      : (userData['username'] ?? 'Unknown User'),
+                  recipientPhotoUrl: photoUrl,
+                ),
               ),
-            ),
-          );
-          if (result == true) _refreshData();
+            );
+            if (result == true) _refreshData();
+          } catch (e) {
+            await _logMessageError(
+              operationType: 'chat_item_tap',
+              userId: _currentUserId,
+              chatId: chat['id'],
+              error: e,
+            );
+          }
         },
       ),
     );
@@ -1014,6 +1137,13 @@ class _FeedMessagesState extends State<FeedMessages>
           child:
               CircularProgressIndicator(color: colors.progressIndicatorColor)),
     );
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _disposeAllVideoControllers();
+    super.dispose();
   }
 }
 
