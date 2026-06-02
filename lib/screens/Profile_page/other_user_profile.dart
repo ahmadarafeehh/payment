@@ -22,7 +22,7 @@ import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 // -----------------------------------------------------------------------------
-// Color definitions (same as original)
+// Color definitions
 // -----------------------------------------------------------------------------
 class _OtherProfileColorSet {
   final Color backgroundColor;
@@ -103,7 +103,7 @@ class _OtherProfileLightColors extends _OtherProfileColorSet {
 }
 
 // -----------------------------------------------------------------------------
-// Reusable widgets (same as original)
+// Reusable widgets
 // -----------------------------------------------------------------------------
 class CountryFlagWidget extends StatelessWidget {
   final String countryCode;
@@ -183,7 +183,7 @@ class _ExpandableBioTextState extends State<ExpandableBioText> {
 }
 
 // -----------------------------------------------------------------------------
-// Main OtherUserProfileScreen (corrected)
+// Main OtherUserProfileScreen
 // -----------------------------------------------------------------------------
 class OtherUserProfileScreen extends StatefulWidget {
   final String uid;
@@ -210,7 +210,10 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   int following = 0;
   bool _isMutualFollow = false;
 
-  // Video controllers (same as current profile screen)
+  // NEW: test user flag for conditional button styling
+  bool _isTestUser = false;
+
+  // Video controllers
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
   Timer? _videoInitDebounce;
@@ -250,7 +253,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   static const Duration _loadMoreCooldown = Duration(milliseconds: 500);
 
   // --------------------------------------------------------------------------
-  // ERROR LOGGING HELPER (inserts into profile_errors table)
+  // ERROR LOGGING HELPER
   // --------------------------------------------------------------------------
   Future<void> _logProfileError({
     required String operation,
@@ -267,8 +270,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         'additional_data': additionalData,
       });
     } catch (logError) {
-      // Silently fail – don't let logging break the user experience
-      print('Failed to log profile error: $logError');
+
     }
   }
 
@@ -279,7 +281,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // --------------------------------------------------------------
-  // Video helpers (identical to current_profile_screen.dart)
+  // Video helpers
   // --------------------------------------------------------------
   bool _isVideoFile(String url) {
     if (url.isEmpty) return false;
@@ -436,18 +438,17 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // --------------------------------------------------------------------------
-  // MISSING METHODS ADDED (copied from current_profile_screen.dart)
-  // --------------------------------------------------------------------------
-  Widget _buildPostVideoPlayer(
-      String videoUrl, _OtherProfileColorSet colors, VideoEditResult? editResult) {
+  Widget _buildPostVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
+      VideoEditResult? editResult) {
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
 
     if (!isInitialized || controller == null) {
       return Container(
           color: colors.avatarBackgroundColor,
-          child: Center(child: CircularProgressIndicator(color: colors.progressIndicatorColor)));
+          child: Center(
+              child: CircularProgressIndicator(
+                  color: colors.progressIndicatorColor)));
     }
 
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -485,8 +486,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildPostImage(
-      String imageUrl, _OtherProfileColorSet colors, VideoEditResult? editResult) {
+  Widget _buildPostImage(String imageUrl, _OtherProfileColorSet colors,
+      VideoEditResult? editResult) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
@@ -500,7 +501,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
               height: double.infinity,
               errorBuilder: (_, __, ___) => Container(
                 color: colors.avatarBackgroundColor,
-                child: Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+                child:
+                    Icon(Icons.broken_image, color: colors.iconColor, size: 20),
               ),
             )
           : ColorFiltered(
@@ -514,7 +516,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
                   height: double.infinity,
                   errorBuilder: (_, __, ___) => Container(
                     color: colors.avatarBackgroundColor,
-                    child: Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+                    child: Icon(Icons.broken_image,
+                        color: colors.iconColor, size: 20),
                   ),
                 ),
               ),
@@ -539,15 +542,17 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildGalleryVideoPlayer(
-      String videoUrl, _OtherProfileColorSet colors, VideoEditResult? editResult) {
+  Widget _buildGalleryVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
+      VideoEditResult? editResult) {
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
 
     if (!isInitialized || controller == null) {
       return Container(
           color: colors.avatarBackgroundColor,
-          child: Center(child: CircularProgressIndicator(color: colors.progressIndicatorColor)));
+          child: Center(
+              child: CircularProgressIndicator(
+                  color: colors.progressIndicatorColor)));
     }
 
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -589,7 +594,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               color: colors.avatarBackgroundColor.withOpacity(0.5)),
-          child: Icon(Icons.collections, size: 40, color: colors.errorTextColor),
+          child:
+              Icon(Icons.collections, size: 40, color: colors.errorTextColor),
         ),
       );
     }
@@ -605,7 +611,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(8),
                 color: colors.avatarBackgroundColor.withOpacity(0.5)),
-            child: Icon(Icons.collections, size: 40, color: colors.errorTextColor),
+            child:
+                Icon(Icons.collections, size: 40, color: colors.errorTextColor),
           ),
         ),
       ),
@@ -818,7 +825,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // --------------------------------------------------------------
-  // Data loading (identical logic to current profile screen)
+  // Data loading
   // --------------------------------------------------------------
   Future<void> _loadDataInParallel() async {
     setState(() => isLoading = true);
@@ -828,6 +835,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         _loadPostsCountAndFirstBatch(),
         _loadGalleriesData(),
         _loadBlockStatus(),
+        _loadTestStatus(), // NEW: fetch test user status
       ]);
       if (!_isBlocked && mounted) await _loadRelationshipData();
     } catch (e, stack) {
@@ -843,6 +851,26 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       }
     } finally {
       if (mounted) setState(() => isLoading = false);
+    }
+  }
+
+  // NEW: load test user flag for current viewer
+  Future<void> _loadTestStatus() async {
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final String? currentUserId =
+        userProvider.firebaseUid ?? userProvider.supabaseUid;
+    if (currentUserId == null || currentUserId.isEmpty) return;
+    try {
+      final response = await _supabase
+          .from('users')
+          .select('is_test')
+          .eq('uid', currentUserId)
+          .maybeSingle();
+      if (mounted && response != null) {
+        setState(() => _isTestUser = response['is_test'] ?? false);
+      }
+    } catch (e) {
+      // ignore, default false
     }
   }
 
@@ -974,7 +1002,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             context,
             MaterialPageRoute(
               builder: (_) => BlockedProfileScreen(
-                  uid: widget.uid, isBlocker: _isBlockedByMe),
+                uid: widget.uid,
+                isBlocker: _isBlockedByMe,
+                performBlock: false, // block already exists
+                currentUserId: currentUserId,
+                isTestUser: _isTestUser, // NEW: pass test status
+              ),
             ),
           );
         });
@@ -1049,6 +1082,15 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             .then((v) => v as Map<String, dynamic>?),
       ]);
 
+      // Check if current user is a follower of this profile (for "Remove Follower" option)
+      final isViewerFollower = await _supabase
+          .from('user_followers')
+          .select()
+          .eq('user_id', widget.uid)
+          .eq('follower_id', currentUserId)
+          .maybeSingle()
+          .then((v) => v != null);
+
       if (mounted) {
         setState(() {
           followers = (results[0] as List).length;
@@ -1056,6 +1098,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           isFollowing = results[2] != null;
           hasPendingRequest = results[3] != null;
           _isMutualFollow = results[2] != null && results[4] != null;
+          _isViewerFollower = isViewerFollower;
         });
       }
     } catch (e, stack) {
@@ -1072,6 +1115,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           isFollowing = false;
           hasPendingRequest = false;
           _isMutualFollow = false;
+          _isViewerFollower = false;
         });
       }
     }
@@ -1146,7 +1190,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // --------------------------------------------------------------
-  // Follow / Message / Report (unchanged except logging)
+  // Follow / Message / Report
   // --------------------------------------------------------------
   void _otherHandleFollow() async {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
@@ -1336,7 +1380,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // --------------------------------------------------------------
-  // UI Builders (skeletons, grids, etc.)
+  // UI Builders
   // --------------------------------------------------------------
   Widget _buildOtherProfileSkeleton(_OtherProfileColorSet colors) {
     return SingleChildScrollView(
@@ -1599,13 +1643,19 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           ElevatedButton(
             onPressed: _otherNavigateToMessaging,
             style: ElevatedButton.styleFrom(
-              backgroundColor: colors.buttonBackgroundColor,
-              foregroundColor: colors.buttonTextColor,
+              backgroundColor: _isTestUser
+                  ? const Color(0xFF0095F6) // Instagram blue for test users
+                  : colors.buttonBackgroundColor,
+              foregroundColor:
+                  _isTestUser ? Colors.white : colors.buttonTextColor,
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
               minimumSize: const Size(100, 40),
             ),
-            child: Text("Message",
-                style: TextStyle(color: colors.buttonTextColor)),
+            child: Text(
+              "Message",
+              style: TextStyle(
+                  color: _isTestUser ? Colors.white : colors.buttonTextColor),
+            ),
           ),
       ]),
       const SizedBox(height: 5),
@@ -1615,13 +1665,20 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   Widget _buildFollowButton(
       bool isPrivateAccount, _OtherProfileColorSet colors) {
     final isPending = hasPendingRequest && isPrivateAccount;
+    final bool isTest = _isTestUser;
+
     return ElevatedButton(
       onPressed: _otherHandleFollow,
       style: ElevatedButton.styleFrom(
-        backgroundColor: colors.buttonBackgroundColor,
-        foregroundColor: colors.buttonTextColor,
+        backgroundColor: isTest
+            ? const Color(0xFF0095F6) // Instagram blue for test users
+            : colors.buttonBackgroundColor,
+        foregroundColor: isTest ? Colors.white : colors.buttonTextColor,
         padding: const EdgeInsets.symmetric(horizontal: 24),
-        side: BorderSide(color: colors.buttonBackgroundColor),
+        side: BorderSide(
+            color: isTest
+                ? const Color(0xFF0095F6)
+                : colors.buttonBackgroundColor),
         minimumSize: const Size(100, 40),
       ),
       child: Text(
@@ -1631,7 +1688,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
                 ? 'Requested'
                 : 'Follow',
         style: TextStyle(
-            fontWeight: FontWeight.w600, color: colors.buttonTextColor),
+          fontWeight: FontWeight.w600,
+          color: isTest ? Colors.white : colors.buttonTextColor,
+        ),
       ),
     );
   }
@@ -2063,37 +2122,26 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         leading: BackButton(color: colors.appBarIconColor),
         actions: [
           if (isAuthenticated)
-            PopupMenuButton(
+            PopupMenuButton<String>(
               icon: Icon(Icons.more_vert, color: colors.appBarIconColor),
+              color: colors.appBarBackgroundColor,
               onSelected: (value) async {
                 if (value == 'block') {
-                  try {
-                    setState(() => isLoading = true);
-                    if (currentUserId == null) return;
-                    await SupabaseBlockMethods().blockUser(
-                        currentUserId: currentUserId, targetUserId: widget.uid);
-                    if (mounted) {
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => BlockedProfileScreen(
-                              uid: widget.uid, isBlocker: true),
+                  if (currentUserId == null) return;
+                  // Navigate immediately — no waiting, no loading spinner
+                  if (mounted) {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => BlockedProfileScreen(
+                          uid: widget.uid,
+                          isBlocker: true,
+                          performBlock: true,
+                          currentUserId: currentUserId,
+                          isTestUser: _isTestUser,
                         ),
-                      );
-                    }
-                  } catch (e, stack) {
-                    await _logProfileError(
-                      operation: 'block_user_popup',
-                      error: e,
-                      stack: stack,
-                      additionalData: {'uid': widget.uid},
+                      ),
                     );
-                    if (mounted) {
-                      showSnackBar(context,
-                          "Please try again or contact us at ratedly9@gmail.com");
-                    }
-                  } finally {
-                    if (mounted) setState(() => isLoading = false);
                   }
                 } else if (value == 'remove_follower') {
                   if (currentUserId == null) return;
@@ -2125,19 +2173,41 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
               },
               itemBuilder: (_) => [
                 if (_isViewerFollower)
-                  PopupMenuItem(
-                      value: 'remove_follower',
-                      child: Text('Remove Follower',
-                          style: TextStyle(color: colors.textColor))),
+                  PopupMenuItem<String>(
+                    value: 'remove_follower',
+                    child: Row(
+                      children: [
+                        Icon(Icons.person_remove_outlined,
+                            color: colors.textColor, size: 20),
+                        const SizedBox(width: 8),
+                        Text('Remove Follower',
+                            style: TextStyle(color: colors.textColor)),
+                      ],
+                    ),
+                  ),
                 if (!isCurrentUser)
-                  PopupMenuItem(
-                      value: 'report',
-                      child: Text('Report Profile',
-                          style: TextStyle(color: colors.textColor))),
-                PopupMenuItem(
-                    value: 'block',
-                    child: Text('Block User',
-                        style: TextStyle(color: colors.textColor))),
+                  PopupMenuItem<String>(
+                    value: 'report',
+                    child: Row(
+                      children: [
+                        Icon(Icons.flag, color: Colors.red[400], size: 20),
+                        const SizedBox(width: 8),
+                        Text('Report Profile',
+                            style: TextStyle(color: Colors.red[400])),
+                      ],
+                    ),
+                  ),
+                PopupMenuItem<String>(
+                  value: 'block',
+                  child: Row(
+                    children: [
+                      Icon(Icons.lock, color: colors.textColor, size: 20),
+                      const SizedBox(width: 8),
+                      Text('Block User',
+                          style: TextStyle(color: colors.textColor)),
+                    ],
+                  ),
+                ),
               ],
             )
         ],
@@ -2204,7 +2274,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 }
 
 // -----------------------------------------------------------------------------
-// Scaled Drawing Painter (identical to current_profile_screen.dart)
+// Scaled Drawing Painter
 // -----------------------------------------------------------------------------
 class _ScaledDrawingPainter extends CustomPainter {
   final List<DrawStroke> strokes;
