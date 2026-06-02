@@ -12,7 +12,6 @@ class SupabaseBlockMethods {
   }) async {
     try {
       // Get current user's blockedUsers array
-
       final currentUserResponse = await _supabase
           .from('users')
           .select('blockedUsers')
@@ -25,32 +24,24 @@ class SupabaseBlockMethods {
       blockedUsers.add(targetUserId);
 
       // Update user's blockedUsers array
-
       await _supabase
           .from('users')
           .update({'blockedUsers': blockedUsers}).eq('uid', currentUserId);
+
       // Remove follow relationships
       await _removeFollowRelationships(currentUserId, targetUserId);
 
       // Delete notifications
-
       await _deleteMutualNotifications(currentUserId, targetUserId);
 
-      // Remove profile ratings
-
-      await _removeMutualProfileRatings(currentUserId, targetUserId);
-
       // Remove post ratings
-
       await _removeMutualPostRatings(currentUserId, targetUserId);
 
       // Delete comments
-
       await _deleteMutualComments(currentUserId, targetUserId);
 
-      // Delete chat messages
-
-      await _deleteChatMessages(currentUserId, targetUserId);
+      // NOTE: Chat messages are intentionally preserved when blocking.
+      // The `_deleteChatMessages` call has been removed.
     } catch (e) {
       throw Exception("Block failed: $e");
     }
@@ -194,16 +185,6 @@ class SupabaseBlockMethods {
     } catch (e) {}
   }
 
-  Future<void> _removeMutualProfileRatings(
-    String currentUserId,
-    String targetUserId,
-  ) async {
-    try {
-      // Check if the ratings column exists in the users table
-
-    } catch (e) {}
-  }
-
   Future<void> _removeMutualPostRatings(
     String currentUserId,
     String targetUserId,
@@ -285,6 +266,7 @@ class SupabaseBlockMethods {
     } catch (e) {}
   }
 
+  // NOTE: This method is kept but no longer called during blocking
   Future<void> _deleteChatMessages(
     String currentUserId,
     String targetUserId,
