@@ -34,6 +34,27 @@ class _BlockedUsersListState extends State<BlockedUsersList> {
     _loadBlockedUsers();
   }
 
+  Future<void> _logError(
+    String operationType,
+    Object error,
+    StackTrace stackTrace, {
+    String? targetUserId,
+  }) async {
+    try {
+      await _supabase.from('messages_error').insert({
+        'user_id': widget.uid,
+        'operation_type': operationType,
+        'error_message': error.toString(),
+        'stack_trace': stackTrace.toString(),
+        'additional_data': targetUserId != null
+            ? {'target_user_id': targetUserId}
+            : null,
+      });
+    } catch (_) {
+      // Avoid infinite loops – silently ignore logging failures
+    }
+  }
+
   Future<void> _loadBlockedUsers() async {
     setState(() {
       _isLoading = true;
@@ -47,7 +68,8 @@ class _BlockedUsersListState extends State<BlockedUsersList> {
           _isLoading = false;
         });
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      _logError('load_blocked_users', e, stackTrace);
       if (mounted) {
         setState(() {
           _hasError = true;
@@ -69,7 +91,8 @@ class _BlockedUsersListState extends State<BlockedUsersList> {
           .single();
       _userDetailsCache[userId] = response;
       return response;
-    } catch (e) {
+    } catch (e, stackTrace) {
+      _logError('get_user_details', e, stackTrace, targetUserId: userId);
       return {};
     }
   }
@@ -80,7 +103,6 @@ class _BlockedUsersListState extends State<BlockedUsersList> {
         currentUserId: widget.uid,
         targetUserId: targetUserId,
       );
-      print('✅ Unblock succeeded for $targetUserId');
       if (mounted) {
         setState(() {
           _blockedUserIds.remove(targetUserId);
@@ -90,8 +112,8 @@ class _BlockedUsersListState extends State<BlockedUsersList> {
           const SnackBar(content: Text('User unblocked successfully')),
         );
       }
-    } catch (e) {
-      print('❌ Unblock failed: $e');
+    } catch (e, stackTrace) {
+      _logError('unblock_user', e, stackTrace, targetUserId: targetUserId);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to unblock user: ${e.toString()}')),
