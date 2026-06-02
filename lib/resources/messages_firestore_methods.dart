@@ -10,6 +10,34 @@ class SupabaseMessagesMethods {
   DateTime? _lastExpiryCheckTime;
   static const Duration _expiryCheckThrottle = Duration(hours: 1);
 
+  // =========================================================================
+  // ERROR LOGGING HELPER – logs only to messages_error table
+  // =========================================================================
+  Future<void> _logMessageError({
+    required String operationType,
+    String? userId,
+    String? chatId,
+    String? messageId,
+    Map<String, dynamic>? additionalData,
+    required dynamic error,
+  }) async {
+    try {
+      await _supabase.from('messages_error').insert({
+        'user_id': userId,
+        'operation_type': operationType,
+        'error_message': error.toString(),
+        'stack_trace': error is Error ? error.stackTrace?.toString() : null,
+        'additional_data': {
+          if (chatId != null) 'chatId': chatId,
+          if (messageId != null) 'messageId': messageId,
+          ...?additionalData,
+        },
+      });
+    } catch (_) {
+      // Fail silently – error logging must not crash the app
+    }
+  }
+
   // Existing sendMessage method remains for backward compatibility
   Future<String> sendMessage(
     String chatId,
@@ -81,7 +109,7 @@ class SupabaseMessagesMethods {
       await _supabase.from('messages').insert(messageData).select().single();
 
       // 3. Wait for trigger to complete
-      await Future.delayed(Duration(seconds: 1));
+      await Future.delayed(const Duration(seconds: 1));
 
       // 4. Get updated chat state
       final updatedChat = await _supabase
@@ -102,7 +130,7 @@ class SupabaseMessagesMethods {
 
       // 6. Send push notification for the new message
       try {
-        // Fetch sender's username for the notification title
+        // Fetch sender's username for the notification title (amendment)
         final senderData = await _supabase
             .from('users')
             .select('username')
@@ -113,7 +141,7 @@ class SupabaseMessagesMethods {
         await _notificationService.triggerServerNotification(
           type: 'message',
           targetUserId: receiverId,
-          title: '$senderName sent you a message',
+          title: '$senderName sent you a message', // <-- AMENDED LINE
           body:
               message.length > 30 ? '${message.substring(0, 30)}...' : message,
           customData: {
@@ -126,11 +154,29 @@ class SupabaseMessagesMethods {
           },
         );
       } catch (e) {
-        // Notification error handled silently
+        // Log notification error but don't fail the message send
+        await _logMessageError(
+          operationType: 'send_message_notification',
+          userId: senderId,
+          chatId: chatId,
+          additionalData: {'receiverId': receiverId},
+          error: e,
+        );
       }
 
       return 'success';
     } catch (e) {
+      await _logMessageError(
+        operationType: 'send_message',
+        userId: senderId,
+        chatId: chatId,
+        additionalData: {
+          'receiverId': receiverId,
+          'messagePreview':
+              message.length > 50 ? message.substring(0, 50) : message,
+        },
+        error: e,
+      );
       return 'error: ${e.toString()}';
     }
   }
@@ -197,6 +243,12 @@ class SupabaseMessagesMethods {
 
       return messages.reversed.toList();
     } catch (e) {
+      await _logMessageError(
+        operationType: 'get_messages_paginated',
+        chatId: chatId,
+        additionalData: {'page': page, 'limit': limit},
+        error: e,
+      );
       return [];
     }
   }
@@ -224,7 +276,13 @@ class SupabaseMessagesMethods {
         },
       );
     } catch (e) {
-      // Streak notification error handled silently
+      await _logMessageError(
+        operationType: 'send_streak_notification',
+        userId: senderId,
+        chatId: chatId,
+        additionalData: {'receiverId': receiverId, 'streakCount': streakCount},
+        error: e,
+      );
     }
   }
 
@@ -253,7 +311,7 @@ class SupabaseMessagesMethods {
       for (final chat in chats) {
         final lastMutualExchange =
             DateTime.parse(chat['last_mutual_exchange'].toString()).toUtc();
-        final expiryTime = lastMutualExchange.add(Duration(hours: 24));
+        final expiryTime = lastMutualExchange.add(const Duration(hours: 24));
         final timeLeft = expiryTime.difference(now);
 
         if (timeLeft.isNegative) continue; // already expired
@@ -306,7 +364,11 @@ class SupabaseMessagesMethods {
         }
       }
     } catch (e) {
-      // Silently fail – do not break other operations
+      await _logMessageError(
+        operationType: 'check_streak_expiry',
+        additionalData: {'force': force},
+        error: e,
+      );
     }
   }
 
@@ -326,6 +388,11 @@ class SupabaseMessagesMethods {
           .single();
       return response['username'] ?? 'Unknown';
     } catch (e) {
+      await _logMessageError(
+        operationType: 'get_username',
+        userId: userId,
+        error: e,
+      );
       return 'Unknown';
     }
   }
@@ -380,7 +447,15 @@ class SupabaseMessagesMethods {
                 'repliedMessageType':
                     message['replied_message_type']?.toString() ?? 'text',
               };
-            }).toList());
+            }).toList())
+        .handleError((error) async {
+      await _logMessageError(
+        operationType: 'get_messages_stream',
+        chatId: chatId,
+        error: error,
+      );
+      return <Map<String, dynamic>>[];
+    });
   }
 
   Future<Map<String, dynamic>?> getMessageById(String messageId) async {
@@ -430,6 +505,11 @@ class SupabaseMessagesMethods {
             message['replied_message_type']?.toString() ?? 'text',
       };
     } catch (e) {
+      await _logMessageError(
+        operationType: 'get_message_by_id',
+        messageId: messageId,
+        error: e,
+      );
       return null;
     }
   }
@@ -454,7 +534,13 @@ class SupabaseMessagesMethods {
       });
       return newChatId;
     } catch (e) {
-      return e.toString();
+      await _logMessageError(
+        operationType: 'get_or_create_chat',
+        userId: user1,
+        additionalData: {'otherUser': user2},
+        error: e,
+      );
+      return 'error: ${e.toString()}';
     }
   }
 
@@ -465,7 +551,15 @@ class SupabaseMessagesMethods {
         .eq('receiver_id', currentUserId)
         .eq('is_read', false)
         .asStream()
-        .map((messages) => messages.length);
+        .map((messages) => messages.length)
+        .handleError((error) async {
+      await _logMessageError(
+        operationType: 'get_total_unread_count_stream',
+        userId: currentUserId,
+        error: error,
+      );
+      return 0;
+    });
   }
 
   Stream<int> getUnreadCount(String chatId, String currentUserId) {
@@ -476,7 +570,16 @@ class SupabaseMessagesMethods {
         .eq('receiver_id', currentUserId)
         .eq('is_read', false)
         .asStream()
-        .map((messages) => messages.length);
+        .map((messages) => messages.length)
+        .handleError((error) async {
+      await _logMessageError(
+        operationType: 'get_unread_count_stream',
+        userId: currentUserId,
+        chatId: chatId,
+        error: error,
+      );
+      return 0;
+    });
   }
 
   Future<void> markMessagesAsRead(String chatId, String currentUserId) async {
@@ -488,7 +591,12 @@ class SupabaseMessagesMethods {
           .eq('receiver_id', currentUserId)
           .eq('is_read', false);
     } catch (e) {
-      // ignore
+      await _logMessageError(
+        operationType: 'mark_messages_as_read',
+        userId: currentUserId,
+        chatId: chatId,
+        error: e,
+      );
     }
   }
 
@@ -498,7 +606,11 @@ class SupabaseMessagesMethods {
           .from('messages')
           .update({'delivered': true}).eq('id', messageId);
     } catch (e) {
-      // ignore
+      await _logMessageError(
+        operationType: 'mark_message_as_delivered',
+        messageId: messageId,
+        error: e,
+      );
     }
   }
 
@@ -508,7 +620,11 @@ class SupabaseMessagesMethods {
           .from('messages')
           .update({'is_read': true, 'delivered': true}).eq('id', messageId);
     } catch (e) {
-      // ignore
+      await _logMessageError(
+        operationType: 'mark_message_as_seen',
+        messageId: messageId,
+        error: e,
+      );
     }
   }
 
@@ -529,7 +645,11 @@ class SupabaseMessagesMethods {
         }
       }
     } catch (e) {
-      // ignore
+      await _logMessageError(
+        operationType: 'delete_all_user_messages',
+        userId: uid,
+        error: e,
+      );
     }
   }
 
@@ -550,7 +670,15 @@ class SupabaseMessagesMethods {
                   'streakCheckedAt': chat['streak_checked_at'],
                   'lastMutualExchange': chat['last_mutual_exchange'],
                 })
-            .toList());
+            .toList())
+        .handleError((error) async {
+          await _logMessageError(
+            operationType: 'get_user_chats_stream',
+            userId: userId,
+            error: error,
+          );
+          return <Map<String, dynamic>>[];
+        });
   }
 
   Future<int> getStreakCount(String chatId) async {
@@ -562,6 +690,11 @@ class SupabaseMessagesMethods {
           .single();
       return response['streak_count'] ?? 0;
     } catch (e) {
+      await _logMessageError(
+        operationType: 'get_streak_count',
+        chatId: chatId,
+        error: e,
+      );
       return 0;
     }
   }
@@ -574,6 +707,12 @@ class SupabaseMessagesMethods {
           .contains('participants', [user1, user2]).single();
       return chatResponse['streak_count'] ?? 0;
     } catch (e) {
+      await _logMessageError(
+        operationType: 'get_streak_between_users',
+        userId: user1,
+        additionalData: {'otherUser': user2},
+        error: e,
+      );
       return 0;
     }
   }
