@@ -369,7 +369,6 @@ class _MessagingScreenState extends State<MessagingScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Refresh streak data when app returns to foreground
       _updateStreakData();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
@@ -460,14 +459,14 @@ class _MessagingScreenState extends State<MessagingScreen>
         setState(() => _isInitializing = false);
         return;
       }
+
+      // ── Real mutual-block check ──────────────────────────────────────────
       _isMutuallyBlocked = await _blockMethods.isMutuallyBlocked(
         currentUserId!,
         widget.recipientUid,
       );
-      if (_isMutuallyBlocked) {
-        if (mounted) setState(() => _isInitializing = false);
-        return;
-      }
+      // ─────────────────────────────────────────────────────────────────────
+
       final id = await SupabaseMessagesMethods().getOrCreateChat(
         currentUserId!,
         widget.recipientUid,
@@ -475,11 +474,9 @@ class _MessagingScreenState extends State<MessagingScreen>
       if (mounted) {
         setState(() => chatId = id);
         await _loadInitialMessages();
-        // Fetch streak data after chat is created
         await _updateStreakData();
         setState(() => _isInitializing = false);
         _markMessagesAsRead();
-        // Start periodic streak updates
         _startStreakTimer();
       }
     } catch (e) {
@@ -604,7 +601,6 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   // ========== STREAK INDICATOR METHODS ==========
   Future<void> _updateStreakData() async {
-    // FIX: Capture chatId locally to avoid null race condition
     final String? currentChatId = chatId;
     if (currentChatId == null) return;
 
@@ -654,7 +650,6 @@ class _MessagingScreenState extends State<MessagingScreen>
         _streakTimeLeft = timeLeftText;
       });
 
-      // Show tooltip the first time a streak appears
       _maybeShowStreakTooltip();
     } catch (e) {
       await _logMessageError(
@@ -677,7 +672,6 @@ class _MessagingScreenState extends State<MessagingScreen>
     });
   }
 
-  // ========== STREAK TOOLTIP (Centered, "Got it" button, no auto-dismiss) ==========
   Future<void> _maybeShowStreakTooltip() async {
     if (_hasShownStreakTooltip) return;
     if (_streakCount <= 0) return;
@@ -693,7 +687,6 @@ class _MessagingScreenState extends State<MessagingScreen>
     _hasShownStreakTooltip = true;
     await prefs.setBool(key, true);
 
-    // Wait for the next frame to ensure overlay is ready
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final overlay = Overlay.of(context);
       if (overlay == null) return;
@@ -701,7 +694,7 @@ class _MessagingScreenState extends State<MessagingScreen>
       OverlayEntry? tooltipEntry;
       tooltipEntry = OverlayEntry(
         builder: (context) => Material(
-          color: Colors.black54, // semi-transparent background
+          color: Colors.black54,
           child: Center(
             child: TweenAnimationBuilder<double>(
               tween: Tween(begin: 0.0, end: 1.0),
@@ -787,17 +780,13 @@ class _MessagingScreenState extends State<MessagingScreen>
       overlay.insert(tooltipEntry);
     });
   }
-  // ===============================================
 
-  // ========== STREAK MILESTONE CELEBRATION ==========
   void _showMilestoneCelebration(int streak) {
-    // Remove any existing overlay to avoid duplicates
     _celebrationOverlay?.remove();
 
     final overlayState = Overlay.of(context);
     if (!mounted || overlayState == null) return;
 
-    // Use late declaration to allow self-reference in the dismiss callback
     late final OverlayEntry entry;
     entry = OverlayEntry(
       builder: (context) => _MilestoneCelebrationWidget(
@@ -812,7 +801,6 @@ class _MessagingScreenState extends State<MessagingScreen>
     _celebrationOverlay = entry;
     overlayState.insert(entry);
   }
-  // =================================================
 
   @override
   void dispose() {
@@ -1213,14 +1201,17 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   Future<void> _sendMessage() async {
-    if (_controller.text.isEmpty || _isMutuallyBlocked || currentUserId == null)
-      return;
+    if (_controller.text.isEmpty || currentUserId == null) return;
+
+    // ── Block guard: silently refuse if conversation is blocked ──────────
+    if (_isMutuallyBlocked) return;
+    // ─────────────────────────────────────────────────────────────────────
+
     final messageText = _controller.text.trim();
     final capturedReplyMessage = _replyingToMessage;
     final isOriginalFromSelf = capturedReplyMessage != null &&
         capturedReplyMessage['repliedMessageSenderIsSelf'] == true;
-    final previousStreak =
-        _streakCount; // Capture current streak before sending
+    final previousStreak = _streakCount;
     final optimisticMessage = {
       'id': 'optimistic_${DateTime.now().millisecondsSinceEpoch}',
       'message': messageText,
@@ -1257,7 +1248,6 @@ class _MessagingScreenState extends State<MessagingScreen>
       if (chatId.startsWith('Error') || chatId.isEmpty)
         throw Exception('Failed to get chat');
 
-      // FIX: Assign to the instance variable if it's null
       if (this.chatId == null) {
         this.chatId = chatId;
       }
@@ -1282,10 +1272,8 @@ class _MessagingScreenState extends State<MessagingScreen>
           );
         }
       } else {
-        // Refresh streak data after successful send (streak may have increased)
         await _updateStreakData();
 
-        // Check for milestone celebration
         if (_streakMilestones.contains(_streakCount) &&
             _streakCount > previousStreak &&
             !_celebratedMilestones.contains(_streakCount)) {
@@ -1293,7 +1281,6 @@ class _MessagingScreenState extends State<MessagingScreen>
           _showMilestoneCelebration(_streakCount);
         }
 
-        // Check for expiring streaks (optional)
         SupabaseMessagesMethods().checkAndSendStreakExpiryNotifications();
 
         Future.delayed(Duration(seconds: 2), () {
@@ -1394,46 +1381,18 @@ class _MessagingScreenState extends State<MessagingScreen>
         ),
         body: Stack(
           children: [
-            if (!_isMutuallyBlocked)
-              _FallingNumbersBackground(
-                animationController: _animationController,
-                onInit: (screenHeight) {
-                  _screenHeight = screenHeight;
-                  _initializeParticles(colors);
-                },
-                onUpdate: _updateParticles,
-                particles: _particles,
-              ),
-            _isMutuallyBlocked
-                ? _buildBlockedUI(colors)
-                : _buildChatBody(colors),
+            _FallingNumbersBackground(
+              animationController: _animationController,
+              onInit: (screenHeight) {
+                _screenHeight = screenHeight;
+                _initializeParticles(colors);
+              },
+              onUpdate: _updateParticles,
+              particles: _particles,
+            ),
+            _buildChatBody(colors),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildBlockedUI(_MessagingColorSet colors) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.block, size: 60, color: colors.iconColor),
-          const SizedBox(height: 20),
-          Text(
-            'Messages with ${widget.recipientUsername} are unavailable',
-            style: TextStyle(color: colors.textColor, fontSize: 16),
-          ),
-          const SizedBox(height: 10),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: colors.buttonColor,
-              foregroundColor: colors.buttonTextColor,
-            ),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Back to Messages'),
-          ),
-        ],
       ),
     );
   }
@@ -1882,13 +1841,20 @@ class _MessagingScreenState extends State<MessagingScreen>
     final messageId = message['id'].toString();
     final swipeOffset = _swipeOffsets[messageId] ?? 0;
     final isSwiping = _isSwiping[messageId] ?? false;
+
+    // ── Disable all interactive gestures when the conversation is blocked ──
+    final bool gesturesEnabled = !_isMutuallyBlocked;
+    // ───────────────────────────────────────────────────────────────────────
+
     return GestureDetector(
-      onLongPress: () => _startReply(message),
-      onHorizontalDragStart: (details) => _handleSwipeStart(messageId, details),
-      onHorizontalDragUpdate: (details) =>
-          _handleSwipeUpdate(messageId, details),
-      onHorizontalDragEnd: (details) =>
-          _handleSwipeEnd(messageId, details, message),
+      onLongPress: gesturesEnabled ? () => _startReply(message) : null,
+      onHorizontalDragStart:
+          gesturesEnabled ? (d) => _handleSwipeStart(messageId, d) : null,
+      onHorizontalDragUpdate:
+          gesturesEnabled ? (d) => _handleSwipeUpdate(messageId, d) : null,
+      onHorizontalDragEnd: gesturesEnabled
+          ? (d) => _handleSwipeEnd(messageId, d, message)
+          : null,
       onTap: () => _resetSwipe(messageId),
       child: Stack(
         children: [
@@ -2084,7 +2050,48 @@ class _MessagingScreenState extends State<MessagingScreen>
     );
   }
 
+  // ── Blocked-conversation input banner (Instagram/TikTok pattern) ──────────
+  Widget _buildBlockedInputBanner(_MessagingColorSet colors) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      decoration: BoxDecoration(
+        color: colors.backgroundColor,
+        border: Border(
+          top: BorderSide(
+            color: colors.otherUserMessageColor.withOpacity(0.5),
+            width: 1.0,
+          ),
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.lock_outline,
+            size: 16,
+            color: colors.textColor.withOpacity(0.45),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            "You can't send messages to this conversation",
+            style: TextStyle(
+              color: colors.textColor.withOpacity(0.45),
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   Widget _buildMessageInput(_MessagingColorSet colors) {
+    // ── Show locked banner when either party has blocked the other ──────────
+    if (_isMutuallyBlocked) {
+      return _buildBlockedInputBanner(colors);
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     return Column(
       children: [
         _buildReplyPreview(colors),
@@ -2122,16 +2129,14 @@ class _MessagingScreenState extends State<MessagingScreen>
                         child: TextField(
                           controller: _controller,
                           focusNode: _focusNode,
-                          enabled: !_isMutuallyBlocked && currentUserId != null,
+                          enabled: currentUserId != null,
                           style: TextStyle(color: colors.textColor),
                           decoration: InputDecoration(
-                            hintText: _isMutuallyBlocked
-                                ? 'Messaging is blocked'
-                                : currentUserId == null
-                                    ? 'Please sign in'
-                                    : _isReplying
-                                        ? 'Type your reply...'
-                                        : 'Type a message...',
+                            hintText: currentUserId == null
+                                ? 'Please sign in'
+                                : _isReplying
+                                    ? 'Type your reply...'
+                                    : 'Type a message...',
                             hintStyle: TextStyle(
                                 color: colors.textColor.withOpacity(0.6)),
                             border: InputBorder.none,
@@ -2158,9 +2163,7 @@ class _MessagingScreenState extends State<MessagingScreen>
                     color: colors.buttonColor, shape: BoxShape.circle),
                 child: IconButton(
                   icon: Icon(Icons.send, color: colors.iconColor),
-                  onPressed: (_isMutuallyBlocked || currentUserId == null)
-                      ? null
-                      : _sendMessage,
+                  onPressed: (currentUserId == null) ? null : _sendMessage,
                   padding: const EdgeInsets.all(12),
                   constraints:
                       const BoxConstraints(minWidth: 48, minHeight: 48),
@@ -2302,7 +2305,6 @@ class _MilestoneCelebrationWidgetState
       CurvedAnimation(parent: _controller, curve: Curves.easeOut),
     );
     _controller.forward();
-    // Auto-dismiss after 2.5 seconds
     Future.delayed(const Duration(milliseconds: 2500), () {
       if (mounted) {
         _controller.reverse().then((_) => widget.onDismiss());
