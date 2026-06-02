@@ -11,10 +11,9 @@ import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/screens/Profile_page/blocked_profile_screen.dart';
 import 'package:Ratedly/resources/block_firestore_methods.dart';
-import 'package:Ratedly/widgets/blue_verification_screen.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:Ratedly/providers/user_provider.dart';
-import 'package:Ratedly/screens/reactly_plus_screen.dart'; // ✅ ADDED
+import 'package:Ratedly/screens/reactly_plus_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -26,6 +25,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _isLoading = false;
   bool _isPrivate = false;
+  bool _isTestUser = false; // ✅ ADDED from Code A
   final SupabaseClient _supabase = Supabase.instance.client;
   final AuthMethods _authMethods = AuthMethods();
   final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email']);
@@ -33,7 +33,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _currentUsername;
   String? _currentEmail;
 
-  // GlobalKey to get the position of the Invite button for iOS share sheet anchor
   final GlobalKey _inviteButtonKey = GlobalKey();
 
   @override
@@ -52,6 +51,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _currentUsername = userProvider.user?.username;
       _currentEmail = userProvider.user?.email;
       _loadPrivacyStatus();
+      _loadTestStatus(); // ✅ ADDED
     } else if (userProvider.firebaseUid == null &&
         userProvider.supabaseUid != null &&
         _currentUserId == null) {
@@ -59,6 +59,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _currentUsername = userProvider.user?.username;
       _currentEmail = userProvider.user?.email;
       _loadPrivacyStatus();
+      _loadTestStatus(); // ✅ ADDED
     }
   }
 
@@ -84,6 +85,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       if (mounted) setState(() => _isPrivate = false);
     }
+  }
+
+  // ✅ ADDED: load test flag from users.test column
+  Future<void> _loadTestStatus() async {
+    if (_currentUserId == null) return;
+    try {
+      final response = await _supabase
+          .from('users')
+          .select('test')
+          .eq('uid', _currentUserId!)
+          .maybeSingle();
+      if (mounted && response != null) {
+        setState(() => _isTestUser = response['test'] ?? false);
+      }
+    } catch (_) {}
   }
 
   Future<void> _togglePrivacy(bool value) async {
@@ -219,8 +235,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // =============================================
   // DELETION REASON DIALOG
-  // Returns the selected reason + optional details,
-  // or null if the user cancelled.
   // =============================================
   Future<Map<String, String?>?> _showDeletionReasonDialog(
       _ColorSet colors) async {
@@ -389,7 +403,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final now = DateTime.now().toUtc().toIso8601String();
 
-      // Insert into deleted_users
       await _supabase.from('deleted_users').insert({
         'uid': uid,
         'username': username,
@@ -401,7 +414,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     try {
-      // Insert into deletion_reasons
       await _supabase.from('deletion_reasons').insert({
         'uid': uid,
         'reason': reason,
@@ -427,7 +439,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
     final colors = _getColors(themeProvider);
 
-    // ── Step 1: First confirmation ──────────────────────────────────────────
+    // Step 1: First confirmation
     bool? confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -462,7 +474,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final bool isGoogleUser = providers.contains('google.com');
     final bool isSupabaseUser = user == null;
 
-    // ── Step 2: Apple extra confirmation ────────────────────────────────────
+    // Step 2: Apple extra confirmation
     if (isAppleUser) {
       bool? finalConfirm = await showDialog<bool>(
         context: context,
@@ -492,13 +504,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (finalConfirm != true || !mounted) return;
     }
 
-    // ── Step 3: Deletion reason dialog ──────────────────────────────────────
+    // Step 3: Deletion reason dialog
     final reasonData = await _showDeletionReasonDialog(colors);
-    if (reasonData == null || !mounted) return; // user cancelled
+    if (reasonData == null || !mounted) return;
 
     setState(() => _isLoading = true);
 
-    // ── Step 4: Re-authenticate if needed, then delete ──────────────────────
+    // Step 4: Re-authenticate if needed
     try {
       AuthCredential? credential;
 
@@ -578,7 +590,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
       }
 
-      // ── Step 5: Log deletion data before proceeding ──────────────────────
+      // Step 5: Log deletion data
       await _logDeletionData(
         uid: userId,
         username: _currentUsername,
@@ -589,7 +601,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         details: reasonData['details'],
       );
 
-      // ── Step 6: Delete auth accounts (data is retained) ──────────────────
+      // Step 6: Delete account
       try {
         String res = await SupabaseProfileMethods()
             .deleteEntireUserAccount(userId, credential);
@@ -821,6 +833,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _currentEmail = userProvider.user?.email;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _loadPrivacyStatus();
+          if (mounted) _loadTestStatus();
         });
       } else if (userProvider.supabaseUid != null) {
         _currentUserId = userProvider.supabaseUid;
@@ -828,11 +841,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _currentEmail = userProvider.user?.email;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _loadPrivacyStatus();
+          if (mounted) _loadTestStatus();
         });
       }
     }
 
-    // ✅ Determine if we should show Reactly+ (only on iOS / iPhone)
     final bool showReactlyPlus =
         Theme.of(context).platform == TargetPlatform.iOS;
 
@@ -852,7 +865,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 padding: const EdgeInsets.all(16.0),
                 child: Column(
                   children: [
-                    // ✅ Conditionally show Reactly+ button (only on iOS)
                     if (showReactlyPlus)
                       _buildOptionTile(
                         title: 'Reactly+',
@@ -863,7 +875,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               builder: (_) => const ReactlyPlusScreen()),
                         ),
                       ),
-                    // Blue Verification button removed
+                    // Blue Verification button is removed (Code B behaviour)
                     _buildOptionTile(
                       title: 'Invite a Friend',
                       icon: Icons.person_add_alt_1,
@@ -904,6 +916,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 MaterialPageRoute(
                                   builder: (context) => BlockedUsersList(
                                     uid: _currentUserId!,
+                                    isTestUser: _isTestUser, // ✅ REQUIRED
                                   ),
                                 ),
                               )
@@ -928,6 +941,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
+// -------------------------------
+// Color classes (unchanged)
+// -------------------------------
 class _ColorSet {
   final Color textColor;
   final Color backgroundColor;
@@ -962,9 +978,16 @@ class _LightColors extends _ColorSet {
         );
 }
 
+// =============================================
+// BlockedUsersList widget (inline, with isTestUser)
+// =============================================
 class BlockedUsersList extends StatefulWidget {
   final String uid;
-  const BlockedUsersList({Key? key, required this.uid}) : super(key: key);
+  final bool isTestUser; // ✅ required parameter
+
+  const BlockedUsersList(
+      {Key? key, required this.uid, required this.isTestUser})
+      : super(key: key);
 
   @override
   State<BlockedUsersList> createState() => _BlockedUsersListState();
@@ -1126,6 +1149,7 @@ class _BlockedUsersListState extends State<BlockedUsersList> {
                           builder: (context) => BlockedProfileScreen(
                             uid: blockedUserId,
                             isBlocker: true,
+                            isTestUser: widget.isTestUser, // ✅ ADD THIS
                           ),
                         ),
                       );
