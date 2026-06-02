@@ -269,9 +269,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         'stack_trace': stack?.toString(),
         'additional_data': additionalData,
       });
-    } catch (logError) {
-
-    }
+    } catch (logError) {}
   }
 
   _OtherProfileColorSet _getColors(ThemeProvider themeProvider) {
@@ -869,8 +867,15 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       if (mounted && response != null) {
         setState(() => _isTestUser = response['is_test'] ?? false);
       }
-    } catch (e) {
-      // ignore, default false
+    } catch (e, stack) {
+      // Log the error to profile_errors table
+      _logProfileError(
+        operation: 'loadTestStatus',
+        error: e,
+        stack: stack,
+        additionalData: {'currentUserId': currentUserId},
+      );
+      // default false
     }
   }
 
