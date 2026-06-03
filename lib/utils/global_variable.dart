@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:Ratedly/screens/feed/feed_screen.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart'; // Changed import to profile_screen.dart
-import 'package:Ratedly/screens/Search/search_screen.dart';
+import 'package:Ratedly/screens/search_screen.dart';
 import 'package:Ratedly/screens/notification_screen.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 
