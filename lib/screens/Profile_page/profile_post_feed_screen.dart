@@ -374,7 +374,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         });
       }
     } catch (e) {
-      // Log to reactions_error table
       await _logReactionError(
         operationType: 'fetch_ratings_profile_feed',
         userId: user?.uid,
@@ -491,7 +490,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
       final currentTotal = _averageRating * _totalRatingsCount;
       if (isUpdating) {
         _averageRating =
-            (currentTotal - oldRating + rating) / _totalRatingsCount;
+            (currentTotal - oldRating! + rating) / _totalRatingsCount;
       } else {
         _totalRatingsCount++;
         _averageRating = (currentTotal + rating) / _totalRatingsCount;
@@ -499,7 +498,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     });
 
     try {
-      // SupabaseReactionsMethods.reactToPost already logs its own errors
       final res = await SupabaseReactionsMethods()
           .reactToPost(_postId, user.uid, rating);
       if (res != 'success' && mounted) _fetchRatings();
@@ -617,6 +615,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
                     _userRating == null ? 5.0 : _averageRating,
                 onRatingEnd: _handleRatingSubmitted,
                 hasUserRated: _userRating != null,
+                // ✅ FIX: Pass userRating and userProfilePhoto to show user's own reaction avatar
+                userRating: _userRating,
+                userProfilePhoto: widget.userData['photoUrl']?.toString(),
               ),
             )
           else
