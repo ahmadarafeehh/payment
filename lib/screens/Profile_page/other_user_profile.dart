@@ -1,4 +1,3 @@
-// lib/screens/Profile_page/other_user_profile.dart
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -20,6 +19,7 @@ import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ Added analytics service
 
 // -----------------------------------------------------------------------------
 // Color definitions
@@ -833,7 +833,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         _loadPostsCountAndFirstBatch(),
         _loadGalleriesData(),
         _loadBlockStatus(),
-        _loadTestStatus(), // NEW: fetch test user status
+        _loadTestStatus(),
       ]);
       if (!_isBlocked && mounted) await _loadRelationshipData();
     } catch (e, stack) {
@@ -852,7 +852,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  // NEW: load test user flag for current viewer
   Future<void> _loadTestStatus() async {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
@@ -868,14 +867,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         setState(() => _isTestUser = response['is_test'] ?? false);
       }
     } catch (e, stack) {
-      // Log the error to profile_errors table
       _logProfileError(
         operation: 'loadTestStatus',
         error: e,
         stack: stack,
         additionalData: {'currentUserId': currentUserId},
       );
-      // default false
     }
   }
 
@@ -1009,9 +1006,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
               builder: (_) => BlockedProfileScreen(
                 uid: widget.uid,
                 isBlocker: _isBlockedByMe,
-                performBlock: false, // block already exists
+                performBlock: false,
                 currentUserId: currentUserId,
-                isTestUser: _isTestUser, // NEW: pass test status
+                isTestUser: _isTestUser,
               ),
             ),
           );
@@ -1087,7 +1084,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             .then((v) => v as Map<String, dynamic>?),
       ]);
 
-      // Check if current user is a follower of this profile (for "Remove Follower" option)
       final isViewerFollower = await _supabase
           .from('user_followers')
           .select()
@@ -1221,6 +1217,14 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         if (mounted) setState(() => hasPendingRequest = false);
       } else {
         await SupabaseProfileMethods().followUser(currentUserId, widget.uid);
+        
+        // ✅ Log follow press analytics (non‑blocking)
+        AnalyticsService.logFollowPress(
+          followerUid: currentUserId,
+          followedUid: widget.uid,
+          sourceScreen: 'other_user_profile',
+        );
+        
         if (isPrivate) {
           if (mounted) setState(() => hasPendingRequest = true);
         } else {
@@ -2133,7 +2137,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
               onSelected: (value) async {
                 if (value == 'block') {
                   if (currentUserId == null) return;
-                  // Navigate immediately — no waiting, no loading spinner
                   if (mounted) {
                     Navigator.pushReplacement(
                       context,
