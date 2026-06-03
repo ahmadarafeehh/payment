@@ -524,6 +524,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // BUILD METHOD
+  // ───────────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -552,159 +555,169 @@ class _FeedPostPageState extends State<_FeedPostPage>
     final quarters = _editResult?.rotationQuarters ?? 0;
     final description = widget.post['description']?.toString() ?? '';
 
-    return SingleChildScrollView(
-      physics: const ClampingScrollPhysics(),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Header (fixed height) ──
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              GestureDetector(
+                onTap: _goToProfile,
+                child: _buildAvatar(
+                    photoUrl, uid, user?.uid ?? '', cardColor, textColor),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    GestureDetector(
+                      onTap: _goToProfile,
+                      child: VerifiedUsernameWidget(
+                        username: widget.userData['username']?.toString() ?? '',
+                        uid: uid,
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, color: textColor),
+                      ),
+                    ),
+                    if (timeStr.isNotEmpty)
+                      Text(timeStr,
+                          style: TextStyle(
+                              color: textColor.withOpacity(0.6), fontSize: 12)),
+                  ],
+                ),
+              ),
+              if (isOwner && widget.onPostDeleted != null)
+                IconButton(
+                  icon: Icon(Icons.more_vert, color: iconColor),
+                  onPressed: () =>
+                      _showOptionsMenu(context, bgColor, textColor),
+                ),
+            ],
+          ),
+        ),
+
+        // ── Media (fills remaining space between header and bottom widgets) ──
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return _buildMedia(matrix, quarters, cardColor, textColor,
+                  maxHeight: constraints.maxHeight);
+            },
+          ),
+        ),
+
+        // ── Fixed bottom area – always visible ──
+        if (description.isNotEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              children: [
-                GestureDetector(
-                  onTap: _goToProfile,
-                  child: _buildAvatar(
-                      photoUrl, uid, user?.uid ?? '', cardColor, textColor),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      GestureDetector(
-                        onTap: _goToProfile,
-                        child: VerifiedUsernameWidget(
-                          username:
-                              widget.userData['username']?.toString() ?? '',
-                          uid: uid,
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold, color: textColor),
-                        ),
-                      ),
-                      if (timeStr.isNotEmpty)
-                        Text(timeStr,
-                            style: TextStyle(
-                                color: textColor.withOpacity(0.6),
-                                fontSize: 12)),
-                    ],
-                  ),
-                ),
-                if (isOwner && widget.onPostDeleted != null)
-                  IconButton(
-                    icon: Icon(Icons.more_vert, color: iconColor),
-                    onPressed: () =>
-                        _showOptionsMenu(context, bgColor, textColor),
-                  ),
-              ],
+            child: Text(
+              description,
+              style: TextStyle(color: textColor, fontSize: 15),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
-          _buildMedia(matrix, quarters, cardColor, textColor),
-          if (description.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(description,
-                  style: TextStyle(color: textColor, fontSize: 15)),
-            ),
-          if (!_isLoadingRatings)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: RatingBar(
-                averageRating: _averageRating,
-                reactionEmoji: _reactionEmoji,
-                initialThumbPosition:
-                    _userRating == null ? 5.0 : _averageRating,
-                onRatingEnd: _handleRatingSubmitted,
-                hasUserRated: _userRating != null,
-                // ✅ FIX: Pass userRating and userProfilePhoto to show user's own reaction avatar
-                userRating: _userRating,
-                userProfilePhoto: widget.userData['photoUrl']?.toString(),
-              ),
-            )
-          else
-            const SizedBox(height: 48),
+
+        if (!_isLoadingRatings)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Row(
-              children: [
-                Stack(
-                  clipBehavior: Clip.none,
-                  alignment: Alignment.center,
-                  children: [
-                    IconButton(
-                      icon: Icon(Icons.comment_outlined,
-                          color: iconColor, size: 28),
-                      onPressed: () => _showComments(context),
-                    ),
-                    if (_commentCount > 0)
-                      Positioned(
-                        top: -6,
-                        left: -6,
-                        child: Container(
-                          padding: const EdgeInsets.all(4),
-                          constraints:
-                              const BoxConstraints(minWidth: 20, minHeight: 20),
-                          decoration: BoxDecoration(
-                              color: cardColor, shape: BoxShape.circle),
-                          child: Center(
-                            child: Text(
-                              _commentCount.toString(),
-                              style: TextStyle(
-                                  color: textColor,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold),
-                            ),
+            child: RatingBar(
+              averageRating: _averageRating,
+              reactionEmoji: _reactionEmoji,
+              initialThumbPosition: _userRating == null ? 5.0 : _averageRating,
+              onRatingEnd: _handleRatingSubmitted,
+              hasUserRated: _userRating != null,
+              userRating: _userRating,
+              userProfilePhoto: widget.userData['photoUrl']?.toString(),
+            ),
+          )
+        else
+          const SizedBox(height: 48),
+
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(
+            children: [
+              Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.center,
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.comment_outlined,
+                        color: iconColor, size: 28),
+                    onPressed: () => _showComments(context),
+                  ),
+                  if (_commentCount > 0)
+                    Positioned(
+                      top: -6,
+                      left: -6,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        constraints:
+                            const BoxConstraints(minWidth: 20, minHeight: 20),
+                        decoration: BoxDecoration(
+                            color: cardColor, shape: BoxShape.circle),
+                        child: Center(
+                          child: Text(
+                            _commentCount.toString(),
+                            style: TextStyle(
+                                color: textColor,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold),
                           ),
                         ),
                       ),
-                  ],
-                ),
-                IconButton(
-                  icon: Icon(Icons.send, color: iconColor),
-                  onPressed: () {
-                    if (user != null) {
-                      showDialog(
-                        context: context,
-                        builder: (_) =>
-                            PostShare(currentUserId: user.uid, postId: _postId),
-                      );
-                    }
-                  },
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: isOwner
-                      ? () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    RatingListScreen(postId: _postId)),
-                          )
-                      : null,
-                  child: Container(
-                    decoration: BoxDecoration(
-                        color: cardColor,
-                        borderRadius: BorderRadius.circular(4)),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    child: Text(
-                      _totalRatingsCount == 0
-                          ? 'Be the first to react'
-                          : '$_totalRatingsCount '
-                              '${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: textColor,
-                          fontWeight: FontWeight.w500),
                     ),
+                ],
+              ),
+              IconButton(
+                icon: Icon(Icons.send, color: iconColor),
+                onPressed: () {
+                  if (user != null) {
+                    showDialog(
+                      context: context,
+                      builder: (_) =>
+                          PostShare(currentUserId: user.uid, postId: _postId),
+                    );
+                  }
+                },
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: isOwner
+                    ? () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) =>
+                                  RatingListScreen(postId: _postId)),
+                        )
+                    : null,
+                child: Container(
+                  decoration: BoxDecoration(
+                      color: cardColor, borderRadius: BorderRadius.circular(4)),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Text(
+                    _totalRatingsCount == 0
+                        ? 'Be the first to react'
+                        : '$_totalRatingsCount '
+                            '${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: textColor,
+                        fontWeight: FontWeight.w500),
                   ),
                 ),
-                const SizedBox(width: 8),
-              ],
-            ),
+              ),
+              const SizedBox(width: 8),
+            ],
           ),
-          const SizedBox(height: 32),
-        ],
-      ),
+        ),
+        const SizedBox(height: 32),
+      ],
     );
   }
 
@@ -721,155 +734,235 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // Media builders – they now accept an optional maxHeight to crop when needed
+  // ───────────────────────────────────────────────────────────────────────────
+
   Widget _buildMedia(
-      List<double> matrix, int quarters, Color cardColor, Color textColor) {
+      List<double> matrix, int quarters, Color cardColor, Color textColor,
+      {double? maxHeight}) {
     if (_isVideo)
-      return _buildVideoPlayer(matrix, quarters, cardColor, textColor);
-    return _buildImage(matrix, quarters, cardColor, textColor);
+      return _buildVideoPlayer(matrix, quarters, cardColor, textColor,
+          maxHeight: maxHeight);
+    return _buildImage(matrix, quarters, cardColor, textColor,
+        maxHeight: maxHeight);
   }
 
   Widget _buildVideoPlayer(
-      List<double> matrix, int quarters, Color cardColor, Color textColor) {
-    final double aspect = (_isVideoInitialized && _videoController != null)
+      List<double> matrix, int quarters, Color cardColor, Color textColor,
+      {double? maxHeight}) {
+    final double videoAspect = (_isVideoInitialized && _videoController != null)
         ? _videoController!.value.aspectRatio
         : 1.0;
 
-    return AspectRatio(
-      aspectRatio: aspect,
-      child: GestureDetector(
-        onTap: _togglePlayback,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Container(color: Colors.black),
-            if (_isVideoInitialized && _videoController != null)
-              ColorFiltered(
-                colorFilter: ColorFilter.matrix(matrix),
-                child: Transform.rotate(
-                  angle: quarters * math.pi / 2,
-                  child: VideoPlayer(_videoController!),
-                ),
-              )
-            else if (_isVideoLoading)
-              Center(child: CircularProgressIndicator(color: textColor))
-            else
-              Center(child: Icon(Icons.videocam, color: textColor, size: 48)),
-            if (_editResult != null && _editResult!.strokes.isNotEmpty)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: CustomPaint(
-                    painter: DrawingPainter(
-                        strokes: _editResult!.strokes, currentStroke: null),
-                  ),
-                ),
-              ),
-            if (_editResult != null && _editResult!.overlays.isNotEmpty)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: LayoutBuilder(
-                    builder: (_, constraints) => Stack(
-                      children: _editResult!.overlays.map((o) {
-                        return Positioned(
-                          left: (o.position.dx * constraints.maxWidth)
-                              .clamp(0.0, constraints.maxWidth - 10),
-                          top: (o.position.dy * constraints.maxHeight)
-                              .clamp(0.0, constraints.maxHeight - 10),
-                          child: Stack(clipBehavior: Clip.none, children: [
-                            Text(o.text, style: overlayShadowStyle(o)),
-                            Text(o.text, style: overlayTextStyle(o)),
-                          ]),
-                        );
-                      }).toList(),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final double width = constraints.maxWidth;
+        final double naturalHeight = width / videoAspect;
+        final double containerHeight = maxHeight != null
+            ? math.min(naturalHeight, maxHeight)
+            : naturalHeight;
+        final bool needsCropping =
+            maxHeight != null && naturalHeight > maxHeight;
+
+        return SizedBox(
+          width: width,
+          height: containerHeight,
+          child: ClipRect(
+            child: Container(
+              color: Colors.black,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (_isVideoInitialized && _videoController != null)
+                    ColorFiltered(
+                      colorFilter: ColorFilter.matrix(matrix),
+                      child: Transform.rotate(
+                        angle: quarters * math.pi / 2,
+                        child: needsCropping
+                            ? FittedBox(
+                                fit: BoxFit.cover,
+                                child: SizedBox(
+                                  width: _videoController!.value.size.width,
+                                  height: _videoController!.value.size.height,
+                                  child: VideoPlayer(_videoController!),
+                                ),
+                              )
+                            : VideoPlayer(_videoController!),
+                      ),
+                    )
+                  else if (_isVideoLoading)
+                    Center(child: CircularProgressIndicator(color: textColor))
+                  else
+                    Center(
+                        child:
+                            Icon(Icons.videocam, color: textColor, size: 48)),
+                  if (_editResult != null && _editResult!.strokes.isNotEmpty)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: DrawingPainter(
+                              strokes: _editResult!.strokes,
+                              currentStroke: null),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
+                  if (_editResult != null && _editResult!.overlays.isNotEmpty)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: LayoutBuilder(
+                          builder: (_, overlayConstraints) => Stack(
+                            children: _editResult!.overlays.map((o) {
+                              return Positioned(
+                                left: (o.position.dx *
+                                        overlayConstraints.maxWidth)
+                                    .clamp(
+                                        0.0, overlayConstraints.maxWidth - 10),
+                                top: (o.position.dy *
+                                        overlayConstraints.maxHeight)
+                                    .clamp(
+                                        0.0, overlayConstraints.maxHeight - 10),
+                                child:
+                                    Stack(clipBehavior: Clip.none, children: [
+                                  Text(o.text, style: overlayShadowStyle(o)),
+                                  Text(o.text, style: overlayTextStyle(o)),
+                                ]),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (_isVideoInitialized)
+                    Positioned(
+                      bottom: 16,
+                      right: 16,
+                      child: GestureDetector(
+                        onTap: _toggleMute,
+                        child: Container(
+                          width: 36,
+                          height: 36,
+                          decoration: const BoxDecoration(
+                              color: Colors.black54, shape: BoxShape.circle),
+                          child: Icon(
+                            _isMuted ? Icons.volume_off : Icons.volume_up,
+                            size: 18,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
-            if (_isVideoInitialized)
-              Positioned(
-                bottom: 16,
-                right: 16,
-                child: GestureDetector(
-                  onTap: _toggleMute,
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: const BoxDecoration(
-                        color: Colors.black54, shape: BoxShape.circle),
-                    child: Icon(_isMuted ? Icons.volume_off : Icons.volume_up,
-                        size: 18, color: Colors.white),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
+            ),
+          ),
+        );
+      },
     );
   }
 
   Widget _buildImage(
-      List<double> matrix, int quarters, Color cardColor, Color textColor) {
-    return AspectRatio(
-      aspectRatio: 1,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          InteractiveViewer(
-            panEnabled: true,
-            scaleEnabled: true,
-            minScale: 1.0,
-            maxScale: 4.0,
-            child: ColorFiltered(
-              colorFilter: ColorFilter.matrix(matrix),
-              child: Transform.rotate(
-                angle: quarters * math.pi / 2,
-                child: Image.network(
-                  _postUrl,
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  height: double.infinity,
-                  errorBuilder: (_, __, ___) => Container(
-                    color: cardColor,
-                    child: Icon(Icons.broken_image, color: textColor, size: 48),
+      List<double> matrix, int quarters, Color cardColor, Color textColor,
+      {double? maxHeight}) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final double width = constraints.maxWidth;
+        // For a square image, natural height = width
+        final double naturalHeight = width;
+        final double containerHeight = maxHeight != null
+            ? math.min(naturalHeight, maxHeight)
+            : naturalHeight;
+        final bool needsCropping =
+            maxHeight != null && naturalHeight > maxHeight;
+
+        return SizedBox(
+          width: width,
+          height: containerHeight,
+          child: ClipRect(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                InteractiveViewer(
+                  panEnabled: true,
+                  scaleEnabled: true,
+                  minScale: 1.0,
+                  maxScale: 4.0,
+                  child: ColorFiltered(
+                    colorFilter: ColorFilter.matrix(matrix),
+                    child: Transform.rotate(
+                      angle: quarters * math.pi / 2,
+                      child: needsCropping
+                          ? FittedBox(
+                              fit: BoxFit.cover,
+                              child: Image.network(
+                                _postUrl,
+                                width: width,
+                                height: width,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => Container(
+                                  color: cardColor,
+                                  child: Icon(Icons.broken_image,
+                                      color: textColor, size: 48),
+                                ),
+                              ),
+                            )
+                          : Image.network(
+                              _postUrl,
+                              width: width,
+                              height: width,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => Container(
+                                color: cardColor,
+                                child: Icon(Icons.broken_image,
+                                    color: textColor, size: 48),
+                              ),
+                            ),
+                    ),
                   ),
                 ),
-              ),
+                if (_editResult != null &&
+                    (_editResult!.strokes.isNotEmpty ||
+                        _editResult!.overlays.isNotEmpty))
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: LayoutBuilder(
+                        builder: (_, overlayConstraints) => Stack(
+                          children: [
+                            if (_editResult!.strokes.isNotEmpty)
+                              Positioned.fill(
+                                child: CustomPaint(
+                                  painter: DrawingPainter(
+                                      strokes: _editResult!.strokes,
+                                      currentStroke: null),
+                                ),
+                              ),
+                            ..._editResult!.overlays.map((o) {
+                              return Positioned(
+                                left: (o.position.dx *
+                                        overlayConstraints.maxWidth)
+                                    .clamp(
+                                        0.0, overlayConstraints.maxWidth - 10),
+                                top: (o.position.dy *
+                                        overlayConstraints.maxHeight)
+                                    .clamp(
+                                        0.0, overlayConstraints.maxHeight - 10),
+                                child:
+                                    Stack(clipBehavior: Clip.none, children: [
+                                  Text(o.text, style: overlayShadowStyle(o)),
+                                  Text(o.text, style: overlayTextStyle(o)),
+                                ]),
+                              );
+                            }),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
-          if (_editResult != null &&
-              (_editResult!.strokes.isNotEmpty ||
-                  _editResult!.overlays.isNotEmpty))
-            Positioned.fill(
-              child: IgnorePointer(
-                child: LayoutBuilder(
-                  builder: (_, constraints) => Stack(
-                    children: [
-                      if (_editResult!.strokes.isNotEmpty)
-                        Positioned.fill(
-                          child: CustomPaint(
-                            painter: DrawingPainter(
-                                strokes: _editResult!.strokes,
-                                currentStroke: null),
-                          ),
-                        ),
-                      ..._editResult!.overlays.map((o) {
-                        return Positioned(
-                          left: (o.position.dx * constraints.maxWidth)
-                              .clamp(0.0, constraints.maxWidth - 10),
-                          top: (o.position.dy * constraints.maxHeight)
-                              .clamp(0.0, constraints.maxHeight - 10),
-                          child: Stack(clipBehavior: Clip.none, children: [
-                            Text(o.text, style: overlayShadowStyle(o)),
-                            Text(o.text, style: overlayTextStyle(o)),
-                          ]),
-                        );
-                      }),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
+        );
+      },
     );
   }
 
