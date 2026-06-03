@@ -825,7 +825,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
             child: RatingBar(
               averageRating: _averageRating,
               reactionEmoji: _reactionEmoji,
-              initialThumbPosition: _userRating ?? _averageRating,
+              // ✅ FIX: default to 5 when user hasn't rated yet
+              initialThumbPosition: _userRating == null ? 5.0 : _averageRating,
               onRatingEnd: _handleRatingSubmitted,
               hasUserRated: _userRating != null,
               userRating: _userRating,
