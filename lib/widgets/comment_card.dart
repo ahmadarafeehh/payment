@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart'; // ← ADD THIS
+import 'package:flutter/gestures.dart';
 import 'package:intl/intl.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
 import 'package:Ratedly/resources/comments_methods.dart';
@@ -11,6 +11,7 @@ import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:video_player/video_player.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ Added analytics service
 
 // ============================================================================
 // Expandable Text Widget
@@ -288,6 +289,13 @@ class _FollowBadgeState extends State<_FollowBadge>
             });
           }
         });
+
+        // ✅ Log follow press analytics (non‑blocking)
+        AnalyticsService.logFollowPress(
+          followerUid: widget.currentUserId,
+          followedUid: widget.ownerUid,
+          sourceScreen: 'comments',
+        );
 
         SupabaseProfileMethods()
             .followUser(widget.currentUserId, widget.ownerUid)
