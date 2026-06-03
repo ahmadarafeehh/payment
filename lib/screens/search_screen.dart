@@ -1,5 +1,6 @@
+// File: search_screen.dart
 import 'dart:async';
-import 'dart:io';
+import 'dart:io'; // <-- ADDED
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -8,235 +9,11 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/providers/user_provider.dart';
-import 'package:Ratedly/widgets/flutter_rating_bar.dart';
-import 'package:Ratedly/screens/comment_screen.dart';
-import 'package:Ratedly/widgets/postshare.dart';
-import 'package:Ratedly/widgets/rating_list_screen_postcard.dart';
-import 'package:Ratedly/resources/supabase_posts_methods.dart';
-import 'package:Ratedly/resources/reactions_methods.dart';
-import 'package:Ratedly/utils/utils.dart';
-import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
-import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
-import 'package:timeago/timeago.dart' as timeago;
+import 'package:Ratedly/screens/search_posts.dart'; // <-- imports the feed page & shared classes
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INLINE DEFINITIONS (normally from edit_shared.dart)
-// ─────────────────────────────────────────────────────────────────────────────
-
-class FilterAdjustments {
-  final double brightness;
-  final double contrast;
-  final double saturation;
-
-  FilterAdjustments({
-    this.brightness = 0.0,
-    this.contrast = 1.0,
-    this.saturation = 1.0,
-  });
-
-  List<double> combinedMatrix(List<double> baseMatrix) {
-    final b = brightness;
-    final c = contrast;
-    final s = saturation;
-    return [
-      c * s, 0, 0, 0, b,
-      0, c * s, 0, 0, b,
-      0, 0, c * s, 0, b,
-      0, 0, 0, 1, 0,
-    ];
-  }
-
-  Map<String, dynamic> toJson() => {
-        'brightness': brightness,
-        'contrast': contrast,
-        'saturation': saturation,
-      };
-
-  factory FilterAdjustments.fromJson(Map<String, dynamic> json) =>
-      FilterAdjustments(
-        brightness: (json['brightness'] as num?)?.toDouble() ?? 0.0,
-        contrast: (json['contrast'] as num?)?.toDouble() ?? 1.0,
-        saturation: (json['saturation'] as num?)?.toDouble() ?? 1.0,
-      );
-}
-
-class FilterInfo {
-  final String name;
-  final List<double> matrix;
-  const FilterInfo({required this.name, required this.matrix});
-}
-
-const List<FilterInfo> kFilters = [
-  FilterInfo(name: 'Original', matrix: [
-    1, 0, 0, 0, 0,
-    0, 1, 0, 0, 0,
-    0, 0, 1, 0, 0,
-    0, 0, 0, 1, 0,
-  ]),
-];
-
-class DrawStroke {
-  final List<Offset> points;
-  final Color color;
-  final double width;
-  final bool isEraser;
-
-  DrawStroke({
-    required this.points,
-    required this.color,
-    required this.width,
-    this.isEraser = false,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'points': points.map((p) => {'dx': p.dx, 'dy': p.dy}).toList(),
-        'color': color.value,
-        'width': width,
-        'isEraser': isEraser,
-      };
-
-  factory DrawStroke.fromJson(Map<String, dynamic> json) => DrawStroke(
-        points: (json['points'] as List)
-            .map((p) => Offset(p['dx'] as double, p['dy'] as double))
-            .toList(),
-        color: Color(json['color'] as int),
-        width: (json['width'] as num).toDouble(),
-        isEraser: json['isEraser'] as bool? ?? false,
-      );
-}
-
-class TextOverlay {
-  final String text;
-  final Offset position;
-  final Color color;
-  final double fontSize;
-  final String fontFamily;
-
-  TextOverlay({
-    required this.text,
-    required this.position,
-    required this.color,
-    required this.fontSize,
-    this.fontFamily = 'Roboto',
-  });
-
-  TextOverlay copyWith({double? fontSize}) => TextOverlay(
-        text: text,
-        position: position,
-        color: color,
-        fontSize: fontSize ?? this.fontSize,
-        fontFamily: fontFamily,
-      );
-
-  Map<String, dynamic> toJson() => {
-        'text': text,
-        'dx': position.dx,
-        'dy': position.dy,
-        'color': color.value,
-        'fontSize': fontSize,
-        'fontFamily': fontFamily,
-      };
-
-  factory TextOverlay.fromJson(Map<String, dynamic> json) => TextOverlay(
-        text: json['text'] as String,
-        position: Offset(
-            (json['dx'] as num).toDouble(), (json['dy'] as num).toDouble()),
-        color: Color(json['color'] as int),
-        fontSize: (json['fontSize'] as num).toDouble(),
-        fontFamily: json['fontFamily'] as String? ?? 'Roboto',
-      );
-}
-
-class VideoEditResult {
-  final FilterAdjustments adjustments;
-  final int filterIndex;
-  final int rotationQuarters;
-  final List<DrawStroke> strokes;
-  final List<TextOverlay> overlays;
-  final File file;
-
-  VideoEditResult({
-    required this.adjustments,
-    required this.filterIndex,
-    required this.rotationQuarters,
-    required this.strokes,
-    required this.overlays,
-    required this.file,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'adjustments': adjustments.toJson(),
-        'filterIndex': filterIndex,
-        'rotationQuarters': rotationQuarters,
-        'strokes': strokes.map((s) => s.toJson()).toList(),
-        'overlays': overlays.map((o) => o.toJson()).toList(),
-      };
-
-  factory VideoEditResult.fromJson(Map<String, dynamic> json, File file) =>
-      VideoEditResult(
-        adjustments: FilterAdjustments.fromJson(
-            json['adjustments'] as Map<String, dynamic>),
-        filterIndex: json['filterIndex'] as int,
-        rotationQuarters: json['rotationQuarters'] as int? ?? 0,
-        strokes: (json['strokes'] as List? ?? [])
-            .map((s) => DrawStroke.fromJson(s as Map<String, dynamic>))
-            .toList(),
-        overlays: (json['overlays'] as List? ?? [])
-            .map((o) => TextOverlay.fromJson(o as Map<String, dynamic>))
-            .toList(),
-        file: file,
-      );
-}
-
-TextStyle overlayTextStyle(TextOverlay overlay) => TextStyle(
-      color: overlay.color,
-      fontSize: overlay.fontSize,
-      fontFamily: overlay.fontFamily,
-    );
-
-TextStyle overlayShadowStyle(TextOverlay overlay) => TextStyle(
-      color: Colors.black.withOpacity(0.5),
-      fontSize: overlay.fontSize,
-      fontFamily: overlay.fontFamily,
-    );
-
-class DrawingPainter extends CustomPainter {
-  final List<DrawStroke> strokes;
-  final DrawStroke? currentStroke;
-
-  DrawingPainter({required this.strokes, this.currentStroke});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    for (final stroke in strokes) {
-      _drawStroke(canvas, stroke);
-    }
-    if (currentStroke != null) {
-      _drawStroke(canvas, currentStroke!);
-    }
-  }
-
-  void _drawStroke(Canvas canvas, DrawStroke stroke) {
-    if (stroke.points.isEmpty) return;
-    final paint = Paint()
-      ..color = stroke.isEraser ? Colors.transparent : stroke.color
-      ..strokeWidth = stroke.width
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..blendMode = stroke.isEraser ? BlendMode.clear : BlendMode.srcOver;
-    for (int i = 0; i < stroke.points.length - 1; i++) {
-      canvas.drawLine(stroke.points[i], stroke.points[i + 1], paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant DrawingPainter oldDelegate) => true;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// END INLINE DEFINITIONS
+// COLOUR SETS (used only by SearchScreen)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _SearchColorSet {
@@ -317,6 +94,10 @@ class _SearchLightColors extends _SearchColorSet {
         );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SearchScreen  (the main search tab)
+// ─────────────────────────────────────────────────────────────────────────────
+
 class SearchScreen extends StatefulWidget {
   const SearchScreen({Key? key}) : super(key: key);
 
@@ -332,7 +113,6 @@ class _SearchScreenState extends State<SearchScreen>
   bool _isSearchFocused = false;
   String? currentUserId;
 
-  // Search related state
   List<Map<String, dynamic>> _searchResults = [];
   bool _isSearching = false;
   Timer? _debounceTimer;
@@ -340,7 +120,6 @@ class _SearchScreenState extends State<SearchScreen>
   List<Map<String, dynamic>> _allPosts = [];
   Set<String> blockedUsersSet = {};
   bool _isLoading = true;
-
   bool _hasLoadError = false;
 
   int _offset = 0;
@@ -352,8 +131,6 @@ class _SearchScreenState extends State<SearchScreen>
   final int _subsequentPostsLimit = 6;
 
   final ScrollController _scrollController = ScrollController();
-
-  List<String> _rotatedSuggestedUsers = [];
   final math.Random _random = math.Random();
 
   final Map<String, VideoPlayerController> _videoControllers = {};
@@ -362,7 +139,6 @@ class _SearchScreenState extends State<SearchScreen>
   final Map<String, VideoPlayerController> _avatarVideoControllers = {};
   final Map<String, bool> _avatarVideoControllersInitialized = {};
 
-  // Cache of uid → {username, photoUrl, isVerified, country}
   final Map<String, Map<String, dynamic>> _userDataCache = {};
 
   _SearchColorSet _getColors(ThemeProvider themeProvider) {
@@ -370,6 +146,8 @@ class _SearchScreenState extends State<SearchScreen>
         ? _SearchDarkColors()
         : _SearchLightColors();
   }
+
+  // ── Helpers that still live here because they touch grid‑specific logic ──
 
   Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
     if (raw == null) return null;
@@ -415,7 +193,8 @@ class _SearchScreenState extends State<SearchScreen>
         if (editResult.strokes.isNotEmpty)
           Positioned.fill(
             child: CustomPaint(
-              painter: _ScaledDrawingPainter(
+              painter: ScaledDrawingPainter(
+                // <-- CHANGED from _ScaledDrawingPainter
                 strokes: editResult.strokes,
                 scaleX: scaleX,
                 scaleY: scaleY,
@@ -437,9 +216,6 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // ERROR LOGGING HELPER – logs only to search_errors table
-  // ───────────────────────────────────────────────────────────────────────────
   Future<void> _logSearchError({
     required String operationType,
     String? userId,
@@ -459,13 +235,10 @@ class _SearchScreenState extends State<SearchScreen>
           ...?additionalData,
         },
       });
-    } catch (_) {
-      // Fail silently – error logging must never crash the app
-    }
+    } catch (_) {}
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // ── Lifecycle ──
   @override
   void initState() {
     super.initState();
@@ -536,7 +309,8 @@ class _SearchScreenState extends State<SearchScreen>
     super.dispose();
   }
 
-  // ========== VIDEO CONTROLLERS (FIXED) ==========
+  // ── Video helpers for the grid ──
+
   Future<void> _initializeVideoController(String videoUrl) async {
     if (_videoControllers.containsKey(videoUrl) ||
         _videoControllersInitialized[videoUrl] == true) return;
@@ -803,7 +577,7 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  // ========== DATA LOADING (FIXED – NO DUPLICATES) ==========
+  // ── Data loading ──
 
   Future<void> _initData() async {
     if (currentUserId == null) {
@@ -818,19 +592,12 @@ class _SearchScreenState extends State<SearchScreen>
       _hasLoadError = false;
     });
 
-    // Always reset to first load so we start with 12 posts
     _isFirstLoad = true;
     _offset = 0;
     _allPosts = [];
 
-    await Future.wait([
-      _loadBlockedUsers(),
-      _fetchPosts(),
-    ]);
-    _rotateSuggestedUsers();
+    await Future.wait([_loadBlockedUsers(), _fetchPosts()]);
     setState(() => _isLoading = false);
-
-    // Ensure the grid fills the screen; load more if needed
     _ensureSufficientPosts();
   }
 
@@ -878,7 +645,7 @@ class _SearchScreenState extends State<SearchScreen>
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
-        'page_offset': _offset, // skip already loaded posts
+        'page_offset': _offset,
         'page_limit': postsLimit,
       });
 
@@ -912,10 +679,7 @@ class _SearchScreenState extends State<SearchScreen>
     } catch (e, st) {
       await _logSearchError(
         operationType: 'fetch_posts',
-        additionalData: {
-          'offset': _offset,
-          'isFirstLoad': _isFirstLoad,
-        },
+        additionalData: {'offset': _offset, 'isFirstLoad': _isFirstLoad},
         error: e,
         stackTrace: st,
       );
@@ -937,7 +701,7 @@ class _SearchScreenState extends State<SearchScreen>
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
-        'page_offset': _offset, // skip already loaded posts
+        'page_offset': _offset,
         'page_limit': _subsequentPostsLimit,
       });
 
@@ -975,7 +739,6 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  /// If the current content doesn't overflow the screen, automatically load more.
   void _ensureSufficientPosts() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
@@ -1001,7 +764,7 @@ class _SearchScreenState extends State<SearchScreen>
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
-        'page_offset': currentCount, // skip already shown posts
+        'page_offset': currentCount,
         'page_limit': _subsequentPostsLimit,
       });
 
@@ -1084,80 +847,8 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  Future<Map<String, dynamic>> _resolveUserData(
-      Map<String, dynamic> post) async {
-    final uid = post['uid']?.toString() ?? '';
+  // ── Search ──
 
-    if ((post['username'] ?? '').toString().isNotEmpty) {
-      return {
-        'uid': uid,
-        'username': post['username']?.toString() ?? '',
-        'photoUrl': post['photoUrl']?.toString() ?? '',
-        'isVerified': post['isVerified'] ?? false,
-        'country': post['country']?.toString() ?? '',
-      };
-    }
-
-    if (_userDataCache.containsKey(uid)) return _userDataCache[uid]!;
-
-    final user = await _fetchUserById(uid);
-    if (user != null) {
-      final data = {
-        'uid': uid,
-        'username': user['username']?.toString() ?? '',
-        'photoUrl': user['photoUrl']?.toString() ?? '',
-        'isVerified': user['isVerified'] ?? false,
-        'country': user['country']?.toString() ?? '',
-      };
-      _userDataCache[uid] = data;
-      return data;
-    }
-    return {
-      'uid': uid,
-      'username': '',
-      'photoUrl': '',
-      'isVerified': false,
-      'country': ''
-    };
-  }
-
-  void _rotateSuggestedUsers() {
-    if (currentUserId == null) {
-      _rotatedSuggestedUsers = [];
-      return;
-    }
-    final suggestedUserIds = _allPosts
-        .map((p) => p['uid']?.toString())
-        .whereType<String>()
-        .where((uid) => !blockedUsersSet.contains(uid) && uid != currentUserId)
-        .toSet()
-        .toList();
-
-    if (suggestedUserIds.isEmpty) {
-      _rotatedSuggestedUsers = [];
-      return;
-    }
-    suggestedUserIds.shuffle(_random);
-    _rotatedSuggestedUsers = suggestedUserIds.take(5).toList();
-  }
-
-  void _navigateToProfile(String uid) {
-    if (uid.isEmpty) return;
-    _pauseAllVideos();
-    Navigator.push(
-            context, MaterialPageRoute(builder: (_) => ProfileScreen(uid: uid)))
-        .then((_) {
-      if (mounted) {
-        setState(() {
-          isShowUsers = false;
-          searchController.clear();
-          _searchResults = [];
-        });
-      }
-    });
-  }
-
-  // ========== USER SEARCH ==========
   Future<List<Map<String, dynamic>>> _searchUsers(String query) async {
     if (query.trim().isEmpty || currentUserId == null) return [];
 
@@ -1171,11 +862,10 @@ class _SearchScreenState extends State<SearchScreen>
       final List<Map<String, dynamic>> users =
           List<Map<String, dynamic>>.from(response);
 
-      final filtered = users.where((user) {
+      return users.where((user) {
         final uid = user['uid']?.toString() ?? '';
         return !blockedUsersSet.contains(uid) && uid != currentUserId;
       }).toList();
-      return filtered;
     } catch (e, st) {
       await _logSearchError(
         operationType: 'search_users',
@@ -1193,7 +883,7 @@ class _SearchScreenState extends State<SearchScreen>
       _isSearchFocused = false;
     });
 
-    if (_debounceTimer?.isActive ?? false) _debounceTimer!.cancel();
+    _debounceTimer?.cancel();
     _debounceTimer = Timer(const Duration(milliseconds: 300), () {
       if (value.trim().isNotEmpty) {
         _performSearch(value.trim());
@@ -1217,27 +907,8 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  Future<Map<String, dynamic>?> _fetchUserById(String userId) async {
-    if (userId.isEmpty) return null;
-    try {
-      final response = await _supabase
-          .from('users')
-          .select()
-          .eq('uid', userId)
-          .maybeSingle();
-      return response as Map<String, dynamic>?;
-    } catch (e, st) {
-      await _logSearchError(
-        operationType: 'fetch_user_by_id',
-        additionalData: {'userId': userId},
-        error: e,
-        stackTrace: st,
-      );
-      return null;
-    }
-  }
+  // ── Skeleton loaders ──
 
-  // ========== SKELETONS ==========
   Widget _buildPostsGridSkeleton(_SearchColorSet colors) {
     return GridView.builder(
       padding: const EdgeInsets.all(8.0),
@@ -1288,7 +959,8 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  // ========== BUILD ==========
+  // ── Main build ──
+
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
@@ -1387,16 +1059,12 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildUserSearch(_SearchColorSet colors) {
-    if (_isSearching) {
-      return _buildUserSearchSkeleton(colors);
-    }
+    if (_isSearching) return _buildUserSearchSkeleton(colors);
 
     if (_searchResults.isEmpty) {
       return Center(
-        child: Text(
-          'No users found.',
-          style: TextStyle(color: colors.textColor),
-        ),
+        child:
+            Text('No users found.', style: TextStyle(color: colors.textColor)),
       );
     }
 
@@ -1416,14 +1084,10 @@ class _SearchScreenState extends State<SearchScreen>
           title: Row(
             children: [
               Flexible(
-                child: Text(
-                  username,
-                  style: TextStyle(
-                    color: colors.textColor,
-                    fontWeight: FontWeight.w500,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
+                child: Text(username,
+                    style: TextStyle(
+                        color: colors.textColor, fontWeight: FontWeight.w500),
+                    overflow: TextOverflow.ellipsis),
               ),
               if (isVerified) ...[
                 const SizedBox(width: 4),
@@ -1432,10 +1096,8 @@ class _SearchScreenState extends State<SearchScreen>
             ],
           ),
           subtitle: country.isNotEmpty
-              ? Text(
-                  country,
-                  style: TextStyle(color: colors.hintTextColor, fontSize: 12),
-                )
+              ? Text(country,
+                  style: TextStyle(color: colors.hintTextColor, fontSize: 12))
               : null,
           onTap: () => _navigateToProfile(uid),
         );
@@ -1536,7 +1198,6 @@ class _SearchScreenState extends State<SearchScreen>
     return InkWell(
       onTap: () async {
         _pauseAllVideos();
-
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -1575,932 +1236,20 @@ class _SearchScreenState extends State<SearchScreen>
       ),
     );
   }
-}
 
-// =============================================================================
-// SCALED DRAWING PAINTER
-// =============================================================================
-class _ScaledDrawingPainter extends CustomPainter {
-  final List<DrawStroke> strokes;
-  final double scaleX;
-  final double scaleY;
-
-  const _ScaledDrawingPainter({
-    required this.strokes,
-    required this.scaleX,
-    required this.scaleY,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.save();
-    canvas.scale(scaleX, scaleY);
-    DrawingPainter(strokes: strokes, currentStroke: null)
-        .paint(canvas, Size(size.width / scaleX, size.height / scaleY));
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(_ScaledDrawingPainter old) =>
-      old.strokes != strokes || old.scaleX != scaleX || old.scaleY != scaleY;
-}
-
-// =============================================================================
-// SearchResultFeedScreen
-// =============================================================================
-class SearchResultFeedScreen extends StatefulWidget {
-  final List<Map<String, dynamic>> initialPosts;
-  final int initialIndex;
-  final Future<List<Map<String, dynamic>>> Function(int currentCount)
-      onLoadMore;
-  final bool initialHasMore;
-
-  const SearchResultFeedScreen({
-    Key? key,
-    required this.initialPosts,
-    required this.initialIndex,
-    required this.onLoadMore,
-    required this.initialHasMore,
-  }) : super(key: key);
-
-  @override
-  State<SearchResultFeedScreen> createState() => _SearchResultFeedScreenState();
-}
-
-class _SearchResultFeedScreenState extends State<SearchResultFeedScreen> {
-  late List<Map<String, dynamic>> _posts;
-  late PageController _pageController;
-  late int _currentIndex;
-  bool _hasMore = false;
-  bool _loadingMore = false;
-  final String _sessionId = DateTime.now().microsecondsSinceEpoch.toString();
-
-  bool _isVideoUrl(String url) {
-    final u = url.toLowerCase();
-    return u.endsWith('.mp4') ||
-        u.endsWith('.mov') ||
-        u.endsWith('.avi') ||
-        u.endsWith('.wmv') ||
-        u.endsWith('.flv') ||
-        u.endsWith('.mkv') ||
-        u.endsWith('.webm') ||
-        u.endsWith('.m4v') ||
-        u.endsWith('.3gp') ||
-        u.contains('/video/') ||
-        u.contains('video=true');
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _posts = List.from(widget.initialPosts);
-    _hasMore = widget.initialHasMore;
-    _currentIndex = widget.initialIndex;
-    _pageController = PageController(initialPage: widget.initialIndex);
-    _pageController.addListener(_onPageScroll);
-  }
-
-  @override
-  void dispose() {
-    _pageController.removeListener(_onPageScroll);
-    _pageController.dispose();
-    super.dispose();
-  }
-
-  void _onPageScroll() {
-    final rawPage = _pageController.page ?? _currentIndex.toDouble();
-    final page = rawPage.round();
-    if (page != _currentIndex) {
-      setState(() => _currentIndex = page);
-    }
-    if (page >= _posts.length - 3 && _hasMore && !_loadingMore) {
-      _triggerLoadMore();
-    }
-  }
-
-  Future<void> _triggerLoadMore() async {
-    if (_loadingMore || !_hasMore) return;
-    setState(() => _loadingMore = true);
-    try {
-      final batch = await widget.onLoadMore(_posts.length);
-      if (mounted) {
-        setState(() {
-          _posts.addAll(batch);
-          _hasMore = batch.isNotEmpty;
-          _loadingMore = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => _loadingMore = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final isDark = themeProvider.themeMode == ThemeMode.dark;
-    final bgColor = isDark ? const Color(0xFF121212) : Colors.white;
-    final textColor = isDark ? const Color(0xFFd9d9d9) : Colors.black;
-
-    final itemCount = _posts.length + (_hasMore || _loadingMore ? 1 : 0);
-
-    return Scaffold(
-      backgroundColor: bgColor,
-      appBar: AppBar(
-        backgroundColor: bgColor,
-        elevation: 0,
-        iconTheme: IconThemeData(color: textColor),
-        title: const Text('Search Results'),
-        centerTitle: true,
-      ),
-      body: PageView.builder(
-        controller: _pageController,
-        scrollDirection: Axis.vertical,
-        itemCount: itemCount,
-        itemBuilder: (context, index) {
-          if (index >= _posts.length) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: CircularProgressIndicator(color: textColor),
-              ),
-            );
-          }
-          final post = _posts[index];
-          final Map<String, dynamic> userData = {
-            'uid': post['uid']?.toString() ?? '',
-            'username': post['username']?.toString() ?? '',
-            'photoUrl': post['photoUrl']?.toString() ?? '',
-            'isVerified': post['isVerified'] ?? false,
-            'country': post['country']?.toString() ?? '',
-          };
-          return _FeedPostPage(
-            key: ValueKey(post['postId']),
-            post: post,
-            userData: userData,
-            isActive: index == _currentIndex,
-            sessionId: _sessionId,
-            onPostDeleted: null,
-          );
-        },
-      ),
-    );
-  }
-}
-
-// =============================================================================
-// _FeedPostPage
-// =============================================================================
-class _FeedPostPage extends StatefulWidget {
-  final Map<String, dynamic> post;
-  final Map<String, dynamic> userData;
-  final bool isActive;
-  final String sessionId;
-  final VoidCallback? onPostDeleted;
-
-  const _FeedPostPage({
-    Key? key,
-    required this.post,
-    required this.userData,
-    required this.isActive,
-    required this.sessionId,
-    this.onPostDeleted,
-  }) : super(key: key);
-
-  @override
-  State<_FeedPostPage> createState() => _FeedPostPageState();
-}
-
-class _FeedPostPageState extends State<_FeedPostPage>
-    with AutomaticKeepAliveClientMixin {
-  @override
-  bool get wantKeepAlive => true;
-
-  final SupabaseClient _supabase = Supabase.instance.client;
-  final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
-
-  VideoPlayerController? _videoController;
-  bool _isVideoInitialized = false;
-  bool _isVideoLoading = false;
-  bool _isMuted = false;
-
-  double _averageRating = 0.0;
-  int _totalRatingsCount = 0;
-  double? _userRating;
-  bool _isLoadingRatings = true;
-  String _reactionEmoji = '❤️';
-  int _commentCount = 0;
-
-  VideoEditResult? _editResult;
-  bool _dataFetched = false;
-
-  String get _postUrl => widget.post['postUrl']?.toString() ?? '';
-  String get _postId => widget.post['postId']?.toString() ?? '';
-
-  bool get _isVideo {
-    final u = _postUrl.toLowerCase();
-    return u.endsWith('.mp4') ||
-        u.endsWith('.mov') ||
-        u.endsWith('.avi') ||
-        u.endsWith('.wmv') ||
-        u.endsWith('.flv') ||
-        u.endsWith('.mkv') ||
-        u.endsWith('.webm') ||
-        u.endsWith('.m4v') ||
-        u.endsWith('.3gp') ||
-        u.contains('/video/') ||
-        u.contains('video=true');
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _parseEditMetadata();
-    _fetchAllData();
-    if (widget.isActive) _onBecomeActive();
-  }
-
-  @override
-  void didUpdateWidget(_FeedPostPage old) {
-    super.didUpdateWidget(old);
-    if (widget.isActive && !old.isActive) {
-      _onBecomeActive();
-    } else if (!widget.isActive && old.isActive) {
-      _onBecomeInactive();
-    }
-  }
-
-  @override
-  void dispose() {
-    _videoController?.pause();
-    _videoController?.dispose();
-    _videoController = null;
-    super.dispose();
-  }
-
-  void _onBecomeActive() {
-    if (_isVideo) {
-      if (_isVideoInitialized) {
-        _videoController?.play();
-      } else if (!_isVideoLoading) {
-        _initVideo();
-      }
-    }
-  }
-
-  void _onBecomeInactive() {
-    _videoController?.pause();
-  }
-
-  void _parseEditMetadata() {
-    final raw = widget.post['video_edit_metadata'];
-    if (raw == null) return;
-    try {
-      final map = raw is Map<String, dynamic>
-          ? raw
-          : Map<String, dynamic>.from(raw as Map);
-      _editResult = VideoEditResult.fromJson(map, File(''));
-    } catch (e) {
-      // ignore (metadata parsing failure is not critical)
-    }
-  }
-
-  Future<void> _fetchAllData() async {
-    if (_dataFetched) return;
-    _dataFetched = true;
-    await Future.wait(
-        [_fetchRatings(), _fetchReactionEmoji(), _fetchCommentsCount()]);
-  }
-
-  Future<void> _fetchRatings() async {
-    final user = Provider.of<UserProvider>(context, listen: false).user;
-    try {
-      final ratings = await _supabase
-          .from('post_rating')
-          .select()
-          .eq('postid', _postId) as List<dynamic>;
-
-      double avg = 0;
-      double? userRating;
-      if (ratings.isNotEmpty) {
-        final total = ratings.fold<double>(
-            0, (s, r) => s + (r['rating'] as num).toDouble());
-        avg = total / ratings.length;
-        if (user != null) {
-          for (final r in ratings) {
-            if (r['userid'] == user.uid) {
-              userRating = (r['rating'] as num).toDouble();
-              break;
-            }
-          }
-        }
-      }
-      if (mounted) {
-        setState(() {
-          _totalRatingsCount = ratings.length;
-          _averageRating = avg;
-          _userRating = userRating;
-          _isLoadingRatings = false;
-        });
-      }
-    } catch (e, st) {
-      // Log rating fetch error to search_errors (using same table for simplicity)
-      try {
-        await _supabase.from('search_errors').insert({
-          'user_id': user?.uid,
-          'operation_type': 'fetch_ratings',
-          'error_message': e.toString(),
-          'stack_trace': st.toString(),
-          'additional_data': {'postId': _postId},
-        });
-      } catch (_) {}
-      if (mounted) setState(() => _isLoadingRatings = false);
-    }
-  }
-
-  Future<void> _fetchReactionEmoji() async {
-    try {
-      final resp = await _supabase
-          .from('posts')
-          .select('reaction_emoji')
-          .eq('postId', _postId)
-          .maybeSingle();
-      if (mounted && resp != null) {
-        final emoji = resp['reaction_emoji']?.toString();
-        if (emoji != null && emoji.isNotEmpty) {
-          setState(() => _reactionEmoji = emoji);
-        }
-      }
-    } catch (e, st) {
-      // Log silently
-      try {
-        await _supabase.from('search_errors').insert({
-          'operation_type': 'fetch_reaction_emoji',
-          'error_message': e.toString(),
-          'stack_trace': st.toString(),
-          'additional_data': {'postId': _postId},
-        });
-      } catch (_) {}
-    }
-  }
-
-  Future<void> _fetchCommentsCount() async {
-    try {
-      final comments = await _supabase
-          .from('comments')
-          .select('id')
-          .eq('postid', _postId) as List<dynamic>;
-      final replies = await _supabase
-          .from('replies')
-          .select('id')
-          .eq('postid', _postId) as List<dynamic>;
-      if (mounted) {
-        setState(() => _commentCount = comments.length + replies.length);
-      }
-    } catch (e, st) {
-      try {
-        await _supabase.from('search_errors').insert({
-          'operation_type': 'fetch_comments_count',
-          'error_message': e.toString(),
-          'stack_trace': st.toString(),
-          'additional_data': {'postId': _postId},
-        });
-      } catch (_) {}
-    }
-  }
-
-  Future<void> _initVideo() async {
-    if (_isVideoLoading || _isVideoInitialized || _postUrl.isEmpty) return;
-
-    setState(() => _isVideoLoading = true);
-
-    try {
-      final controller = VideoPlayerController.networkUrl(
-        Uri.parse(_postUrl),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-      );
-
-      await controller.initialize();
-
-      controller.setLooping(true);
-      if (mounted) {
-        setState(() {
-          _videoController = controller;
-          _isVideoInitialized = true;
-          _isVideoLoading = false;
-        });
-        if (widget.isActive) {
-          controller.play();
-        }
-      } else {
-        controller.dispose();
-      }
-    } catch (e, st) {
-      if (mounted) setState(() => _isVideoLoading = false);
-      try {
-        await _supabase.from('search_errors').insert({
-          'operation_type': 'init_video',
-          'error_message': e.toString(),
-          'stack_trace': st.toString(),
-          'additional_data': {'postId': _postId, 'postUrl': _postUrl},
-        });
-      } catch (_) {}
-    }
-  }
-
-  void _togglePlayback() {
-    if (!_isVideoInitialized || _videoController == null) return;
-    setState(() {
-      if (_videoController!.value.isPlaying) {
-        _videoController!.pause();
-      } else {
-        _videoController!.play();
-      }
-    });
-  }
-
-  void _toggleMute() {
-    if (!_isVideoInitialized || _videoController == null) return;
-    setState(() {
-      _isMuted = !_isMuted;
-      _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
-    });
-  }
-
-  void _handleRatingSubmitted(double rating) async {
-    final user = Provider.of<UserProvider>(context, listen: false).user;
-    if (user == null) return;
-
-    final oldRating = _userRating;
-    final isUpdating = oldRating != null;
-
-    setState(() {
-      _userRating = rating;
-      final currentTotal = _averageRating * _totalRatingsCount;
-      if (isUpdating) {
-        _averageRating =
-            (currentTotal - oldRating + rating) / _totalRatingsCount;
-      } else {
-        _totalRatingsCount++;
-        _averageRating = (currentTotal + rating) / _totalRatingsCount;
-      }
-    });
-
-    try {
-      final res = await SupabaseReactionsMethods()
-          .reactToPost(_postId, user.uid, rating);
-      if (res != 'success' && mounted) _fetchRatings();
-    } catch (e, st) {
-      if (mounted) _fetchRatings();
-      try {
-        await _supabase.from('search_errors').insert({
-          'user_id': user.uid,
-          'operation_type': 'submit_rating',
-          'error_message': e.toString(),
-          'stack_trace': st.toString(),
-          'additional_data': {'postId': _postId, 'rating': rating},
-        });
-      } catch (_) {}
-    }
-  }
-
-  List<double> _buildColorMatrix() {
-    if (_editResult == null) {
-      return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
-    }
-    return _editResult!.adjustments
-        .combinedMatrix(kFilters[_editResult!.filterIndex].matrix);
-  }
-
-  void _goToProfile() {
+  void _navigateToProfile(String uid) {
+    if (uid.isEmpty) return;
+    _pauseAllVideos();
     Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            ProfileScreen(uid: widget.userData['uid']?.toString() ?? ''),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    super.build(context);
-
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final isDark = themeProvider.themeMode == ThemeMode.dark;
-    final bgColor = isDark ? const Color(0xFF121212) : Colors.white;
-    final textColor = isDark ? const Color(0xFFd9d9d9) : Colors.black;
-    final cardColor = isDark ? const Color(0xFF333333) : Colors.grey[200]!;
-    final iconColor = textColor;
-
-    final user = Provider.of<UserProvider>(context).user;
-    final isOwner = user != null &&
-        (user.uid == widget.userData['uid']?.toString() ||
-            user.uid == widget.post['uid']?.toString());
-
-    final dateRaw = widget.post['datePublished'];
-    final date = dateRaw is DateTime
-        ? dateRaw
-        : (dateRaw is String ? DateTime.tryParse(dateRaw) : null);
-    final timeStr = date != null ? timeago.format(date) : '';
-
-    final photoUrl = widget.userData['photoUrl']?.toString() ?? '';
-    final uid = widget.userData['uid']?.toString() ?? '';
-    final matrix = _buildColorMatrix();
-    final quarters = _editResult?.rotationQuarters ?? 0;
-    final description = widget.post['description']?.toString() ?? '';
-
-    final bool preventInnerScroll = _isVideo && _isVideoInitialized;
-
-    return SingleChildScrollView(
-      physics: preventInnerScroll
-          ? const NeverScrollableScrollPhysics()
-          : const ClampingScrollPhysics(),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              children: [
-                GestureDetector(
-                  onTap: _goToProfile,
-                  child: _buildAvatar(
-                      photoUrl, uid, user?.uid ?? '', cardColor, textColor),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      GestureDetector(
-                        onTap: _goToProfile,
-                        child: VerifiedUsernameWidget(
-                          username:
-                              widget.userData['username']?.toString() ?? '',
-                          uid: uid,
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold, color: textColor),
-                        ),
-                      ),
-                      if (timeStr.isNotEmpty)
-                        Text(timeStr,
-                            style: TextStyle(
-                                color: textColor.withOpacity(0.6),
-                                fontSize: 12)),
-                    ],
-                  ),
-                ),
-                if (isOwner && widget.onPostDeleted != null)
-                  IconButton(
-                    icon: Icon(Icons.more_vert, color: iconColor),
-                    onPressed: () =>
-                        _showOptionsMenu(context, bgColor, textColor),
-                  ),
-              ],
-            ),
-          ),
-          _buildMedia(matrix, quarters, cardColor, textColor),
-          if (description.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(description,
-                  style: TextStyle(color: textColor, fontSize: 15)),
-            ),
-          if (!_isLoadingRatings)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: RatingBar(
-                averageRating: _averageRating,
-                reactionEmoji: _reactionEmoji,
-                initialThumbPosition:
-                    _userRating == null ? 5.0 : _averageRating,
-                onRatingEnd: _handleRatingSubmitted,
-                hasUserRated: _userRating != null,
-              ),
-            )
-          else
-            const SizedBox(height: 48),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Row(
-              children: [
-                Stack(
-                  clipBehavior: Clip.none,
-                  alignment: Alignment.center,
-                  children: [
-                    IconButton(
-                      icon: Icon(Icons.comment_outlined,
-                          color: iconColor, size: 28),
-                      onPressed: () => _showComments(context),
-                    ),
-                    if (_commentCount > 0)
-                      Positioned(
-                        top: -6,
-                        left: -6,
-                        child: Container(
-                          padding: const EdgeInsets.all(4),
-                          constraints:
-                              const BoxConstraints(minWidth: 20, minHeight: 20),
-                          decoration: BoxDecoration(
-                              color: cardColor, shape: BoxShape.circle),
-                          child: Center(
-                            child: Text(
-                              _commentCount.toString(),
-                              style: TextStyle(
-                                  color: textColor,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                IconButton(
-                  icon: Icon(Icons.send, color: iconColor),
-                  onPressed: () {
-                    if (user != null) {
-                      showDialog(
-                        context: context,
-                        builder: (_) =>
-                            PostShare(currentUserId: user.uid, postId: _postId),
-                      );
-                    }
-                  },
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: isOwner
-                      ? () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    RatingListScreen(postId: _postId)),
-                          )
-                      : null,
-                  child: Container(
-                    decoration: BoxDecoration(
-                        color: cardColor,
-                        borderRadius: BorderRadius.circular(4)),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    child: Text(
-                      _totalRatingsCount == 0
-                          ? 'Be the first to react'
-                          : '$_totalRatingsCount '
-                              '${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: textColor,
-                          fontWeight: FontWeight.w500),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-              ],
-            ),
-          ),
-          const SizedBox(height: 32),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAvatar(String photoUrl, String uid, String currentUserId,
-      Color cardColor, Color textColor) {
-    final isDefault = photoUrl.isEmpty || photoUrl == 'default';
-    return CircleAvatar(
-      radius: 20,
-      backgroundColor: cardColor,
-      backgroundImage: !isDefault ? CachedNetworkImageProvider(photoUrl) : null,
-      child: isDefault
-          ? Icon(Icons.account_circle, size: 40, color: textColor)
-          : null,
-    );
-  }
-
-  Widget _buildMedia(
-      List<double> matrix, int quarters, Color cardColor, Color textColor) {
-    if (_isVideo)
-      return _buildVideoPlayer(matrix, quarters, cardColor, textColor);
-    return _buildImage(matrix, quarters, cardColor, textColor);
-  }
-
-  Widget _buildVideoPlayer(
-      List<double> matrix, int quarters, Color cardColor, Color textColor) {
-    final double aspect = (_isVideoInitialized && _videoController != null)
-        ? _videoController!.value.aspectRatio
-        : 1.0;
-
-    return AspectRatio(
-      aspectRatio: aspect,
-      child: GestureDetector(
-        onTap: _togglePlayback,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Container(color: Colors.black),
-            if (_isVideoInitialized && _videoController != null)
-              ColorFiltered(
-                colorFilter: ColorFilter.matrix(matrix),
-                child: Transform.rotate(
-                  angle: quarters * math.pi / 2,
-                  child: VideoPlayer(_videoController!),
-                ),
-              )
-            else if (_isVideoLoading)
-              Center(child: CircularProgressIndicator(color: textColor))
-            else
-              Center(child: Icon(Icons.videocam, color: textColor, size: 48)),
-            if (_editResult != null && _editResult!.strokes.isNotEmpty)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: CustomPaint(
-                    painter: DrawingPainter(
-                        strokes: _editResult!.strokes, currentStroke: null),
-                  ),
-                ),
-              ),
-            if (_editResult != null && _editResult!.overlays.isNotEmpty)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: LayoutBuilder(
-                    builder: (_, constraints) => Stack(
-                      children: _editResult!.overlays.map((o) {
-                        return Positioned(
-                          left: (o.position.dx * constraints.maxWidth)
-                              .clamp(0.0, constraints.maxWidth - 10),
-                          top: (o.position.dy * constraints.maxHeight)
-                              .clamp(0.0, constraints.maxHeight - 10),
-                          child: Stack(clipBehavior: Clip.none, children: [
-                            Text(o.text, style: overlayShadowStyle(o)),
-                            Text(o.text, style: overlayTextStyle(o)),
-                          ]),
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                ),
-              ),
-            if (_isVideoInitialized)
-              Positioned(
-                bottom: 16,
-                right: 16,
-                child: GestureDetector(
-                  onTap: _toggleMute,
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: const BoxDecoration(
-                        color: Colors.black54, shape: BoxShape.circle),
-                    child: Icon(_isMuted ? Icons.volume_off : Icons.volume_up,
-                        size: 18, color: Colors.white),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildImage(
-      List<double> matrix, int quarters, Color cardColor, Color textColor) {
-    return AspectRatio(
-      aspectRatio: 1,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          InteractiveViewer(
-            panEnabled: true,
-            scaleEnabled: true,
-            minScale: 1.0,
-            maxScale: 4.0,
-            child: ColorFiltered(
-              colorFilter: ColorFilter.matrix(matrix),
-              child: Transform.rotate(
-                angle: quarters * math.pi / 2,
-                child: CachedNetworkImage(
-                  imageUrl: _postUrl,
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  height: double.infinity,
-                  placeholder: (_, __) => Container(color: cardColor),
-                  errorWidget: (_, __, ___) => Container(
-                    color: cardColor,
-                    child: Icon(Icons.broken_image, color: textColor, size: 48),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          if (_editResult != null &&
-              (_editResult!.strokes.isNotEmpty ||
-                  _editResult!.overlays.isNotEmpty))
-            Positioned.fill(
-              child: IgnorePointer(
-                child: LayoutBuilder(
-                  builder: (_, constraints) => Stack(
-                    children: [
-                      if (_editResult!.strokes.isNotEmpty)
-                        Positioned.fill(
-                          child: CustomPaint(
-                            painter: DrawingPainter(
-                                strokes: _editResult!.strokes,
-                                currentStroke: null),
-                          ),
-                        ),
-                      ..._editResult!.overlays.map((o) {
-                        return Positioned(
-                          left: (o.position.dx * constraints.maxWidth)
-                              .clamp(0.0, constraints.maxWidth - 10),
-                          top: (o.position.dy * constraints.maxHeight)
-                              .clamp(0.0, constraints.maxHeight - 10),
-                          child: Stack(clipBehavior: Clip.none, children: [
-                            Text(o.text, style: overlayShadowStyle(o)),
-                            Text(o.text, style: overlayTextStyle(o)),
-                          ]),
-                        );
-                      }),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  void _showComments(BuildContext context) {
-    _videoController?.pause();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => CommentsBottomSheet(
-        postId: _postId,
-        postImage: _postUrl,
-        isVideo: _isVideo,
-        onClose: () {
-          if (widget.isActive) _videoController?.play();
-        },
-        videoController: _videoController,
-      ),
-    ).then((_) => _fetchCommentsCount());
-  }
-
-  void _showOptionsMenu(BuildContext context, Color bgColor, Color textColor) {
-    showDialog(
-      context: context,
-      builder: (_) => Dialog(
-        backgroundColor: bgColor,
-        child: ListView(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          shrinkWrap: true,
-          children: [
-            InkWell(
-              onTap: () async {
-                Navigator.of(context).pop();
-                await _deletePost(context);
-              },
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                child: Text('Delete',
-                    style: TextStyle(color: Colors.red[400], fontSize: 15)),
-              ),
-            ),
-            InkWell(
-              onTap: () => Navigator.of(context).pop(),
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                child: Text('Cancel',
-                    style: TextStyle(color: textColor, fontSize: 15)),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _deletePost(BuildContext context) async {
-    try {
-      await _postsMethods.deletePost(_postId);
-      widget.onPostDeleted?.call();
-    } catch (e, st) {
-      if (mounted) showSnackBar(context, 'Failed to delete post: $e');
-      try {
-        await _supabase.from('search_errors').insert({
-          'operation_type': 'delete_post',
-          'error_message': e.toString(),
-          'stack_trace': st.toString(),
-          'additional_data': {'postId': _postId},
+            context, MaterialPageRoute(builder: (_) => ProfileScreen(uid: uid)))
+        .then((_) {
+      if (mounted) {
+        setState(() {
+          isShowUsers = false;
+          searchController.clear();
+          _searchResults = [];
         });
-      } catch (_) {}
-    }
+      }
+    });
   }
 }
