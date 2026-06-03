@@ -24,6 +24,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ ADDED
 
 void unawaited(Future<void> future) {}
 
@@ -754,7 +755,7 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // FOLLOW HANDLER
+  // FOLLOW HANDLER with analytics
   // =========================================================================
   Future<void> _handleFollowTap() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
@@ -785,6 +786,7 @@ class _PostCardState extends State<PostCard>
           _followAnimController.forward(from: 0.0);
         }
       } else {
+        // Optimistic UI for follow
         setState(() => _isFollowing = true);
         _tickAnimController.forward(from: 0.0).then((_) {
           if (mounted) {
@@ -793,6 +795,14 @@ class _PostCardState extends State<PostCard>
             });
           }
         });
+
+        // ✅ Log analytics – fire‑and‑forget, source: 'feed'
+        AnalyticsService.logFollowPress(
+          followerUid: user.uid,
+          followedUid: postOwnerId,
+          sourceScreen: 'feed',
+        );
+
         SupabaseProfileMethods()
             .followUser(user.uid, postOwnerId)
             .then((_) async {
