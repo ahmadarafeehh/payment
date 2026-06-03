@@ -10,6 +10,7 @@ import 'package:timeago/timeago.dart' as timeago;
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/services/notification_service.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ ADDED
 
 import 'package:Ratedly/screens/first_time/number_particle.dart';
 import 'package:Ratedly/screens/first_time/falling_number_painter.dart';
@@ -334,6 +335,13 @@ class _FollowBadgeState extends State<_FollowBadge>
         final bool hasContextualNotification =
             widget.notificationType == 'post_rating' ||
                 widget.notificationType == 'comment';
+
+        // ✅ Log analytics – fire‑and‑forget
+        AnalyticsService.logFollowPress(
+          followerUid: widget.currentUserId,
+          followedUid: widget.ownerUid,
+          sourceScreen: 'notifications',
+        );
 
         // Call followUser – suppress generic notification when contextual will be sent
         await SupabaseProfileMethods().followUser(
