@@ -290,13 +290,6 @@ class _FollowBadgeState extends State<_FollowBadge>
 
     setState(() => _isLoadingFollow = true);
 
-    // ✅ Log to Supabase BEFORE any action (fire‑and‑forget)
-    AnalyticsService.logFollowPress(
-      followerUid: widget.currentUserId,
-      followedUid: widget.ownerUid,
-      sourceScreen: 'notifications',
-    );
-
     try {
       if (_isFollowing) {
         // Unfollow
@@ -310,6 +303,13 @@ class _FollowBadgeState extends State<_FollowBadge>
           });
           _scaleController.forward(from: 0.0);
         }
+        // Log unfollow after success
+        AnalyticsService.logFollowPress(
+          followerUid: widget.currentUserId,
+          followedUid: widget.ownerUid,
+          sourceScreen: 'notifications',
+          action: 'unfollow',
+        );
       } else if (_hasPendingRequest) {
         // Cancel pending request
         await SupabaseProfileMethods()
@@ -321,6 +321,7 @@ class _FollowBadgeState extends State<_FollowBadge>
           });
           _scaleController.forward(from: 0.0);
         }
+        // No logging for decline (optional, can add 'decline' later if needed)
       } else {
         // Follow (optimistic UI + request handling)
         setState(() => _isFollowing = true);
@@ -337,7 +338,7 @@ class _FollowBadgeState extends State<_FollowBadge>
             widget.notificationType == 'post_rating' ||
                 widget.notificationType == 'comment';
 
-        // Call followUser – suppress generic notification when contextual will be sent
+        // Perform follow – suppress generic notification when contextual will be sent
         await SupabaseProfileMethods().followUser(
           widget.currentUserId,
           widget.ownerUid,
@@ -353,13 +354,20 @@ class _FollowBadgeState extends State<_FollowBadge>
             .maybeSingle();
 
         if (mounted && pending != null) {
-          // Private account → became a follow request, no notification at all
+          // Private account → became a follow request, no notification
           setState(() {
             _isFollowing = false;
             _hasPendingRequest = true;
             _showBadge = true;
           });
           _scaleController.forward(from: 0.0);
+          // Log REQUEST action
+          AnalyticsService.logFollowPress(
+            followerUid: widget.currentUserId,
+            followedUid: widget.ownerUid,
+            sourceScreen: 'notifications',
+            action: 'request',
+          );
         } else {
           // Public account follow succeeded – send contextual notification if needed
           if (widget.notificationType == 'post_rating') {
@@ -367,8 +375,13 @@ class _FollowBadgeState extends State<_FollowBadge>
           } else if (widget.notificationType == 'comment') {
             await _sendCommentFollowNotification();
           }
-          // Generic case: followUser already sent the notification because
-          // sendNotification was true (hasContextualNotification == false)
+          // Log FOLLOW action
+          AnalyticsService.logFollowPress(
+            followerUid: widget.currentUserId,
+            followedUid: widget.ownerUid,
+            sourceScreen: 'notifications',
+            action: 'follow',
+          );
         }
       }
     } catch (_) {
