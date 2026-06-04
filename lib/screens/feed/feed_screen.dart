@@ -23,6 +23,7 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 import 'package:Ratedly/services/iap_service.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 // -----------------------------------------------------------------------------
 // FEED ERROR LOGGER – logs only to feed_errors table
@@ -171,6 +172,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   bool _followingIdsLoaded = false;
   bool _immediatePostsCached = false;
   DateTime? _appStartTime;
+
+  // ✅ screen tracking: keep the name of the currently visible tab
+  String? _currentScreenName;
 
   // ---------------------------------------------------------------------------
   // HELPERS
@@ -775,6 +779,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     _forYouPageController = PageController();
     _tryLoadCacheWithPersistedUserId();
     _loadInterstitialAd();
+
+    // ✅ screen tracking: initial tab is For You (index 1)
+    _currentScreenName = 'for you';
+    AnalyticsService.screenEnter('for you');
   }
 
   @override
@@ -799,6 +807,13 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _unreadCountStream = _createUnreadCountStream();
         _loadInitialData();
       } else if (currentUserId != resolvedId) {
+        // User changed - we need to exit current screen (if any) before reload
+        if (_currentScreenName != null && currentUserId != null && currentUserId!.isNotEmpty) {
+          AnalyticsService.screenExit(
+            screenName: _currentScreenName!,
+            uid: currentUserId!,
+          );
+        }
         currentUserId = resolvedId;
         unawaited(FeedCacheService.clearCache(resolvedId));
         _forYouPosts = [];
@@ -810,6 +825,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _immediateCachedPostIds = {};
         _unreadCountStream = _createUnreadCountStream();
         _loadInitialData();
+        // After reload, the screen is For You again
+        _currentScreenName = 'for you';
+        AnalyticsService.screenEnter('for you');
       }
     } else if (currentUserId == null) {
       _loadInitialData();
@@ -1603,11 +1621,20 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // TAB SWITCHING
+  // TAB SWITCHING (with screen time tracking)
   // ===========================================================================
 
   void _switchTab(int index) {
     if (_selectedTab == index) return;
+
+    // ✅ Exit the current screen if user is logged in
+    if (_currentScreenName != null && currentUserId != null && currentUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: _currentScreenName!,
+        uid: currentUserId!,
+      );
+    }
+
     _pauseCurrentVideo();
     _currentPlayingPostId = null;
     _firstVideoInitialized = false;
@@ -1627,11 +1654,19 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     _postsBeingPreloaded.clear();
     _postsFullyPreloaded.clear();
 
+    final newScreenName = index == 1 ? 'for you' : 'following';
+
     setState(() {
       _selectedTab = index;
       _isLoading = true;
       _showOverlay = true;
+      _currentScreenName = newScreenName;
     });
+
+    // ✅ Enter the new screen
+    if (currentUserId != null && currentUserId!.isNotEmpty) {
+      AnalyticsService.screenEnter(newScreenName);
+    }
 
     if (index == 0) {
       _offsetFollowing = 0;
@@ -1666,6 +1701,14 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    // ✅ Exit the current screen if user is logged in
+    if (_currentScreenName != null && currentUserId != null && currentUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: _currentScreenName!,
+        uid: currentUserId!,
+      );
+    }
+
     WidgetsBinding.instance.removeObserver(this);
     VideoManager.pauseAllVideos();
     _currentPlayingPostId = null;
