@@ -10,7 +10,7 @@ import 'package:timeago/timeago.dart' as timeago;
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/services/notification_service.dart';
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ ADDED
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ Analytics logging
 
 import 'package:Ratedly/screens/first_time/number_particle.dart';
 import 'package:Ratedly/screens/first_time/falling_number_painter.dart';
@@ -118,7 +118,7 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
 }
 
 // =============================================================================
-// TikTok-style follow badge (FIXED to avoid duplicate notifications)
+// TikTok-style follow badge (UPDATED – logs every tap to Supabase)
 // =============================================================================
 class _FollowBadge extends StatefulWidget {
   final String ownerUid;
@@ -126,7 +126,6 @@ class _FollowBadge extends StatefulWidget {
 
   /// The type of the parent notification (e.g. 'post_rating', 'comment').
   /// Used to decide which contextual push body to send after a follow.
-  /// Any other type (or null) sends the normal "started following you" push.
   final String? notificationType;
 
   const _FollowBadge({
@@ -206,7 +205,6 @@ class _FollowBadgeState extends State<_FollowBadge>
   // ── Contextual push after follow from a post_rating notification ──────────
   Future<void> _sendRatingFollowNotification() async {
     try {
-      // Fetch follower's username + test flag in one query
       final followerRow = await _supabase
           .from('users')
           .select('username, test')
@@ -217,7 +215,6 @@ class _FollowBadgeState extends State<_FollowBadge>
           followerRow?['username']?.toString() ?? 'Someone';
       final bool isTestGroup = followerRow?['test'] ?? false;
 
-      // CHANGED: type is now 'follow_from_rating' instead of 'follow'
       await _supabase.from('notifications').insert({
         'target_user_id': widget.ownerUid,
         'type': 'follow_from_rating',
@@ -228,7 +225,6 @@ class _FollowBadgeState extends State<_FollowBadge>
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
 
-      // A/B test body — only fires when follow badge tapped on a rating notification
       final body = isTestGroup
           ? '@$followerUsername followed you after your reaction.'
           : '@$followerUsername followed you after you reacted to their post.';
@@ -249,7 +245,6 @@ class _FollowBadgeState extends State<_FollowBadge>
   // ── Contextual push after follow from a comment notification ─────────────
   Future<void> _sendCommentFollowNotification() async {
     try {
-      // Fetch follower's username + test flag in one query
       final followerRow = await _supabase
           .from('users')
           .select('username, test')
@@ -260,7 +255,6 @@ class _FollowBadgeState extends State<_FollowBadge>
           followerRow?['username']?.toString() ?? 'Someone';
       final bool isTestGroup = followerRow?['test'] ?? false;
 
-      // CHANGED: type is now 'follow_from_comment' instead of 'follow'
       await _supabase.from('notifications').insert({
         'target_user_id': widget.ownerUid,
         'type': 'follow_from_comment',
@@ -271,7 +265,6 @@ class _FollowBadgeState extends State<_FollowBadge>
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
 
-      // A/B test body — only fires when follow badge tapped on a comment notification
       final body = isTestGroup
           ? '@$followerUsername followed you after your comment.'
           : '@$followerUsername followed you after you commented on their post.';
@@ -290,16 +283,23 @@ class _FollowBadgeState extends State<_FollowBadge>
   }
 
   // ========================================================================
-  // FIXED: _handleTap – no longer calls any generic method; relies on
-  // followUser's sendNotification flag to decide whether to create the
-  // generic notification. For contextual follows (comment/rating) we
-  // suppress followUser's generic and then send the contextual one.
+  // FIXED: logs every tap (follow, unfollow, cancel) to follow_pressed
   // ========================================================================
   Future<void> _handleTap() async {
     if (_isLoadingFollow) return;
+
     setState(() => _isLoadingFollow = true);
+
+    // ✅ Log to Supabase BEFORE any action (fire‑and‑forget)
+    AnalyticsService.logFollowPress(
+      followerUid: widget.currentUserId,
+      followedUid: widget.ownerUid,
+      sourceScreen: 'notifications',
+    );
+
     try {
       if (_isFollowing) {
+        // Unfollow
         await SupabaseProfileMethods()
             .unfollowUser(widget.currentUserId, widget.ownerUid);
         if (mounted) {
@@ -311,6 +311,7 @@ class _FollowBadgeState extends State<_FollowBadge>
           _scaleController.forward(from: 0.0);
         }
       } else if (_hasPendingRequest) {
+        // Cancel pending request
         await SupabaseProfileMethods()
             .declineFollowRequest(widget.ownerUid, widget.currentUserId);
         if (mounted) {
@@ -321,7 +322,7 @@ class _FollowBadgeState extends State<_FollowBadge>
           _scaleController.forward(from: 0.0);
         }
       } else {
-        // Optimistic UI
+        // Follow (optimistic UI + request handling)
         setState(() => _isFollowing = true);
         _tickController.forward(from: 0.0).then((_) {
           if (mounted) {
@@ -335,13 +336,6 @@ class _FollowBadgeState extends State<_FollowBadge>
         final bool hasContextualNotification =
             widget.notificationType == 'post_rating' ||
                 widget.notificationType == 'comment';
-
-        // ✅ Log analytics – fire‑and‑forget
-        AnalyticsService.logFollowPress(
-          followerUid: widget.currentUserId,
-          followedUid: widget.ownerUid,
-          sourceScreen: 'notifications',
-        );
 
         // Call followUser – suppress generic notification when contextual will be sent
         await SupabaseProfileMethods().followUser(
@@ -1071,7 +1065,6 @@ class _FastNotificationItem extends StatelessWidget {
         final postId = _extractPostId();
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
-      // ── CHANGED: removed rating variable and subtitle, updated title text ──
       case 'post_rating':
         title = '$username reacted to your post';
         final postId = _extractPostId();
@@ -1101,11 +1094,9 @@ class _FastNotificationItem extends StatelessWidget {
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
       case 'follow':
-        // Generic direct follow — unchanged
         title = '$username started following you';
         onTap = () => _navigateToProfile(context, userId);
         break;
-      // ADDED: contextual follow messages
       case 'follow_from_rating':
         title = '$username started following you after reacting to your post';
         onTap = () => _navigateToProfile(context, userId);
@@ -1134,7 +1125,7 @@ class _FastNotificationItem extends StatelessWidget {
     return _FastNotificationTemplate(
       userId: userId,
       currentUserId: currentUserId,
-      notificationType: type, // forwarded so badge knows the context
+      notificationType: type,
       title: title,
       subtitle: subtitle,
       timestamp: notification['created_at'],
