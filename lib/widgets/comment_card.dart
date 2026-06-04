@@ -259,13 +259,6 @@ class _FollowBadgeState extends State<_FollowBadge>
 
     setState(() => _isLoadingFollow = true);
 
-    // ✅ Log to Supabase BEFORE any action (fire‑and‑forget)
-    AnalyticsService.logFollowPress(
-      followerUid: widget.currentUserId,
-      followedUid: widget.ownerUid,
-      sourceScreen: 'comments',
-    );
-
     try {
       if (_isFollowing) {
         // Unfollow
@@ -279,6 +272,13 @@ class _FollowBadgeState extends State<_FollowBadge>
           });
           _scaleController.forward(from: 0.0);
         }
+        // Log unfollow after success
+        AnalyticsService.logFollowPress(
+          followerUid: widget.currentUserId,
+          followedUid: widget.ownerUid,
+          sourceScreen: 'comments',
+          action: 'unfollow',
+        );
       } else if (_hasPendingRequest) {
         // Cancel pending request
         await SupabaseProfileMethods()
@@ -290,8 +290,9 @@ class _FollowBadgeState extends State<_FollowBadge>
           });
           _scaleController.forward(from: 0.0);
         }
+        // No logging for 'decline' (you could add 'decline' later if needed)
       } else {
-        // Follow (optimistic UI + request handling)
+        // Follow (optimistic UI)
         setState(() => _isFollowing = true);
         _tickController.forward(from: 0.0).then((_) {
           if (mounted) {
@@ -301,36 +302,56 @@ class _FollowBadgeState extends State<_FollowBadge>
           }
         });
 
-        SupabaseProfileMethods()
-            .followUser(widget.currentUserId, widget.ownerUid)
-            .then((_) async {
-          final pending = await Supabase.instance.client
-              .from('user_follow_request')
-              .select()
-              .eq('user_id', widget.ownerUid)
-              .eq('requester_id', widget.currentUserId)
-              .maybeSingle();
-          if (mounted && pending != null) {
+        await SupabaseProfileMethods()
+            .followUser(widget.currentUserId, widget.ownerUid);
+
+        // Check if a follow request was created (private account)
+        final pending = await Supabase.instance.client
+            .from('user_follow_request')
+            .select()
+            .eq('user_id', widget.ownerUid)
+            .eq('requester_id', widget.currentUserId)
+            .maybeSingle();
+
+        if (mounted) {
+          if (pending != null) {
+            // Private account – follow request sent
             setState(() {
               _isFollowing = false;
               _hasPendingRequest = true;
               _showBadge = true;
             });
             _scaleController.forward(from: 0.0);
+            // Log REQUEST action
+            AnalyticsService.logFollowPress(
+              followerUid: widget.currentUserId,
+              followedUid: widget.ownerUid,
+              sourceScreen: 'comments',
+              action: 'request',
+            );
+          } else {
+            // Public account – immediate follow
+            // State already has _isFollowing = true, _showBadge = false
+            // Log FOLLOW action
+            AnalyticsService.logFollowPress(
+              followerUid: widget.currentUserId,
+              followedUid: widget.ownerUid,
+              sourceScreen: 'comments',
+              action: 'follow',
+            );
           }
-        }).catchError((_) {
-          if (mounted) {
-            setState(() {
-              _isFollowing = false;
-              _showBadge = true;
-            });
-            _tickController.reset();
-            _scaleController.forward(from: 0.0);
-          }
-        });
+        }
       }
     } catch (_) {
-      // silent
+      // On error, revert optimistic UI
+      if (mounted) {
+        setState(() {
+          _isFollowing = false;
+          _showBadge = true;
+        });
+        _tickController.reset();
+        _scaleController.forward(from: 0.0);
+      }
     } finally {
       if (mounted) setState(() => _isLoadingFollow = false);
     }
