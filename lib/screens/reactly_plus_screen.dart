@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:Ratedly/services/iap_service.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
+import 'package:Ratedly/providers/user_provider.dart'; // ✅ for user ID
 
 class ReactlyPlusScreen extends StatefulWidget {
   const ReactlyPlusScreen({Key? key}) : super(key: key);
@@ -18,10 +20,40 @@ class _ReactlyPlusScreenState extends State<ReactlyPlusScreen> {
   bool _isPurchased = false;
   bool _isProcessing = false;
 
+  // ✅ screen tracking
+  bool _screenTrackingStarted = false;
+  String? _currentUserId;
+
   @override
   void initState() {
     super.initState();
     _loadData();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // ✅ start screen tracking when user ID is available
+    if (!_screenTrackingStarted) {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      _currentUserId = userProvider.firebaseUid ?? userProvider.supabaseUid;
+      if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+        _screenTrackingStarted = true;
+        AnalyticsService.screenEnter('reactly_plus');
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    // ✅ screen tracking: exit
+    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: 'reactly_plus',
+        uid: _currentUserId!,
+      );
+    }
+    super.dispose();
   }
 
   Future<void> _loadData() async {
