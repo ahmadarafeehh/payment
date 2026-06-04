@@ -18,6 +18,7 @@ import 'package:Ratedly/resources/supabase_posts_methods.dart';
 import 'package:Ratedly/resources/reactions_methods.dart';
 import 'package:Ratedly/utils/utils.dart';
 import 'package:timeago/timeago.dart' as timeago;
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED EDITING / DRAWING CLASSES (normally from edit_shared.dart)
@@ -320,6 +321,7 @@ class _SearchResultFeedScreenState extends State<SearchResultFeedScreen> {
   bool _hasMore = false;
   bool _loadingMore = false;
   final String _sessionId = DateTime.now().microsecondsSinceEpoch.toString();
+  String? _currentUserId; // ✅ screen tracking
 
   bool _isVideoUrl(String url) {
     final u = url.toLowerCase();
@@ -339,6 +341,13 @@ class _SearchResultFeedScreenState extends State<SearchResultFeedScreen> {
   @override
   void initState() {
     super.initState();
+    // ✅ screen tracking: enter search_feed screen
+    AnalyticsService.screenEnter('search_feed');
+
+    // Get current user ID
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    _currentUserId = userProvider.firebaseUid ?? userProvider.supabaseUid;
+
     _posts = List.from(widget.initialPosts);
     _hasMore = widget.initialHasMore;
     _currentIndex = widget.initialIndex;
@@ -348,6 +357,13 @@ class _SearchResultFeedScreenState extends State<SearchResultFeedScreen> {
 
   @override
   void dispose() {
+    // ✅ screen tracking: exit search_feed screen
+    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: 'search_feed',
+        uid: _currentUserId!,
+      );
+    }
     _pageController.removeListener(_onPageScroll);
     _pageController.dispose();
     super.dispose();
@@ -722,6 +738,24 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
+  void _openRatingsPanel() {
+    _videoController?.pause();
+    debugPrint('[SearchFeed] Opening ratings panel, video paused');
+
+    RatingListScreen.show(
+      context,
+      postId: _postId,
+      isVideo: _isVideo,
+      videoController: _videoController,
+      onClose: () {
+        debugPrint('[SearchFeed] Ratings panel closed');
+        if (widget.isActive) {
+          _videoController?.play();
+        }
+      },
+    );
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
   // BUILD METHOD
   // ───────────────────────────────────────────────────────────────────────────
@@ -825,7 +859,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
             child: RatingBar(
               averageRating: _averageRating,
               reactionEmoji: _reactionEmoji,
-              // ✅ FIX: default to 5 when user hasn't rated yet
               initialThumbPosition: _userRating == null ? 5.0 : _averageRating,
               onRatingEnd: _handleRatingSubmitted,
               hasUserRated: _userRating != null,
@@ -887,14 +920,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
               ),
               const Spacer(),
               GestureDetector(
-                onTap: isOwner
-                    ? () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) =>
-                                  RatingListScreen(postId: _postId)),
-                        )
-                    : null,
+                onTap: isOwner ? () => _openRatingsPanel() : null,
                 child: Container(
                   decoration: BoxDecoration(
                       color: cardColor, borderRadius: BorderRadius.circular(4)),
