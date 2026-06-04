@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
-import 'package:Ratedly/resources/reactions_methods.dart'; // <-- ADDED
+import 'package:Ratedly/resources/reactions_methods.dart';
 import 'package:Ratedly/screens/comment_screen.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:Ratedly/widgets/rating_list_screen_postcard.dart';
@@ -25,6 +25,7 @@ import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:Ratedly/services/ads.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 // ── VideoManager (unchanged) ────────────────────────────────────────────────
 class VideoManager {
@@ -451,6 +452,9 @@ class _ImageViewScreenState extends State<ImageViewScreen>
   late List<Map<String, dynamic>> _localRatings;
   VideoEditResult? _editResult;
 
+  // ✅ screen tracking: store current user ID for exit
+  String? _currentUserId;
+
   final List<String> reportReasons = [
     'I just don\'t like it',
     'Discriminatory content',
@@ -497,6 +501,13 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
+    // ✅ screen tracking: enter post_detail screen
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    _currentUserId = userProvider.firebaseUid ?? userProvider.supabaseUid;
+    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+      AnalyticsService.screenEnter('post_detail');
+    }
+
     _localRatings = [];
     _commentCount = 0;
 
@@ -523,6 +534,26 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     if (_isProfileVideo) {
       _initializeProfileVideo();
     }
+  }
+
+  @override
+  void dispose() {
+    // ✅ screen tracking: exit post_detail screen
+    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: 'post_detail',
+        uid: _currentUserId!,
+      );
+    }
+
+    WidgetsBinding.instance.removeObserver(this);
+    _disposeVideoController();
+    _disposeProfileVideoController();
+    _bannerAd?.dispose();
+    _postChannel.unsubscribe();
+    _commentsChannel.unsubscribe();
+    _repliesChannel.unsubscribe();
+    super.dispose();
   }
 
   @override
@@ -848,7 +879,6 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     });
 
     try {
-      // CHANGED: use SupabaseReactionsMethods instead of _postsMethods.ratePost
       final success = await SupabaseReactionsMethods()
           .reactToPost(widget.postId, user.uid, rating);
       if (success != 'success' && mounted) _fetchInitialRatings();
@@ -891,7 +921,6 @@ class _ImageViewScreenState extends State<ImageViewScreen>
         setState(() {});
       });
     }
-    // Check safely without using ! on nullable value
     final controller = _videoController;
     if (controller != null &&
         controller.value.position == controller.value.duration &&
@@ -945,18 +974,6 @@ class _ImageViewScreenState extends State<ImageViewScreen>
       _profileVideoController = null;
     }
     _isProfileVideoInitialized = false;
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _disposeVideoController();
-    _disposeProfileVideoController();
-    _bannerAd?.dispose();
-    _postChannel.unsubscribe();
-    _commentsChannel.unsubscribe();
-    _repliesChannel.unsubscribe();
-    super.dispose();
   }
 
   void _loadBannerAd() {
@@ -1396,12 +1413,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
         onTap: () {
           _pauseVideo();
           _pauseProfileVideo();
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => RatingListScreen(postId: widget.postId),
-            ),
-          );
+          // ✅ FIXED: Use the static show method instead of direct constructor
+          RatingListScreen.show(context, postId: widget.postId);
         },
         child: containerContent,
       );
