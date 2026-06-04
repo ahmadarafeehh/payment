@@ -24,7 +24,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ ADDED
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ already imported
 
 void unawaited(Future<void> future) {}
 
@@ -197,7 +197,6 @@ class _PulsingBoneState extends State<_PulsingBone>
         width: widget.width == double.infinity ? null : widget.width,
         height: widget.height,
         decoration: BoxDecoration(
-          // Always white-ish so it reads on the dark video background
           color: Colors.white.withOpacity(_opacity.value),
           borderRadius: BorderRadius.circular(widget.borderRadius),
         ),
@@ -216,9 +215,10 @@ class PostCard extends StatefulWidget {
   final bool isVideoPreloaded;
   final ImageProvider? preloadedImageProvider;
   final bool isImagePreloaded;
-  // ── FIX: receives the skeleton/background color from FeedScreen so the
-  //    Scaffold and image placeholder never flash black during loading.
   final Color? skeletonColor;
+
+  // ── NEW: where the follow button is being shown from ────────────────
+  final String sourceScreen; // e.g., 'feed', 'comments', 'notifications'
 
   const PostCard({
     Key? key,
@@ -232,6 +232,7 @@ class PostCard extends StatefulWidget {
     this.preloadedImageProvider,
     this.isImagePreloaded = false,
     this.skeletonColor,
+    this.sourceScreen = 'feed', // default for backward compatibility
   }) : super(key: key);
 
   @override
@@ -276,9 +277,6 @@ class _PostCardState extends State<PostCard>
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
   bool _isVideoLoading = false;
-  // ── FIX: explicit failure flag – "Video not available" is shown ONLY when
-  //    this is true, never during the startup window before _isVideoLoading
-  //    has been set to true.
   bool _videoLoadFailed = false;
   bool _isMuted = false;
 
@@ -292,7 +290,6 @@ class _PostCardState extends State<PostCard>
   final VideoManager _videoManager = VideoManager();
   final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
 
-  // Tracks whether the async post-card data has finished loading.
   bool _isPostDataLoading = true;
 
   final List<String> _reportReasons = [
@@ -308,8 +305,6 @@ class _PostCardState extends State<PostCard>
   ];
 
   String get _postId => widget.snap['postId']?.toString() ?? '';
-
-  // Reaction emoji – fetched from DB, default ❤️
   String _reactionEmoji = '❤️';
 
   bool get _isVideo {
@@ -417,8 +412,6 @@ class _PostCardState extends State<PostCard>
           _pauseVideo();
         }
       } else {
-        // Mark as loading immediately so the 50 ms delay window never falls
-        // through to the "Video not available" branch.
         _isVideoLoading = true;
         Future.delayed(const Duration(milliseconds: 50), () {
           if (mounted && _isVideo && !_isVideoInitialized) {
@@ -755,16 +748,31 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // FOLLOW HANDLER with analytics
+  // FOLLOW HANDLER (UPDATED)
   // =========================================================================
+
   Future<void> _handleFollowTap() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
-    if (user == null || _isLoadingFollow) return;
+
+    if (user == null || _isLoadingFollow) {
+      return;
+    }
+
     final postOwnerId = widget.snap['uid']?.toString() ?? '';
-    if (postOwnerId.isEmpty) return;
+    if (postOwnerId.isEmpty) {
+      return;
+    }
 
     setState(() => _isLoadingFollow = true);
     try {
+      // Log every tap
+      AnalyticsService.logFollowPress(
+        followerUid: user.uid,
+        followedUid: postOwnerId,
+        sourceScreen: widget.sourceScreen,
+      );
+
+      // --- perform the actual action ---
       if (_isFollowing) {
         await SupabaseProfileMethods().unfollowUser(user.uid, postOwnerId);
         if (mounted) {
@@ -795,13 +803,6 @@ class _PostCardState extends State<PostCard>
             });
           }
         });
-
-        // ✅ Log analytics – fire‑and‑forget, source: 'feed'
-        AnalyticsService.logFollowPress(
-          followerUid: user.uid,
-          followedUid: postOwnerId,
-          sourceScreen: 'feed',
-        );
 
         SupabaseProfileMethods()
             .followUser(user.uid, postOwnerId)
@@ -863,14 +864,14 @@ class _PostCardState extends State<PostCard>
   // =========================================================================
   Future<void> _initializeVideoPlayer() async {
     if (_isVideoLoading && !_videoLoadFailed) {
-      // Already in progress (flag set in initState) – just initialise.
+      // Already in progress
     } else if (_isVideoInitialized) {
       return;
     }
 
     setState(() {
       _isVideoLoading = true;
-      _videoLoadFailed = false; // reset on every attempt
+      _videoLoadFailed = false;
     });
 
     try {
@@ -902,7 +903,6 @@ class _PostCardState extends State<PostCard>
       if (mounted) {
         setState(() {
           _isVideoLoading = false;
-          // Only now do we allow the "Video not available" UI to render.
           _videoLoadFailed = true;
         });
       }
@@ -1501,11 +1501,6 @@ class _PostCardState extends State<PostCard>
     );
   }
 
-  // =========================================================================
-  // BOTTOM OVERLAY
-  // =========================================================================
-
-  /// Skeleton placeholder for the RatingBar area while post data is loading.
   Widget _buildRatingBarSkeleton() {
     return const SizedBox(
       height: 48,
@@ -1524,7 +1519,6 @@ class _PostCardState extends State<PostCard>
     );
   }
 
-  /// Skeleton placeholder for the voter-count pill while post data is loading.
   Widget _buildVoterCountSkeleton() {
     return const _PulsingBone(width: 80, height: 28, borderRadius: 20);
   }
@@ -1537,7 +1531,6 @@ class _PostCardState extends State<PostCard>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── RatingBar OR its skeleton ──────────────────────────────────
           if (_isPostDataLoading)
             _buildRatingBarSkeleton()
           else
@@ -1550,12 +1543,9 @@ class _PostCardState extends State<PostCard>
               userRating: _userRating,
               userProfilePhoto: user.photoUrl,
             ),
-
           const SizedBox(height: 8),
-
           Row(
             children: [
-              // ── Username ───────────────────────────────────────────────
               Expanded(
                 child: GestureDetector(
                   onTap: _navigateToProfile,
@@ -1581,8 +1571,6 @@ class _PostCardState extends State<PostCard>
                   ),
                 ),
               ),
-
-              // ── Voter count pill OR its skeleton ───────────────────────
               if (_isPostDataLoading)
                 _buildVoterCountSkeleton()
               else
@@ -1616,9 +1604,7 @@ class _PostCardState extends State<PostCard>
                 ),
             ],
           ),
-
           const SizedBox(height: 8),
-
           if (widget.snap['description']?.toString().isNotEmpty ?? false)
             _buildCaptionWithVisibility(colors),
         ],
@@ -1634,9 +1620,6 @@ class _PostCardState extends State<PostCard>
     );
   }
 
-  // =========================================================================
-  // VIDEO PLAYER (applies filter, rotation, draw strokes, text overlays)
-  // =========================================================================
   Widget _buildVideoPlayer(_ColorSet colors) {
     final VideoEditResult? er = _editResult;
 
@@ -1651,7 +1634,6 @@ class _PostCardState extends State<PostCard>
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // ── Case 1: video is ready ──────────────────────────────────────
           if (_isVideoInitialized)
             GestureDetector(
               onTap: _toggleVideoPlayback,
@@ -1743,8 +1725,6 @@ class _PostCardState extends State<PostCard>
                 },
               ),
             )
-
-          // ── Case 2: actively loading (spinner) ─────────────────────────
           else if (_isVideoLoading)
             Container(
               color: Colors.black,
@@ -1762,8 +1742,6 @@ class _PostCardState extends State<PostCard>
                 ),
               ),
             )
-
-          // ── Case 3: confirmed failure – show error message ──────────────
           else if (_videoLoadFailed)
             Container(
               color: Colors.black,
@@ -1779,14 +1757,8 @@ class _PostCardState extends State<PostCard>
                 ),
               ),
             )
-
-          // ── Case 4: startup window – neither loaded nor failed yet.
-          //    Use the same skeleton color passed in from FeedScreen so the
-          //    background matches the surrounding skeleton UI seamlessly.
           else
             ColoredBox(color: widget.skeletonColor ?? const Color(0xFF333333)),
-
-          // ── Play button overlay (shown when paused on an initialised video)
           if (_isVideoInitialized && !_isVideoPlaying)
             GestureDetector(
               onTap: _playVideo,
@@ -1813,15 +1785,8 @@ class _PostCardState extends State<PostCard>
     );
   }
 
-  // =========================================================================
-  // IMAGE CONTENT
-  // =========================================================================
   Widget _buildImageContent(_ColorSet colors) {
-    // ── FIX: use the passed-in skeletonColor (same tone as FeedSkeleton)
-    //    instead of Colors.black so the placeholder never flashes black
-    //    during the async load window.
     final placeholderColor = widget.skeletonColor ?? const Color(0xFF1C1C1C);
-
     final imageUrl = widget.snap['postUrl']?.toString() ?? '';
     if (widget.preloadedImageProvider != null && widget.isImagePreloaded) {
       return Container(
@@ -1847,9 +1812,6 @@ class _PostCardState extends State<PostCard>
     );
   }
 
-  // =========================================================================
-  // BUILD
-  // =========================================================================
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -1867,9 +1829,6 @@ class _PostCardState extends State<PostCard>
     final user = Provider.of<UserProvider>(context).user;
     if (user == null) return const SizedBox.shrink();
 
-    // ── FIX: use skeletonColor as the Scaffold background so the area
-    //    behind the image never flashes black while the card data or
-    //    image is still loading.
     final scaffoldBg = widget.skeletonColor ?? const Color(0xFF1C1C1C);
 
     return Scaffold(
