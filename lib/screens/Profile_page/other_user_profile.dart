@@ -252,6 +252,10 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   DateTime? _lastLoadMoreTime;
   static const Duration _loadMoreCooldown = Duration(milliseconds: 500);
 
+  // ✅ screen tracking: store user ID and a flag to avoid duplicate entry
+  String? _currentUserIdForTracking;
+  bool _screenTrackingStarted = false;
+
   // --------------------------------------------------------------------------
   // ERROR LOGGING HELPER
   // --------------------------------------------------------------------------
@@ -795,6 +799,17 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     if (!_hasLoaded) {
       _hasLoaded = true;
       _loadDataInParallel();
+    }
+
+    // ✅ screen tracking: get current user ID and start screen tracking
+    if (!_screenTrackingStarted) {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final uid = userProvider.firebaseUid ?? userProvider.supabaseUid;
+      if (uid != null && uid.isNotEmpty) {
+        _currentUserIdForTracking = uid;
+        AnalyticsService.screenEnter('other_profile');
+        _screenTrackingStarted = true;
+      }
     }
   }
 
@@ -2285,6 +2300,14 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   @override
   void dispose() {
+    // ✅ screen tracking: exit other_profile screen
+    if (_currentUserIdForTracking != null && _currentUserIdForTracking!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: 'other_profile',
+        uid: _currentUserIdForTracking!,
+      );
+    }
+
     _videoInitDebounce?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_scrollListener);
