@@ -1201,9 +1201,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       if (mounted) showSnackBar(context, "Please sign in to follow users");
       return;
     }
+
     try {
       final isPrivate = userData['isPrivate'] ?? false;
       if (isFollowing) {
+        // Unfollow
         await SupabaseProfileMethods().unfollowUser(currentUserId, widget.uid);
         if (mounted) {
           setState(() {
@@ -1211,25 +1213,43 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             _isMutualFollow = false;
           });
         }
-      } else if (hasPendingRequest) {
-        await SupabaseProfileMethods()
-            .declineFollowRequest(widget.uid, currentUserId);
-        if (mounted) setState(() => hasPendingRequest = false);
-      } else {
-        await SupabaseProfileMethods().followUser(currentUserId, widget.uid);
-        
-        // ✅ Log follow press analytics (non‑blocking)
+        // Log unfollow after success
         AnalyticsService.logFollowPress(
           followerUid: currentUserId,
           followedUid: widget.uid,
           sourceScreen: 'other_user_profile',
+          action: 'unfollow',
         );
-        
+      } else if (hasPendingRequest) {
+        // Decline pending request
+        await SupabaseProfileMethods()
+            .declineFollowRequest(widget.uid, currentUserId);
+        if (mounted) setState(() => hasPendingRequest = false);
+        // No logging for 'decline' (optional)
+      } else {
+        // Follow (or request)
+        await SupabaseProfileMethods().followUser(currentUserId, widget.uid);
         if (isPrivate) {
+          // Private account -> request sent
           if (mounted) setState(() => hasPendingRequest = true);
+          // Log request action
+          AnalyticsService.logFollowPress(
+            followerUid: currentUserId,
+            followedUid: widget.uid,
+            sourceScreen: 'other_user_profile',
+            action: 'request',
+          );
         } else {
+          // Public account -> immediate follow
           if (mounted) setState(() => isFollowing = true);
           _checkMutualFollowAfterFollow();
+          // Log follow action
+          AnalyticsService.logFollowPress(
+            followerUid: currentUserId,
+            followedUid: widget.uid,
+            sourceScreen: 'other_user_profile',
+            action: 'follow',
+          );
         }
       }
     } catch (e, stack) {
