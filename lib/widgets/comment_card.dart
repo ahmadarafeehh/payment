@@ -11,7 +11,7 @@ import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:video_player/video_player.dart';
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ Added analytics service
+import 'package:Ratedly/services/analytics_service.dart'; // Analytics logging
 
 // ============================================================================
 // Expandable Text Widget
@@ -176,7 +176,7 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
 }
 
 // ============================================================================
-// TikTok-style follow badge
+// TikTok-style follow badge (UPDATED – logs every tap to Supabase)
 // ============================================================================
 class _FollowBadge extends StatefulWidget {
   final String ownerUid;
@@ -256,9 +256,19 @@ class _FollowBadgeState extends State<_FollowBadge>
 
   Future<void> _handleTap() async {
     if (_isLoadingFollow) return;
+
     setState(() => _isLoadingFollow = true);
+
+    // ✅ Log to Supabase BEFORE any action (fire‑and‑forget)
+    AnalyticsService.logFollowPress(
+      followerUid: widget.currentUserId,
+      followedUid: widget.ownerUid,
+      sourceScreen: 'comments',
+    );
+
     try {
       if (_isFollowing) {
+        // Unfollow
         await SupabaseProfileMethods()
             .unfollowUser(widget.currentUserId, widget.ownerUid);
         if (mounted) {
@@ -270,6 +280,7 @@ class _FollowBadgeState extends State<_FollowBadge>
           _scaleController.forward(from: 0.0);
         }
       } else if (_hasPendingRequest) {
+        // Cancel pending request
         await SupabaseProfileMethods()
             .declineFollowRequest(widget.ownerUid, widget.currentUserId);
         if (mounted) {
@@ -280,7 +291,7 @@ class _FollowBadgeState extends State<_FollowBadge>
           _scaleController.forward(from: 0.0);
         }
       } else {
-        // Optimistic: show tick immediately
+        // Follow (optimistic UI + request handling)
         setState(() => _isFollowing = true);
         _tickController.forward(from: 0.0).then((_) {
           if (mounted) {
@@ -289,13 +300,6 @@ class _FollowBadgeState extends State<_FollowBadge>
             });
           }
         });
-
-        // ✅ Log follow press analytics (non‑blocking)
-        AnalyticsService.logFollowPress(
-          followerUid: widget.currentUserId,
-          followedUid: widget.ownerUid,
-          sourceScreen: 'comments',
-        );
 
         SupabaseProfileMethods()
             .followUser(widget.currentUserId, widget.ownerUid)
@@ -412,7 +416,7 @@ Widget _buildAvatarWithFollow({
 }
 
 // ============================================================================
-// CommentCard Widget
+// CommentCard Widget (unchanged, uses _buildAvatarWithFollow which now logs)
 // ============================================================================
 class CommentCard extends StatefulWidget {
   final dynamic snap;
