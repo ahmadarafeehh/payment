@@ -549,6 +549,7 @@ class _NotificationScreenState extends State<NotificationScreen>
   final List<NumberParticle> _particles = [];
   final Random _random = Random();
   double _screenHeight = 0;
+  String? _currentUserId; // ✅ screen tracking: store user ID for exit
 
   _NotificationColorSet _getColors(ThemeProvider themeProvider) {
     final isDarkMode = themeProvider.themeMode == ThemeMode.dark;
@@ -558,10 +559,23 @@ class _NotificationScreenState extends State<NotificationScreen>
   @override
   void initState() {
     super.initState();
+    // ✅ screen tracking: enter notifications screen
+    AnalyticsService.screenEnter('notifications');
+
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 20),
     )..repeat();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // ✅ screen tracking: store current user ID when available
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    if (userProvider.user != null && _currentUserId == null) {
+      _currentUserId = userProvider.user!.uid;
+    }
   }
 
   void _initializeParticles(_NotificationColorSet colors) {
@@ -600,6 +614,13 @@ class _NotificationScreenState extends State<NotificationScreen>
 
   @override
   void dispose() {
+    // ✅ screen tracking: exit notifications screen
+    if (_currentUserId != null) {
+      AnalyticsService.screenExit(
+        screenName: 'notifications',
+        uid: _currentUserId!,
+      );
+    }
     _animationController.dispose();
     super.dispose();
   }
