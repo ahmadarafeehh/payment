@@ -1,11 +1,12 @@
+// services/analytics_service.dart
 import 'dart:ui' as ui;
 import 'package:firebase_analytics/firebase_analytics.dart';
-import 'dart:async'; // ✅ needed for unawaited
+import 'package:flutter/foundation.dart'; // ✅ Added for debugPrint
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class AnalyticsService {
   static final FirebaseAnalytics _analytics = FirebaseAnalytics.instance;
 
-  /// Initializes analytics and sets the user's country once.
   static Future<void> init() async {
     final country = ui.PlatformDispatcher.instance.locale.countryCode;
     if (country != null) {
@@ -16,7 +17,6 @@ class AnalyticsService {
     }
   }
 
-  /// Log a custom event with optional params. Avoid frequent calls.
   static Future<void> logEvent(
     String name, {
     Map<String, Object>? params,
@@ -27,23 +27,35 @@ class AnalyticsService {
     );
   }
 
-  /// Log a follow button press on another user's profile.
-  /// This method is fire‑and‑forget and never throws (safe to call without await).
+  /// Logs a follow/unfollow/request action to Supabase `follow_pressed` table.
+  /// [action] must be one of: 'follow', 'unfollow', 'request'.
   static void logFollowPress({
     required String followerUid,
     required String followedUid,
-    required String sourceScreen, // e.g., 'other_user_profile'
+    required String sourceScreen,
+    required String action, // 'follow', 'unfollow', or 'request'
   }) {
-    // Use unawaited to avoid blocking the UI
-    unawaited(
-      _analytics.logEvent(
-        name: 'follow_pressed',
-        parameters: {
-          'follower_uid': followerUid,
-          'followed_uid': followedUid,
-          'source_screen': sourceScreen,
-        },
-      ),
-    );
+    // Basic validation to prevent bad data
+    if (!['follow', 'unfollow', 'request'].contains(action)) {
+      debugPrint('Invalid action provided to logFollowPress: $action');
+      return;
+    }
+
+    try {
+      Supabase.instance.client
+          .from('follow_pressed')
+          .insert({
+            'follower_uid': followerUid,
+            'followed_uid': followedUid,
+            'source_screen': sourceScreen,
+            'action_type': action,
+          })
+          .then((_) {})
+          .catchError((error) {
+            debugPrint('Failed to insert follow_pressed: $error');
+          });
+    } catch (e) {
+      debugPrint('Exception in logFollowPress: $e');
+    }
   }
 }
