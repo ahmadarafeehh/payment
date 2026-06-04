@@ -20,6 +20,7 @@ import 'package:country_flags/country_flags.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 class _ColorSet {
   final Color textColor;
@@ -165,9 +166,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
 
-  // Debounce timer: collapses multiple concurrent controller-ready callbacks
-  // into a single setState instead of one per controller, preventing N full
-  // rebuilds when N video thumbnails finish initializing at the same time.
   Timer? _videoInitDebounce;
 
   VideoPlayerController? _profileVideoController;
@@ -208,7 +206,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         'additional_data': additionalData,
       });
     } catch (logError) {
-      // Silently fail – don't let logging break the user experience
       print('Failed to log profile error: $logError');
     }
   }
@@ -229,7 +226,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         l.contains('video=true');
   }
 
-  // ── Safely extract video_edit_metadata as Map<String,dynamic>? ──────────
   Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
     if (raw == null) return null;
     if (raw is Map<String, dynamic>) return raw;
@@ -237,7 +233,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     return null;
   }
 
-  // ── Parse VideoEditResult from a post map, returns null on failure ───────
   VideoEditResult? _parseEditResult(Map<String, dynamic> post) {
     final meta = _extractEditMetadata(post['video_edit_metadata']);
     if (meta == null) return null;
@@ -254,7 +249,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
-  // ── Build the combined colour-filter matrix for a VideoEditResult ────────
   List<double> _buildColorMatrix(VideoEditResult? er) {
     if (er == null) {
       return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
@@ -265,6 +259,9 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   @override
   void initState() {
     super.initState();
+    // ✅ screen tracking: enter profile screen
+    AnalyticsService.screenEnter('current_profile');
+
     WidgetsBinding.instance.addObserver(this);
     _scrollController = ScrollController();
     _scrollController.addListener(_scrollListener);
@@ -273,7 +270,12 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   @override
   void dispose() {
-    // Cancel debounce timer first so it cannot fire after disposal.
+    // ✅ screen tracking: exit profile screen
+    AnalyticsService.screenExit(
+      screenName: 'profile',
+      uid: widget.uid,
+    );
+
     _videoInitDebounce?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_scrollListener);
@@ -479,11 +481,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ========== POST VIDEOS ==========
 
-  // ── Initializes a video controller and debounces the setState so that N
-  //    concurrent controller-ready callbacks collapse into one rebuild instead
-  //    of triggering one full rebuild per controller. Previously each listener
-  //    fired setState individually, causing the grid to rebuild (and re-render
-  //    every thumbnail) once per video that finished loading. ───────────────
   Future<void> _initializeVideoController(String videoUrl) async {
     if (_videoControllers.containsKey(videoUrl) ||
         _videoControllersInitialized[videoUrl] == true) return;
@@ -501,7 +498,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         _configureVideoLoop(controller);
         controller.setVolume(0.0);
 
-        // Debounce: collapse all concurrent init callbacks into one rebuild.
         _videoInitDebounce?.cancel();
         _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
           if (mounted) setState(() {});
@@ -543,7 +539,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
-  // ── Shared edit overlay layer (strokes + text) scaled to the preview cell ──
   Widget _buildEditOverlayLayer(
       VideoEditResult editResult, BoxConstraints constraints) {
     if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
@@ -586,7 +581,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Post grid thumbnail video player — applies filter + rotation ─────────
   Widget _buildPostVideoPlayer(
       String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
     final controller = _getVideoController(videoUrl);
@@ -634,7 +628,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Gallery cover video player — applies filter + rotation ───────────────
   Widget _buildGalleryVideoPlayer(
       String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
     final controller = _getVideoController(videoUrl);
@@ -682,8 +675,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ========== DATA FETCHING ==========
 
-  // ── Uses Supabase count option so no post-ID rows are transferred just to
-  //    get the total — previously fetched all postId rows and called .length.
   Future<void> getData() async {
     if (!mounted) return;
     setState(() {
@@ -693,7 +684,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     });
 
     try {
-      // Count-only query: returns the integer total without fetching rows.
       final countResponse = await _supabase
           .from('posts')
           .select('postId')
@@ -738,14 +728,14 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .eq('user_id', widget.uid)
           .then<List>((v) => v)
           .catchError((e, stack) {
-            _logProfileError(
-              operation: 'getData_followers',
-              error: e,
-              stack: stack,
-              additionalData: {'uid': widget.uid},
-            );
-            return <dynamic>[];
-          });
+        _logProfileError(
+          operation: 'getData_followers',
+          error: e,
+          stack: stack,
+          additionalData: {'uid': widget.uid},
+        );
+        return <dynamic>[];
+      });
 
       final followingResponse = await _supabase
           .from('user_following')
@@ -753,14 +743,14 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .eq('user_id', widget.uid)
           .then<List>((v) => v)
           .catchError((e, stack) {
-            _logProfileError(
-              operation: 'getData_following',
-              error: e,
-              stack: stack,
-              additionalData: {'uid': widget.uid},
-            );
-            return <dynamic>[];
-          });
+        _logProfileError(
+          operation: 'getData_following',
+          error: e,
+          stack: stack,
+          additionalData: {'uid': widget.uid},
+        );
+        return <dynamic>[];
+      });
 
       final galleriesResponse = await _supabase
           .from('galleries')
@@ -896,9 +886,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
-  // ── Loads the next batch of posts for ProfilePostFeedScreen ──────────────
-  // Mirrors _loadMorePosts() but is a standalone Future so the feed screen
-  // can call it via its onLoadMore callback without touching state fields.
   Future<List<Map<String, dynamic>>> _loadMorePostsForFeed(
       int currentCount) async {
     try {
@@ -910,8 +897,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(currentCount, currentCount + _subsequentPostsLimit - 1);
 
-      // Pre-spin up video controllers for the incoming batch so thumbnails
-      // are ready before the user swipes to them in the grid on return.
       _preInitializeVideoControllers(newPosts);
 
       return List<Map<String, dynamic>>.from(newPosts);
@@ -1361,17 +1346,12 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Opens ProfilePostFeedScreen (vertical swipe feed) starting at the
-  //    tapped post. The feed receives the already-loaded grid posts as its
-  //    initial batch and fetches subsequent pages via _loadMorePostsForFeed.
-  //    onPostDeleted refreshes the grid so the deleted post disappears.
   Widget _buildPostItem(
       Map<String, dynamic> post, _ColorSet colors, int postIndex) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
     final editResult = _parseEditResult(post);
 
-    // Shape the userData map to match what ProfilePostFeedScreen expects.
     final Map<String, dynamic> feedUserData = {
       'uid': widget.uid,
       'username': userData['username'] ?? '',
@@ -1382,8 +1362,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
     return GestureDetector(
       onTap: () {
-        // Pause all grid video thumbnails so they don't bleed audio into
-        // the feed's own video player.
         _pauseAllGridVideos();
         _muteProfileVideo();
 
@@ -1391,23 +1369,15 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           context,
           MaterialPageRoute(
             builder: (_) => ProfilePostFeedScreen(
-              // Hand the feed the posts already loaded in the grid so there
-              // is no perceptible delay before the first post is visible.
               initialPosts: List<Map<String, dynamic>>.from(_displayedPosts),
               initialIndex: postIndex,
               userData: feedUserData,
-              // Called when the user swipes within 3 posts of the end.
-              // Uses the same Supabase query + sort order as the grid so
-              // the post sequence is always consistent.
               onLoadMore: _loadMorePostsForFeed,
-              // Let the feed know whether more pages exist.
               initialHasMore: _hasMorePosts,
-              // Refresh the grid when the owner deletes a post from the feed.
               onPostDeleted: () async => getData(),
             ),
           ),
         ).then((_) {
-          // Resume grid video thumbnails after returning from the feed.
           Future.delayed(const Duration(milliseconds: 300), () {
             if (mounted) {
               _resumeAllGridVideos();
@@ -1433,7 +1403,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Static image thumbnail — applies filter, rotation, strokes + text ────
   Widget _buildPostImage(Map<String, dynamic> post, _ColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final editResult = _parseEditResult(post);
@@ -1667,7 +1636,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Gallery cover static image — applies filter + rotation ───────────────
   Widget _buildGalleryCoverImage(
       String url, _ColorSet colors, VideoEditResult? editResult) {
     final List<double> matrix = _buildColorMatrix(editResult);
