@@ -1,6 +1,6 @@
 // File: search_screen.dart
 import 'dart:async';
-import 'dart:io'; // <-- ADDED
+import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -10,7 +10,8 @@ import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/providers/user_provider.dart';
-import 'package:Ratedly/screens/search_posts.dart'; // <-- imports the feed page & shared classes
+import 'package:Ratedly/screens/search_posts.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COLOUR SETS (used only by SearchScreen)
@@ -112,6 +113,7 @@ class _SearchScreenState extends State<SearchScreen>
   bool isShowUsers = false;
   bool _isSearchFocused = false;
   String? currentUserId;
+  String? _currentUserIdForTracking; // ✅ screen tracking
 
   List<Map<String, dynamic>> _searchResults = [];
   bool _isSearching = false;
@@ -242,6 +244,9 @@ class _SearchScreenState extends State<SearchScreen>
   @override
   void initState() {
     super.initState();
+    // ✅ screen tracking: enter search screen
+    AnalyticsService.screenEnter('search');
+
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(() {
       final position = _scrollController.position;
@@ -262,11 +267,13 @@ class _SearchScreenState extends State<SearchScreen>
 
     if (userProvider.firebaseUid != null && currentUserId == null) {
       currentUserId = userProvider.firebaseUid;
+      _currentUserIdForTracking = currentUserId; // ✅ store for exit
       if (!_isLoading) _initData();
     } else if (userProvider.firebaseUid == null &&
         userProvider.supabaseUid != null &&
         currentUserId == null) {
       currentUserId = userProvider.supabaseUid;
+      _currentUserIdForTracking = currentUserId; // ✅ store for exit
       if (!_isLoading) _initData();
     }
 
@@ -292,6 +299,14 @@ class _SearchScreenState extends State<SearchScreen>
 
   @override
   void dispose() {
+    // ✅ screen tracking: exit search screen
+    if (_currentUserIdForTracking != null) {
+      AnalyticsService.screenExit(
+        screenName: 'search',
+        uid: _currentUserIdForTracking!,
+      );
+    }
+
     _debounceTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     searchController.dispose();
