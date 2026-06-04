@@ -11,6 +11,7 @@ import 'package:Ratedly/widgets/comment_card.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 /// TikTok/Reels Style Comments Bottom Sheet with Transparent Background - ALWAYS DARK MODE
 class CommentsBottomSheet extends StatefulWidget {
@@ -83,9 +84,20 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
   bool _isLoadingComments = false;
   bool _isPostingComment = false;
 
+  // ✅ screen tracking: store current user ID for exit
+  String? _currentUserId;
+
   @override
   void initState() {
     super.initState();
+
+    // ✅ screen tracking: enter comments screen
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final user = userProvider.user;
+    if (user != null) {
+      _currentUserId = user.uid;
+      AnalyticsService.screenEnter('comments');
+    }
 
     // Store video state before opening comments
     if (widget.isVideo && widget.videoController != null) {
@@ -117,6 +129,14 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
 
   @override
   void dispose() {
+    // ✅ screen tracking: exit comments screen
+    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: 'comments',
+        uid: _currentUserId!,
+      );
+    }
+
     _replyFocusNode.dispose();
     _scrollController.dispose();
     commentEditingController.removeListener(_checkForBannedWords);
