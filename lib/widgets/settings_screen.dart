@@ -14,6 +14,7 @@ import 'package:Ratedly/resources/block_firestore_methods.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/reactly_plus_screen.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -35,6 +36,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   final GlobalKey _inviteButtonKey = GlobalKey();
 
+  // ✅ screen tracking: flag to avoid duplicate enter calls
+  bool _screenTrackingStarted = false;
+
   @override
   void initState() {
     super.initState();
@@ -52,6 +56,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _currentEmail = userProvider.user?.email;
       _loadPrivacyStatus();
       _loadTestStatus(); // ✅ ADDED
+      _startScreenTracking(); // ✅ start tracking
     } else if (userProvider.firebaseUid == null &&
         userProvider.supabaseUid != null &&
         _currentUserId == null) {
@@ -60,7 +65,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _currentEmail = userProvider.user?.email;
       _loadPrivacyStatus();
       _loadTestStatus(); // ✅ ADDED
+      _startScreenTracking(); // ✅ start tracking
     }
+  }
+
+  // ✅ screen tracking: enter once when user ID is available
+  void _startScreenTracking() {
+    if (!_screenTrackingStarted && _currentUserId != null && _currentUserId!.isNotEmpty) {
+      _screenTrackingStarted = true;
+      AnalyticsService.screenEnter('settings');
+    }
+  }
+
+  @override
+  void dispose() {
+    // ✅ screen tracking: exit settings screen
+    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: 'settings',
+        uid: _currentUserId!,
+      );
+    }
+    super.dispose();
   }
 
   Future<void> _loadPrivacyStatus() async {
@@ -834,6 +860,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _loadPrivacyStatus();
           if (mounted) _loadTestStatus();
+          if (mounted) _startScreenTracking();
         });
       } else if (userProvider.supabaseUid != null) {
         _currentUserId = userProvider.supabaseUid;
@@ -842,6 +869,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _loadPrivacyStatus();
           if (mounted) _loadTestStatus();
+          if (mounted) _startScreenTracking();
         });
       }
     }
@@ -875,7 +903,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               builder: (_) => const ReactlyPlusScreen()),
                         ),
                       ),
-                    // Blue Verification button is removed (Code B behaviour)
                     _buildOptionTile(
                       title: 'Invite a Friend',
                       icon: Icons.person_add_alt_1,
