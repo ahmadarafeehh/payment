@@ -524,9 +524,21 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // BUILD METHOD
-  // ───────────────────────────────────────────────────────────────────────────
+  void _openRatingsPanel() {
+    _videoController?.pause();
+    RatingListScreen.show(
+      context,
+      postId: _postId,
+      isVideo: _isVideo,
+      videoController: _videoController,
+      onClose: () {
+        if (widget.isActive) {
+          _videoController?.play();
+        }
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -558,7 +570,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // ── Header (fixed height) ──
+        // Header
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
@@ -599,7 +611,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
           ),
         ),
 
-        // ── Media (fills remaining space between header and bottom widgets) ──
+        // Media
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -609,7 +621,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
           ),
         ),
 
-        // ── Fixed bottom area – always visible ──
+        // Fixed bottom area
         if (description.isNotEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -687,14 +699,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
               ),
               const Spacer(),
               GestureDetector(
-                onTap: isOwner
-                    ? () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) =>
-                                  RatingListScreen(postId: _postId)),
-                        )
-                    : null,
+                onTap: _openRatingsPanel,
                 child: Container(
                   decoration: BoxDecoration(
                       color: cardColor, borderRadius: BorderRadius.circular(4)),
@@ -733,10 +738,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
           : null,
     );
   }
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Media builders – they now accept an optional maxHeight to crop when needed
-  // ───────────────────────────────────────────────────────────────────────────
 
   Widget _buildMedia(
       List<double> matrix, int quarters, Color cardColor, Color textColor,
@@ -867,7 +868,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     return LayoutBuilder(
       builder: (context, constraints) {
         final double width = constraints.maxWidth;
-        // For a square image, natural height = width
         final double naturalHeight = width;
         final double containerHeight = maxHeight != null
             ? math.min(naturalHeight, maxHeight)
