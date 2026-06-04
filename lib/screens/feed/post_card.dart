@@ -753,27 +753,19 @@ class _PostCardState extends State<PostCard>
 
   Future<void> _handleFollowTap() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
-
-    if (user == null || _isLoadingFollow) {
-      return;
-    }
-
     final postOwnerId = widget.snap['uid']?.toString() ?? '';
-    if (postOwnerId.isEmpty) {
-      return;
-    }
+
+    if (user == null || _isLoadingFollow || postOwnerId.isEmpty) return;
 
     setState(() => _isLoadingFollow = true);
-    try {
-      // Log every tap
-      AnalyticsService.logFollowPress(
-        followerUid: user.uid,
-        followedUid: postOwnerId,
-        sourceScreen: widget.sourceScreen,
-      );
 
-      // --- perform the actual action ---
+    try {
+      // Because the button is only shown when not following and no pending request,
+      // we are always in the "follow" branch here. However, we still handle the other
+      // cases for robustness, but they should never be triggered.
+
       if (_isFollowing) {
+        // Unfollow (should not happen in this context, but kept for safety)
         await SupabaseProfileMethods().unfollowUser(user.uid, postOwnerId);
         if (mounted) {
           setState(() {
@@ -783,7 +775,15 @@ class _PostCardState extends State<PostCard>
           });
           _followAnimController.forward(from: 0.0);
         }
+        // Log unfollow (optional – you can skip if this path never occurs)
+        AnalyticsService.logFollowPress(
+          followerUid: user.uid,
+          followedUid: postOwnerId,
+          sourceScreen: widget.sourceScreen,
+          action: 'unfollow',
+        );
       } else if (_hasPendingRequest) {
+        // Decline request (should not happen either)
         await SupabaseProfileMethods()
             .declineFollowRequest(postOwnerId, user.uid);
         if (mounted) {
@@ -793,8 +793,10 @@ class _PostCardState extends State<PostCard>
           });
           _followAnimController.forward(from: 0.0);
         }
+        // Optionally log 'decline' if you added that action type; otherwise skip.
       } else {
-        // Optimistic UI for follow
+        // --- NORMAL FOLLOW FLOW (only executed path) ---
+        // Optimistic UI update
         setState(() => _isFollowing = true);
         _tickAnimController.forward(from: 0.0).then((_) {
           if (mounted) {
@@ -804,37 +806,57 @@ class _PostCardState extends State<PostCard>
           }
         });
 
-        SupabaseProfileMethods()
-            .followUser(user.uid, postOwnerId)
-            .then((_) async {
-          final pending = await Supabase.instance.client
-              .from('user_follow_request')
-              .select()
-              .eq('user_id', postOwnerId)
-              .eq('requester_id', user.uid)
-              .maybeSingle();
-          if (mounted && pending != null) {
+        // Perform the follow request
+        await SupabaseProfileMethods().followUser(user.uid, postOwnerId);
+
+        // Check if a follow request was created (private account)
+        final pending = await Supabase.instance.client
+            .from('user_follow_request')
+            .select()
+            .eq('user_id', postOwnerId)
+            .eq('requester_id', user.uid)
+            .maybeSingle();
+
+        if (mounted) {
+          if (pending != null) {
+            // Private account – follow request sent
             setState(() {
               _isFollowing = false;
               _hasPendingRequest = true;
               _showFollowBadge = true;
             });
             _followAnimController.forward(from: 0.0);
+            // Log REQUEST action
+            AnalyticsService.logFollowPress(
+              followerUid: user.uid,
+              followedUid: postOwnerId,
+              sourceScreen: widget.sourceScreen,
+              action: 'request',
+            );
+          } else {
+            // Public account – immediate follow
+            // State already has _isFollowing = true, _showFollowBadge = false
+            // Log FOLLOW action
+            AnalyticsService.logFollowPress(
+              followerUid: user.uid,
+              followedUid: postOwnerId,
+              sourceScreen: widget.sourceScreen,
+              action: 'follow',
+            );
           }
-        }).catchError((_) {
-          if (mounted) {
-            setState(() {
-              _isFollowing = false;
-              _showFollowBadge = true;
-            });
-            _tickAnimController.reset();
-            _followAnimController.forward(from: 0.0);
-            showSnackBar(context, 'Please try again');
-          }
-        });
+        }
       }
-    } catch (_) {
-      if (mounted) showSnackBar(context, 'Please try again');
+    } catch (e) {
+      // On error, revert optimistic UI
+      if (mounted) {
+        setState(() {
+          _isFollowing = false;
+          _showFollowBadge = true;
+        });
+        _tickAnimController.reset();
+        _followAnimController.forward(from: 0.0);
+        showSnackBar(context, 'Please try again');
+      }
     } finally {
       if (mounted) setState(() => _isLoadingFollow = false);
     }
