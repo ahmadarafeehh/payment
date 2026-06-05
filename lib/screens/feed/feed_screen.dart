@@ -1,3 +1,5 @@
+// lib/screens/feed/feed_screen.dart
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -23,7 +25,10 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 import 'package:Ratedly/services/iap_service.dart';
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
+import 'package:Ratedly/services/analytics_service.dart';
+
+// --- NEW: Import the survey widget ---
+import 'package:Ratedly/widgets/referral_survey.dart';
 
 // -----------------------------------------------------------------------------
 // FEED ERROR LOGGER – logs only to feed_errors table
@@ -173,8 +178,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   bool _immediatePostsCached = false;
   DateTime? _appStartTime;
 
-  // ✅ screen tracking: keep the name of the currently visible tab
   String? _currentScreenName;
+
+  // --- NEW: Survey flag ---
+  bool _surveyShown = false;
 
   // ---------------------------------------------------------------------------
   // HELPERS
@@ -757,10 +764,77 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _showInterstitialAd();
         _postViewCount = 0;
       }
+
+      // --- NEW: After recording views, check if we should show the survey ---
+      if (viewsToRecord.isNotEmpty) {
+        unawaited(_checkAndShowSurvey());
+      }
     } catch (e) {
       // Ignore error
     } finally {
       _viewRecordingScheduled = false;
+    }
+  }
+
+  // ===========================================================================
+  // SURVEY CHECK
+  // ===========================================================================
+  Future<void> _checkAndShowSurvey() async {
+    if (_surveyShown) return;
+    final userId = currentUserId;
+    if (userId == null || userId.isEmpty) return;
+
+    // 1. Check if the user already responded
+    try {
+      final resp = await _supabase
+          .from('user_referral_survey')
+          .select('id')
+          .eq('uid', userId)
+          .maybeSingle();
+      if (resp != null) {
+        _surveyShown = true;
+        return; // already answered
+      }
+    } catch (_) {
+      // fail silently – we’ll try next time
+      return;
+    }
+
+    // 2. Count distinct viewed posts
+    try {
+      final views = await _supabase
+          .from('user_post_views')
+          .select('post_id')
+          .eq('user_id', userId);
+      final distinctCount = views.map((r) => r['post_id']).toSet().length;
+
+      if (distinctCount == 3 && mounted) {
+        _surveyShown = true;
+        // Pause any playing video
+        VideoManager.pauseAllVideos();
+        setState(() => _currentPlayingPostId = null);
+
+        await showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (_) => Container(
+            decoration: BoxDecoration(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: ReferralSurvey(
+              uid: userId,
+              onComplete: () {
+                Navigator.of(context).pop(); // close the sheet
+              },
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      // fail silently
     }
   }
 
@@ -808,7 +882,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _loadInitialData();
       } else if (currentUserId != resolvedId) {
         // User changed - we need to exit current screen (if any) before reload
-        if (_currentScreenName != null && currentUserId != null && currentUserId!.isNotEmpty) {
+        if (_currentScreenName != null &&
+            currentUserId != null &&
+            currentUserId!.isNotEmpty) {
           AnalyticsService.screenExit(
             screenName: _currentScreenName!,
             uid: currentUserId!,
@@ -1628,7 +1704,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     if (_selectedTab == index) return;
 
     // ✅ Exit the current screen if user is logged in
-    if (_currentScreenName != null && currentUserId != null && currentUserId!.isNotEmpty) {
+    if (_currentScreenName != null &&
+        currentUserId != null &&
+        currentUserId!.isNotEmpty) {
       AnalyticsService.screenExit(
         screenName: _currentScreenName!,
         uid: currentUserId!,
@@ -1702,7 +1780,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     // ✅ Exit the current screen if user is logged in
-    if (_currentScreenName != null && currentUserId != null && currentUserId!.isNotEmpty) {
+    if (_currentScreenName != null &&
+        currentUserId != null &&
+        currentUserId!.isNotEmpty) {
       AnalyticsService.screenExit(
         screenName: _currentScreenName!,
         uid: currentUserId!,
