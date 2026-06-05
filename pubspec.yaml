@@ -74,6 +74,8 @@ flutter:
   assets:
     - assets/logo/22.png
     - assets/logo/google-logo.png
+    - assets/logo/apple-logo.png     
+
   fonts:
     - family: Montserrat
       fonts:
