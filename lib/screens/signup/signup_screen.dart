@@ -10,6 +10,7 @@ import 'package:Ratedly/screens/privacy_policy_screen.dart';
 import 'package:flutter/foundation.dart'
     show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({Key? key}) : super(key: key);
@@ -21,6 +22,23 @@ class SignupScreen extends StatefulWidget {
 class _SignupScreenState extends State<SignupScreen> {
   bool _isLoading = false;
   final SupabaseClient _supabase = Supabase.instance.client;
+
+  @override
+  void initState() {
+    super.initState();
+    // ✅ screen tracking: enter signup screen (anonymous user)
+    AnalyticsService.screenEnter('signup');
+  }
+
+  @override
+  void dispose() {
+    // ✅ screen tracking: exit signup screen (anonymous user)
+    AnalyticsService.screenExit(
+      screenName: 'signup',
+      uid: 'anonymous',
+    );
+    super.dispose();
+  }
 
   // ✅ NATIVE Google Sign-Up
   void signUpWithGoogleNative() async {
