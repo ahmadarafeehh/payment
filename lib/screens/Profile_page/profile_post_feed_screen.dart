@@ -565,17 +565,16 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // UPDATED DELETE METHOD WITH LOADING DIALOG
+  // DELETE POST – silent; errors are logged to posts_errors, not shown to user
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _deletePost(BuildContext context) async {
-    // Get theme colors for the loading dialog
     final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
     final isDark = themeProvider.themeMode == ThemeMode.dark;
     final bgColor = isDark ? const Color(0xFF121212) : Colors.white;
     final textColor = isDark ? const Color(0xFFd9d9d9) : Colors.black;
     final progressColor = isDark ? Colors.white70 : Colors.grey[700]!;
 
-    // Show non‑dismissible loading dialog
+    // Non‑dismissible loading dialog
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -604,16 +603,18 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
 
     try {
-      await _postsMethods.deletePost(_postId);
-      // Dismiss loading dialog
+      final result = await _postsMethods.deletePost(_postId);
+      if (mounted) Navigator.of(context).pop(); // dismiss loading dialog
+
+      // Only remove the post from the feed if backend confirmed success.
+      // Errors are already logged by deletePost – no user feedback.
+      if (result == 'success') {
+        widget.onPostDeleted?.call();
+      }
+    } catch (_) {
+      // Exception already logged by deletePost, just dismiss loader
       if (mounted) Navigator.of(context).pop();
-      // Notify parent to remove this post from the list
-      widget.onPostDeleted?.call();
-    } catch (e) {
-      // Dismiss loading dialog
-      if (mounted) Navigator.of(context).pop();
-      // Show error message
-      if (mounted) showSnackBar(context, 'Failed to delete post: $e');
+      // No snackbar shown
     }
   }
 
@@ -628,7 +629,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
           children: [
             InkWell(
               onTap: () async {
-                // Close the options menu dialog
+                // Close options menu dialog
                 Navigator.of(context).pop();
                 // Call delete with loading dialog
                 await _deletePost(context);
