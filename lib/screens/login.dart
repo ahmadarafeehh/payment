@@ -12,6 +12,7 @@ import 'package:Ratedly/screens/privacy_policy_screen.dart';
 import 'package:Ratedly/screens/signup/auth_wrapper.dart';
 import 'package:flutter/foundation.dart';
 import 'package:Ratedly/providers/user_provider.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 class LoginScreen extends StatefulWidget {
   final String? migrationEmail; // kept for backward compatibility, not used
@@ -36,7 +37,19 @@ class _LoginScreenState extends State<LoginScreen> {
   final SupabaseClient _supabase = Supabase.instance.client;
 
   @override
+  void initState() {
+    super.initState();
+    // ✅ screen tracking: enter login screen (anonymous user)
+    AnalyticsService.screenEnter('login');
+  }
+
+  @override
   void dispose() {
+    // ✅ screen tracking: exit login screen (anonymous user)
+    AnalyticsService.screenExit(
+      screenName: 'login',
+      uid: 'anonymous',
+    );
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
