@@ -69,7 +69,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // UPLOAD POST METHODS
+  // UPLOAD POST METHODS (unchanged)
   // ----------------------
 
   Future<String> uploadVideoPost(
@@ -305,42 +305,53 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Delete a post
+  // Delete a post – FIXED: isolated storage deletion + guaranteed cleanup
   // ----------------------
   Future<String> deletePost(String postId) async {
     String res = "Some error occurred";
     String? postOwnerUid;
     String? postUrl;
     try {
+      // 1. Fetch post metadata
       final postSel = await _supabase
           .from('posts')
           .select('postUrl, uid')
           .eq('postId', postId)
           .maybeSingle();
       final postData = _unwrap(postSel) ?? postSel;
-
       if (postData == null) throw Exception('Post does not exist');
 
       postUrl = postData['postUrl']?.toString() ?? '';
       postOwnerUid = postData['uid']?.toString() ?? '';
 
+      // 2. Isolate storage deletion – failure must NOT block DB cleanup
       if (postUrl.isNotEmpty) {
-        if (_isVideoUrl(postUrl)) {
-          await _deleteVideoFromUrl(postUrl);
-        } else {
-          await _storageMethods.deleteImage(postUrl);
+        try {
+          if (_isVideoUrl(postUrl)) {
+            await _deleteVideoFromUrl(postUrl);
+          } else {
+            await _storageMethods.deleteImage(postUrl);
+          }
+        } catch (storageErr) {
+          await _logPostError(
+            operationType: 'delete_post_storage',
+            userId: postOwnerUid,
+            mediaUrl: postUrl,
+            error: storageErr,
+            additionalData: {'postId': postId},
+          );
+          // Intentionally continue to database cleanup
         }
       }
 
+      // 3. Delete all related data (notifications first, post row last)
+      await _supabase.from('notifications').delete().or(
+          'custom_data->>postId.eq.$postId,custom_data->>post_id.eq.$postId');
       await _supabase.from('user_post_views').delete().eq('post_id', postId);
-      await _supabase.from('posts').delete().eq('postId', postId);
       await _supabase.from('comments').delete().eq('postid', postId);
       await _supabase.from('replies').delete().eq('postid', postId);
       await _supabase.from('post_rating').delete().eq('postid', postId);
-      await _supabase
-          .from('notifications')
-          .delete()
-          .eq('custom_data->>postId', postId);
+      await _supabase.from('posts').delete().eq('postId', postId);
 
       res = 'success';
     } catch (err) {
@@ -357,7 +368,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Get viewed post ids
+  // Get viewed post ids (unchanged)
   // ----------------------
   Future<List<String>> getViewedPostIds(String userId) async {
     try {
@@ -386,7 +397,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Share a post through chat
+  // Share a post through chat (unchanged)
   // ----------------------
   Future<String> sharePostThroughChat({
     required String chatId,
@@ -446,7 +457,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Record post view
+  // Record post view (unchanged)
   // ----------------------
   Future<void> recordPostView(String postId, String userId) async {
     try {
@@ -470,7 +481,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Mutual block check
+  // Mutual block check (unchanged)
   // ----------------------
   Future<bool> checkMutualBlock(String userId1, String userId2) async {
     try {
@@ -505,7 +516,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Report a post
+  // Report a post (unchanged)
   // ----------------------
   Future<String> reportPost(String postId, String reason) async {
     try {
