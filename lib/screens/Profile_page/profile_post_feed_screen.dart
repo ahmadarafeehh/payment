@@ -18,6 +18,7 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:timeago/timeago.dart' as timeago;
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
     int currentCount);
@@ -76,6 +77,10 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   bool _hasMore = false;
   bool _loadingMore = false;
 
+  // ✅ screen tracking
+  bool _trackingStarted = false;
+  String? _currentUserId;
+
   bool _isVideoUrl(String url) {
     final u = url.toLowerCase();
     return u.endsWith('.mp4') ||
@@ -102,7 +107,27 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_trackingStarted) {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      _currentUserId = userProvider.firebaseUid ?? userProvider.supabaseUid;
+      if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+        _trackingStarted = true;
+        AnalyticsService.screenEnter('profile_post_feed');
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    // ✅ screen tracking: exit
+    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: 'profile_post_feed',
+        uid: _currentUserId!,
+      );
+    }
     _pageController.removeListener(_onPageScroll);
     _pageController.dispose();
     super.dispose();
