@@ -7,6 +7,7 @@ import 'number_particle.dart';
 import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/screens/signup/signup_screen.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 // Helper to log to login_logs table (same as in AuthWrapper)
 Future<void> _logLoginEvent({
@@ -72,6 +73,9 @@ class _GetStartedPageState extends State<GetStartedPage>
       duration: const Duration(seconds: 20),
     )..repeat();
 
+    // ✅ screen tracking: enter get_started_page with 'anonymous' user
+    AnalyticsService.screenEnter('get_started_page');
+
     // Log that this screen is shown, including current session state
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final session = _supabase.auth.currentSession;
@@ -126,6 +130,11 @@ class _GetStartedPageState extends State<GetStartedPage>
 
   @override
   void dispose() {
+    // ✅ screen tracking: exit get_started_page with 'anonymous' user
+    AnalyticsService.screenExit(
+      screenName: 'get_started_page',
+      uid: 'anonymous',
+    );
     _controller.dispose();
     super.dispose();
   }
