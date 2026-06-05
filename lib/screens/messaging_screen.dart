@@ -15,6 +15,7 @@ import 'package:Ratedly/screens/first_time/falling_number_painter.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 // ============================================================================
 // ERROR LOGGING HELPER – logs only to messages_error table
@@ -134,7 +135,6 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   final List<Map<String, dynamic>> _optimisticMessages = [];
 
-  // Pagination variables
   int _currentPage = 0;
   final int _messagesPerPage = 10;
   bool _isLoadingMore = false;
@@ -158,28 +158,24 @@ class _MessagingScreenState extends State<MessagingScreen>
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
 
-  // ========== VIDEO PLAYER CONTROLLER FOR PROFILE PICTURE ==========
   VideoPlayerController? _recipientProfileVideoController;
   bool _isRecipientProfileVideoInitialized = false;
   bool _isRecipientProfileVideoMuted = true;
-  // ================================================================
 
-  // ========== STREAK INDICATOR STATE ==========
   int _streakCount = 0;
   String _streakEmoji = '🔥';
   String _streakTimeLeft = '';
   Timer? _streakUpdateTimer;
-  // ============================================
 
-  // ========== STREAK MILESTONE CELEBRATION ==========
   static const List<int> _streakMilestones = [3, 7, 14, 30, 100, 365];
   final Set<int> _celebratedMilestones = {};
   OverlayEntry? _celebrationOverlay;
-  // ================================================
 
-  // ========== STREAK TOOLTIP (Centered, Got it button) ==========
   bool _hasShownStreakTooltip = false;
-  // ==============================================================
+
+  // ✅ screen tracking
+  bool _trackingStarted = false;
+  String? _trackingUserId;
 
   _MessagingColorSet _getColors(ThemeProvider themeProvider) {
     final isDarkMode = themeProvider.themeMode == ThemeMode.dark;
@@ -207,9 +203,13 @@ class _MessagingScreenState extends State<MessagingScreen>
       final userProvider = Provider.of<UserProvider>(context, listen: false);
       if (userProvider.firebaseUid != null) {
         currentUserId = userProvider.firebaseUid;
+        _trackingUserId = currentUserId;
+        _startScreenTracking();
         _initializeChat();
       } else if (userProvider.supabaseUid != null) {
         currentUserId = userProvider.supabaseUid;
+        _trackingUserId = currentUserId;
+        _startScreenTracking();
         _initializeChat();
       } else {
         setState(() {
@@ -219,6 +219,13 @@ class _MessagingScreenState extends State<MessagingScreen>
     }
     if (chatId != null && !_hasMarkedAsRead && !_isInitializing) {
       _markMessagesAsRead();
+    }
+  }
+
+  void _startScreenTracking() {
+    if (!_trackingStarted && _trackingUserId != null && _trackingUserId!.isNotEmpty) {
+      _trackingStarted = true;
+      AnalyticsService.screenEnter('messaging');
     }
   }
 
@@ -233,7 +240,6 @@ class _MessagingScreenState extends State<MessagingScreen>
             lowerUrl.contains('video'));
   }
 
-  // ========== RECIPIENT PROFILE VIDEO HANDLING ==========
   Future<void> _initializeRecipientProfileVideo() async {
     if (_recipientProfileVideoController != null ||
         _isRecipientProfileVideoInitialized) {
@@ -316,7 +322,6 @@ class _MessagingScreenState extends State<MessagingScreen>
     }
     _isRecipientProfileVideoInitialized = false;
   }
-  // ======================================================
 
   void _scrollListener() {
     if (_scrollController.offset <= 100 &&
@@ -459,14 +464,10 @@ class _MessagingScreenState extends State<MessagingScreen>
         setState(() => _isInitializing = false);
         return;
       }
-
-      // ── Real mutual-block check ──────────────────────────────────────────
       _isMutuallyBlocked = await _blockMethods.isMutuallyBlocked(
         currentUserId!,
         widget.recipientUid,
       );
-      // ─────────────────────────────────────────────────────────────────────
-
       final id = await SupabaseMessagesMethods().getOrCreateChat(
         currentUserId!,
         widget.recipientUid,
@@ -599,18 +600,17 @@ class _MessagingScreenState extends State<MessagingScreen>
     }
   }
 
-  // ========== STREAK INDICATOR METHODS ==========
+  // ========== STREAK INDICATOR METHODS (abbreviated for brevity) ==========
   Future<void> _updateStreakData() async {
+    // ... (full method as in original code – unchanged)
     final String? currentChatId = chatId;
     if (currentChatId == null) return;
-
     try {
       final response = await _supabase
           .from('chats')
           .select('streak_count, last_mutual_exchange')
           .eq('id', currentChatId)
           .single();
-
       final streakCount = response['streak_count'] ?? 0;
       final lastMutualExchangeRaw = response['last_mutual_exchange'];
       DateTime? lastMutualExchange;
@@ -618,15 +618,12 @@ class _MessagingScreenState extends State<MessagingScreen>
         lastMutualExchange =
             DateTime.parse(lastMutualExchangeRaw.toString()).toUtc();
       }
-
       String emoji = '🔥';
       String timeLeftText = '';
-
       if (streakCount > 0 && lastMutualExchange != null) {
         final expiryTime = lastMutualExchange.add(Duration(hours: 24));
         final now = DateTime.now().toUtc();
         final timeLeft = expiryTime.difference(now);
-
         if (timeLeft.isNegative) {
           emoji = '💀';
           timeLeftText = 'Expired';
@@ -643,13 +640,11 @@ class _MessagingScreenState extends State<MessagingScreen>
       } else if (streakCount == 0) {
         emoji = '';
       }
-
       setState(() {
         _streakCount = streakCount;
         _streakEmoji = emoji;
         _streakTimeLeft = timeLeftText;
       });
-
       _maybeShowStreakTooltip();
     } catch (e) {
       await _logMessageError(
@@ -673,9 +668,9 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   Future<void> _maybeShowStreakTooltip() async {
+    // ... (full method as in original code – unchanged)
     if (_hasShownStreakTooltip) return;
     if (_streakCount <= 0) return;
-
     final prefs = await SharedPreferences.getInstance();
     final key = 'streak_tooltip_shown_${chatId}';
     final alreadyShown = prefs.getBool(key) ?? false;
@@ -683,14 +678,11 @@ class _MessagingScreenState extends State<MessagingScreen>
       _hasShownStreakTooltip = true;
       return;
     }
-
     _hasShownStreakTooltip = true;
     await prefs.setBool(key, true);
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final overlay = Overlay.of(context);
       if (overlay == null) return;
-
       OverlayEntry? tooltipEntry;
       tooltipEntry = OverlayEntry(
         builder: (context) => Material(
@@ -776,17 +768,15 @@ class _MessagingScreenState extends State<MessagingScreen>
           ),
         ),
       );
-
       overlay.insert(tooltipEntry);
     });
   }
 
   void _showMilestoneCelebration(int streak) {
+    // ... (full method as in original code – unchanged)
     _celebrationOverlay?.remove();
-
     final overlayState = Overlay.of(context);
     if (!mounted || overlayState == null) return;
-
     late final OverlayEntry entry;
     entry = OverlayEntry(
       builder: (context) => _MilestoneCelebrationWidget(
@@ -797,13 +787,20 @@ class _MessagingScreenState extends State<MessagingScreen>
         },
       ),
     );
-
     _celebrationOverlay = entry;
     overlayState.insert(entry);
   }
 
   @override
   void dispose() {
+    // ✅ screen tracking: exit messaging screen
+    if (_trackingUserId != null && _trackingUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: 'messaging',
+        uid: _trackingUserId!,
+      );
+    }
+
     _celebrationOverlay?.remove();
     _streakUpdateTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -903,6 +900,7 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   Future<void> _initializeVideoController(String videoUrl) async {
+    // ... (full method as in original code – unchanged)
     if (_videoControllers.containsKey(videoUrl) ||
         _videoControllersInitialized[videoUrl] == true) return;
     try {
@@ -1202,11 +1200,7 @@ class _MessagingScreenState extends State<MessagingScreen>
 
   Future<void> _sendMessage() async {
     if (_controller.text.isEmpty || currentUserId == null) return;
-
-    // ── Block guard: silently refuse if conversation is blocked ──────────
     if (_isMutuallyBlocked) return;
-    // ─────────────────────────────────────────────────────────────────────
-
     final messageText = _controller.text.trim();
     final capturedReplyMessage = _replyingToMessage;
     final isOriginalFromSelf = capturedReplyMessage != null &&
@@ -1247,11 +1241,7 @@ class _MessagingScreenState extends State<MessagingScreen>
       );
       if (chatId.startsWith('Error') || chatId.isEmpty)
         throw Exception('Failed to get chat');
-
-      if (this.chatId == null) {
-        this.chatId = chatId;
-      }
-
+      if (this.chatId == null) this.chatId = chatId;
       final res = await SupabaseMessagesMethods().sendMessageWithReply(
         chatId: chatId,
         senderId: currentUserId!,
@@ -1273,16 +1263,13 @@ class _MessagingScreenState extends State<MessagingScreen>
         }
       } else {
         await _updateStreakData();
-
         if (_streakMilestones.contains(_streakCount) &&
             _streakCount > previousStreak &&
             !_celebratedMilestones.contains(_streakCount)) {
           _celebratedMilestones.add(_streakCount);
           _showMilestoneCelebration(_streakCount);
         }
-
         SupabaseMessagesMethods().checkAndSendStreakExpiryNotifications();
-
         Future.delayed(Duration(seconds: 2), () {
           if (mounted) _refreshMessages();
         });
@@ -1841,11 +1828,7 @@ class _MessagingScreenState extends State<MessagingScreen>
     final messageId = message['id'].toString();
     final swipeOffset = _swipeOffsets[messageId] ?? 0;
     final isSwiping = _isSwiping[messageId] ?? false;
-
-    // ── Disable all interactive gestures when the conversation is blocked ──
     final bool gesturesEnabled = !_isMutuallyBlocked;
-    // ───────────────────────────────────────────────────────────────────────
-
     return GestureDetector(
       onLongPress: gesturesEnabled ? () => _startReply(message) : null,
       onHorizontalDragStart:
@@ -2050,7 +2033,6 @@ class _MessagingScreenState extends State<MessagingScreen>
     );
   }
 
-  // ── Blocked-conversation input banner (Instagram/TikTok pattern) ──────────
   Widget _buildBlockedInputBanner(_MessagingColorSet colors) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
@@ -2083,15 +2065,11 @@ class _MessagingScreenState extends State<MessagingScreen>
       ),
     );
   }
-  // ─────────────────────────────────────────────────────────────────────────
 
   Widget _buildMessageInput(_MessagingColorSet colors) {
-    // ── Show locked banner when either party has blocked the other ──────────
     if (_isMutuallyBlocked) {
       return _buildBlockedInputBanner(colors);
     }
-    // ────────────────────────────────────────────────────────────────────────
-
     return Column(
       children: [
         _buildReplyPreview(colors),
@@ -2268,7 +2246,7 @@ class BlockedContentMessage extends StatelessWidget {
 }
 
 // ============================================================================
-// STREAK MILESTONE CELEBRATION WIDGET
+// STREAK MILESTONE CELEBRATION WIDGET (abbreviated for brevity)
 // ============================================================================
 class _MilestoneCelebrationWidget extends StatefulWidget {
   final int streak;
