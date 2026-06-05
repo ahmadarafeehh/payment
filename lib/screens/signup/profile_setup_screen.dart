@@ -7,6 +7,7 @@ import 'package:Ratedly/responsive/mobile_screen_layout.dart';
 import 'package:Ratedly/responsive/responsive_layout.dart';
 import 'package:Ratedly/utils/utils.dart';
 import 'package:Ratedly/widgets/text_filed_input.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 class ProfileSetupScreen extends StatefulWidget {
   final DateTime dateOfBirth;
@@ -34,7 +35,21 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   @override
   void initState() {
     super.initState();
+    // ✅ screen tracking: enter profile_setup screen (anonymous user)
+    AnalyticsService.screenEnter('profile_setup');
     _usernameController.addListener(_validateUsername);
+  }
+
+  @override
+  void dispose() {
+    // ✅ screen tracking: exit profile_setup screen (anonymous user)
+    AnalyticsService.screenExit(
+      screenName: 'profile_setup',
+      uid: 'anonymous',
+    );
+    _usernameController.dispose();
+    _usernameController.removeListener(_validateUsername);
+    super.dispose();
   }
 
   String? _validateUsernameText(String username) {
@@ -118,13 +133,6 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     }
 
     if (mounted) setState(() => _isLoading = false);
-  }
-
-  @override
-  void dispose() {
-    _usernameController.dispose();
-    _usernameController.removeListener(_validateUsername);
-    super.dispose();
   }
 
   bool get _isFormValid {
