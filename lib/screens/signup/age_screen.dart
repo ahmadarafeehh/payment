@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 class AgeVerificationScreen extends StatefulWidget {
   final Function(DateTime) onComplete; // receives selected date
@@ -15,6 +16,23 @@ class AgeVerificationScreen extends StatefulWidget {
 
 class _AgeVerificationScreenState extends State<AgeVerificationScreen> {
   DateTime _selectedDate = DateTime(DateTime.now().year - 20, 1, 1);
+
+  @override
+  void initState() {
+    super.initState();
+    // ✅ screen tracking: enter age_verification screen (anonymous user)
+    AnalyticsService.screenEnter('age_verification');
+  }
+
+  @override
+  void dispose() {
+    // ✅ screen tracking: exit age_verification screen (anonymous user)
+    AnalyticsService.screenExit(
+      screenName: 'age_verification',
+      uid: 'anonymous',
+    );
+    super.dispose();
+  }
 
   void _continue() {
     // Calculate age
