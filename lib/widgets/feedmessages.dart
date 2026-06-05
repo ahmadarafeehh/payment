@@ -9,6 +9,7 @@ import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'dart:async';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/providers/user_provider.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 // ============================================================================
 // ERROR LOGGING HELPER – logs only to messages_error table
@@ -217,6 +218,9 @@ class _FeedMessagesState extends State<FeedMessages>
   bool _hasMoreChats = true;
   String? _currentUserId;
 
+  // ✅ screen tracking
+  bool _trackingStarted = false;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -298,14 +302,23 @@ class _FeedMessagesState extends State<FeedMessages>
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     if (userProvider.firebaseUid != null && _currentUserId == null) {
       _currentUserId = userProvider.firebaseUid;
+      _startScreenTracking();
       _loadInitialData();
     } else if (userProvider.firebaseUid == null &&
         userProvider.supabaseUid != null &&
         _currentUserId == null) {
       _currentUserId = userProvider.supabaseUid;
+      _startScreenTracking();
       _loadInitialData();
     } else if (_currentUserId == null) {
       setState(() => _isLoading = false);
+    }
+  }
+
+  void _startScreenTracking() {
+    if (!_trackingStarted && _currentUserId != null && _currentUserId!.isNotEmpty) {
+      _trackingStarted = true;
+      AnalyticsService.screenEnter('messages_list');
     }
   }
 
@@ -1141,6 +1154,14 @@ class _FeedMessagesState extends State<FeedMessages>
 
   @override
   void dispose() {
+    // ✅ screen tracking: exit messages_list screen
+    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+      AnalyticsService.screenExit(
+        screenName: 'messages_list',
+        uid: _currentUserId!,
+      );
+    }
+
     WidgetsBinding.instance.removeObserver(this);
     _disposeAllVideoControllers();
     super.dispose();
