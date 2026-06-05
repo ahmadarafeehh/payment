@@ -564,6 +564,97 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // UPDATED DELETE METHOD WITH LOADING DIALOG
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> _deletePost(BuildContext context) async {
+    // Get theme colors for the loading dialog
+    final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
+    final isDark = themeProvider.themeMode == ThemeMode.dark;
+    final bgColor = isDark ? const Color(0xFF121212) : Colors.white;
+    final textColor = isDark ? const Color(0xFFd9d9d9) : Colors.black;
+    final progressColor = isDark ? Colors.white70 : Colors.grey[700]!;
+
+    // Show non‑dismissible loading dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return WillPopScope(
+          onWillPop: () async => false,
+          child: Dialog(
+            backgroundColor: bgColor,
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(color: progressColor),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Deleting post...',
+                    style: TextStyle(color: textColor, fontSize: 16),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    try {
+      await _postsMethods.deletePost(_postId);
+      // Dismiss loading dialog
+      if (mounted) Navigator.of(context).pop();
+      // Notify parent to remove this post from the list
+      widget.onPostDeleted?.call();
+    } catch (e) {
+      // Dismiss loading dialog
+      if (mounted) Navigator.of(context).pop();
+      // Show error message
+      if (mounted) showSnackBar(context, 'Failed to delete post: $e');
+    }
+  }
+
+  void _showOptionsMenu(BuildContext context, Color bgColor, Color textColor) {
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: bgColor,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          shrinkWrap: true,
+          children: [
+            InkWell(
+              onTap: () async {
+                // Close the options menu dialog
+                Navigator.of(context).pop();
+                // Call delete with loading dialog
+                await _deletePost(context);
+              },
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                child: Text('Delete',
+                    style: TextStyle(color: Colors.red[400], fontSize: 15)),
+              ),
+            ),
+            InkWell(
+              onTap: () => Navigator.of(context).pop(),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                child: Text('Cancel',
+                    style: TextStyle(color: textColor, fontSize: 15)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -1007,50 +1098,5 @@ class _FeedPostPageState extends State<_FeedPostPage>
         videoController: _videoController,
       ),
     ).then((_) => _fetchCommentsCount());
-  }
-
-  void _showOptionsMenu(BuildContext context, Color bgColor, Color textColor) {
-    showDialog(
-      context: context,
-      builder: (_) => Dialog(
-        backgroundColor: bgColor,
-        child: ListView(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          shrinkWrap: true,
-          children: [
-            InkWell(
-              onTap: () async {
-                Navigator.of(context).pop();
-                await _deletePost(context);
-              },
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                child: Text('Delete',
-                    style: TextStyle(color: Colors.red[400], fontSize: 15)),
-              ),
-            ),
-            InkWell(
-              onTap: () => Navigator.of(context).pop(),
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                child: Text('Cancel',
-                    style: TextStyle(color: textColor, fontSize: 15)),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _deletePost(BuildContext context) async {
-    try {
-      await _postsMethods.deletePost(_postId);
-      widget.onPostDeleted?.call();
-    } catch (e) {
-      if (mounted) showSnackBar(context, 'Failed to delete post: $e');
-    }
   }
 }
