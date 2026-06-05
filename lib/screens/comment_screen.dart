@@ -11,7 +11,7 @@ import 'package:Ratedly/widgets/comment_card.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
-import 'package:Ratedly/services/analytics_service.dart';
+import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 
 /// TikTok/Reels Style Comments Bottom Sheet with Transparent Background - ALWAYS DARK MODE
 class CommentsBottomSheet extends StatefulWidget {
@@ -84,14 +84,14 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
   bool _isLoadingComments = false;
   bool _isPostingComment = false;
 
-  // screen tracking: store current user ID for exit
+  // ✅ screen tracking: store current user ID for exit
   String? _currentUserId;
 
   @override
   void initState() {
     super.initState();
 
-    // screen tracking: enter comments screen
+    // ✅ screen tracking: enter comments screen
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final user = userProvider.user;
     if (user != null) {
@@ -129,7 +129,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
 
   @override
   void dispose() {
-    // screen tracking: exit comments screen
+    // ✅ screen tracking: exit comments screen
     if (_currentUserId != null && _currentUserId!.isNotEmpty) {
       AnalyticsService.screenExit(
         screenName: 'comments',
@@ -371,15 +371,16 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
 
     // OPTIMISTIC UPDATE: Create and add optimistic comment immediately
     final Map<String, dynamic> optimisticComment = {
-      'id': 'optimistic_${DateTime.now().millisecondsSinceEpoch}',
+      'id':
+          'optimistic_${DateTime.now().millisecondsSinceEpoch}', // Temporary ID
       'comment_text': text,
       'uid': uid,
       'name': name,
       'profilePic': profilePic,
-      'timestamp': DateTime.now(),
+      'timestamp': DateTime.now(), // Client timestamp
       'like_count': 0,
       'likes': [],
-      'isOptimistic': true,
+      'isOptimistic': true, // Mark as optimistic
     };
 
     if (replyingToCommentId != null) {
@@ -408,6 +409,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
     try {
       String res;
       if (replyingToCommentId != null) {
+        // Post reply - _commentsMethods already logs errors
         res = await _commentsMethods.postReply(
           postId: widget.postId,
           commentId: replyingToCommentId!,
@@ -418,6 +420,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
         );
 
         if (res != 'success') {
+          // If the reply failed to send, remove the optimistic comment
           if (mounted) {
             setState(() {
               _optimisticComments.removeWhere(
@@ -427,6 +430,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
           }
         }
       } else {
+        // Post top-level comment - _commentsMethods already logs errors
         res = await _commentsMethods.postComment(
           widget.postId,
           text,
@@ -436,6 +440,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
         );
 
         if (res != 'success') {
+          // If the comment failed to send, remove the optimistic comment
           if (mounted) {
             setState(() {
               _optimisticComments.removeWhere(
@@ -452,7 +457,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
       if (res == 'success') {
         replyingToCommentId = null;
         replyingToUsernameNotifier.value = null;
-        await _loadComments();
+        await _loadComments(); // Reload comments to show the new one
       }
 
       // Scroll again after comment is sent to ensure visibility
@@ -466,6 +471,9 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
         }
       });
     } catch (err) {
+      // Remove optimistic comment on error
+      // Note: The underlying service (_commentsMethods) already logs the error,
+      // so we don't duplicate logging here.
       if (mounted) {
         setState(() {
           _optimisticComments.removeWhere(
@@ -486,6 +494,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
 
     // Add optimistic comments that aren't yet confirmed by the server
     for (final optimisticComment in _optimisticComments) {
+      // Check if this optimistic comment has been confirmed by the server
       final isConfirmed = _comments.any((serverComment) {
         return serverComment['comment_text'] ==
                 optimisticComment['comment_text'] &&
@@ -532,7 +541,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
       ),
       child: Column(
         children: [
-          // Drag handle bar
+          // Drag handle bar - transparent with minimal indicator
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 12),
@@ -548,7 +557,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
             ),
           ),
 
-          // Header
+          // Header - completely transparent
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -603,14 +612,14 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
             child: Container(
               color: Colors.transparent,
               child: _isLoadingComments && _comments.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: CircularProgressIndicator(
                         color: Colors.white,
                         backgroundColor: Colors.transparent,
                       ),
                     )
                   : allComments.isEmpty
-                      ? const Center(
+                      ? Center(
                           child: Text(
                             'No comments yet, be the first to comment!',
                             style: TextStyle(
@@ -629,6 +638,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
                             final snap =
                                 SupabaseSnap(row['id']?.toString() ?? '', row);
 
+                            // Extract name safely with proper type handling
                             final nameValue = snap['name'];
                             final String userName = nameValue is String
                                 ? nameValue
@@ -666,199 +676,196 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
             ),
           ),
 
-          // Bottom input bar – no keyboard padding here; the whole panel moves instead
+          // Bottom input bar - semi-transparent
           _buildBottomInputBar(safeUsername, safePhotoUrl),
         ],
       ),
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // FIX: Removed Padding(bottom: viewInsets.bottom) wrapper.
-  // The panel itself is now lifted above the keyboard in build(), so the input
-  // bar always sits at the natural bottom of the panel with no internal shift.
-  // ---------------------------------------------------------------------------
   Widget _buildBottomInputBar(String safeUsername, String safePhotoUrl) {
-    return Container(
-      padding: const EdgeInsets.only(
-        left: 16,
-        right: 8,
-        top: 12,
-        bottom: 12,
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
       ),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Colors.black.withOpacity(0.9),
-            Colors.black.withOpacity(0.6),
-            Colors.transparent,
-          ],
-          stops: const [0.0, 0.6, 1.0],
+      child: Container(
+        padding: const EdgeInsets.only(
+          left: 16,
+          right: 8,
+          top: 12,
+          bottom: 12,
         ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_containsBannedWords)
-            Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.8),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Text(
-                'Warning: Using such words will get you banned!',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          Row(
-            children: [
-              Container(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.black.withOpacity(0.5),
-                  border: Border.all(
-                    color: Colors.white.withOpacity(0.3),
-                    width: 1,
-                  ),
-                ),
-                child: CircleAvatar(
-                  radius: 18,
-                  backgroundColor: Colors.transparent,
-                  backgroundImage:
-                      (safePhotoUrl.isNotEmpty && safePhotoUrl != "default")
-                          ? NetworkImage(safePhotoUrl)
-                          : null,
-                  child: (safePhotoUrl.isEmpty || safePhotoUrl == "default")
-                      ? Icon(Icons.account_circle,
-                          size: 36, color: Colors.white.withOpacity(0.8))
-                      : null,
-                ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 12, right: 8),
-                  child: ValueListenableBuilder<String?>(
-                    valueListenable: replyingToUsernameNotifier,
-                    builder: (context, replyingToUsername, _) {
-                      return TextField(
-                        focusNode: _replyFocusNode,
-                        controller: commentEditingController,
-                        style: TextStyle(
-                          color: Colors.white,
-                          shadows: [
-                            Shadow(
-                              color: Colors.black.withOpacity(0.5),
-                              blurRadius: 2,
-                              offset: const Offset(1, 1),
-                            ),
-                          ],
-                        ),
-                        enabled: true,
-                        maxLength: 250,
-                        decoration: InputDecoration(
-                          hintText: replyingToUsername != null
-                              ? 'Replying to @$replyingToUsername'
-                              : 'Comment as $safeUsername',
-                          hintStyle:
-                              TextStyle(color: Colors.white.withOpacity(0.8)),
-                          border: InputBorder.none,
-                          counterStyle:
-                              TextStyle(color: Colors.white.withOpacity(0.6)),
-                          filled: true,
-                          fillColor: Colors.black.withOpacity(0.4),
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 12),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(25),
-                            borderSide: BorderSide(
-                              color: Colors.white.withOpacity(0.3),
-                              width: 1,
-                            ),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(25),
-                            borderSide: BorderSide(
-                              color: Colors.white.withOpacity(0.6),
-                              width: 1.5,
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-              Consumer<UserProvider>(
-                builder: (context, userProvider, _) {
-                  final user = userProvider.user;
-                  if (user == null) {
-                    return const SizedBox.shrink();
-                  }
-                  // Capture safe values once to avoid stale closure issues
-                  final String capturedUsername = user.username ?? 'Someone';
-                  final String capturedPhotoUrl = user.photoUrl ?? '';
-                  return InkWell(
-                    onTap: _containsBannedWords
-                        ? null
-                        : () => postComment(
-                            user.uid, capturedUsername, capturedPhotoUrl),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 10, horizontal: 16),
-                      decoration: BoxDecoration(
-                        gradient: _containsBannedWords
-                            ? null
-                            : LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: [
-                                  Colors.white.withOpacity(0.9),
-                                  Colors.white.withOpacity(0.7),
-                                ],
-                              ),
-                        color: _containsBannedWords
-                            ? Colors.grey.withOpacity(0.3)
-                            : null,
-                        borderRadius: BorderRadius.circular(25),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.3),
-                          width: 1,
-                        ),
-                        boxShadow: _containsBannedWords
-                            ? null
-                            : [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.3),
-                                  blurRadius: 4,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ],
-                      ),
-                      child: Text(
-                        'Post',
-                        style: TextStyle(
-                          color: _containsBannedWords
-                              ? Colors.white.withOpacity(0.4)
-                              : Colors.black,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.black.withOpacity(0.9),
+              Colors.black.withOpacity(0.6),
+              Colors.transparent,
             ],
+            stops: const [0.0, 0.6, 1.0],
           ),
-        ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_containsBannedWords)
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(0.8),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'Warning: Using such words will get you banned!',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            Row(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black.withOpacity(0.5),
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.3),
+                      width: 1,
+                    ),
+                  ),
+                  child: CircleAvatar(
+                    radius: 18,
+                    backgroundColor: Colors.transparent,
+                    backgroundImage:
+                        (safePhotoUrl.isNotEmpty && safePhotoUrl != "default")
+                            ? NetworkImage(safePhotoUrl)
+                            : null,
+                    child: (safePhotoUrl.isEmpty || safePhotoUrl == "default")
+                        ? Icon(Icons.account_circle,
+                            size: 36, color: Colors.white.withOpacity(0.8))
+                        : null,
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 12, right: 8),
+                    child: ValueListenableBuilder<String?>(
+                      valueListenable: replyingToUsernameNotifier,
+                      builder: (context, replyingToUsername, _) {
+                        return TextField(
+                          focusNode: _replyFocusNode,
+                          controller: commentEditingController,
+                          style: TextStyle(
+                            color: Colors.white,
+                            shadows: [
+                              Shadow(
+                                color: Colors.black.withOpacity(0.5),
+                                blurRadius: 2,
+                                offset: const Offset(1, 1),
+                              ),
+                            ],
+                          ),
+                          enabled: true,
+                          maxLength: 250,
+                          decoration: InputDecoration(
+                            hintText: replyingToUsername != null
+                                ? 'Replying to @$replyingToUsername'
+                                : 'Comment as $safeUsername',
+                            hintStyle:
+                                TextStyle(color: Colors.white.withOpacity(0.8)),
+                            border: InputBorder.none,
+                            counterStyle:
+                                TextStyle(color: Colors.white.withOpacity(0.6)),
+                            filled: true,
+                            fillColor: Colors.black.withOpacity(0.4),
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 12),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(25),
+                              borderSide: BorderSide(
+                                color: Colors.white.withOpacity(0.3),
+                                width: 1,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(25),
+                              borderSide: BorderSide(
+                                color: Colors.white.withOpacity(0.6),
+                                width: 1.5,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                Consumer<UserProvider>(
+                  builder: (context, userProvider, _) {
+                    final user = userProvider.user;
+                    if (user == null) {
+                      return const SizedBox.shrink();
+                    }
+                    return InkWell(
+                      onTap: _containsBannedWords
+                          ? null
+                          : () =>
+                              postComment(user.uid, safeUsername, safePhotoUrl),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 10, horizontal: 16),
+                        decoration: BoxDecoration(
+                          gradient: _containsBannedWords
+                              ? null
+                              : LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [
+                                    Colors.white.withOpacity(0.9),
+                                    Colors.white.withOpacity(0.7),
+                                  ],
+                                ),
+                          color: _containsBannedWords
+                              ? Colors.grey.withOpacity(0.3)
+                              : null,
+                          borderRadius: BorderRadius.circular(25),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.3),
+                            width: 1,
+                          ),
+                          boxShadow: _containsBannedWords
+                              ? null
+                              : [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.3),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                        ),
+                        child: Text(
+                          'Post',
+                          style: TextStyle(
+                            color: _containsBannedWords
+                                ? Colors.white.withOpacity(0.4)
+                                : Colors.black,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -869,87 +876,53 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
     final AppUser? user = userProvider.user;
 
     if (user == null) {
-      return const Scaffold(
+      return Scaffold(
         backgroundColor: Colors.transparent,
         body: Center(
-          child: CircularProgressIndicator(
-            color: Colors.white,
-            backgroundColor: Colors.transparent,
-          ),
-        ),
+            child: CircularProgressIndicator(
+          color: Colors.white,
+          backgroundColor: Colors.transparent,
+        )),
       );
     }
-
-    // ---------------------------------------------------------------------------
-    // FIX: Keyboard-aware panel positioning.
-    //
-    // Previously the panel was pinned at bottom:0 with a fixed height, and the
-    // input bar used Padding(bottom: viewInsets.bottom) to jump above the
-    // keyboard. That caused two problems:
-    //   1. The ListView (Expanded) shrank abruptly when the keyboard appeared,
-    //      making the comments section appear to "shift".
-    //   2. The parent Scaffold (the post view behind this transparent overlay)
-    //      would also resize if resizeToAvoidBottomInset was true on it.
-    //
-    // The fix moves the ENTIRE panel above the keyboard by setting
-    // bottom: keyboardHeight on the Positioned widget. The panel slides up as
-    // one rigid block – nothing inside it needs to move. The panel height is
-    // clamped so it never exceeds the visible area above the keyboard.
-    //
-    // NOTE: To also prevent the post behind this overlay from shifting, make
-    // sure the parent post screen's Scaffold has:
-    //   resizeToAvoidBottomInset: false
-    // ---------------------------------------------------------------------------
-    final double keyboardHeight = MediaQuery.of(context).viewInsets.bottom;
-    final double screenHeight = MediaQuery.of(context).size.height;
-
-    // 70 % of screen height, but never taller than the visible area above the keyboard.
-    final double panelHeight =
-        (screenHeight * 0.7).clamp(0.0, screenHeight - keyboardHeight);
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
       backgroundColor: Colors.transparent,
       body: GestureDetector(
         onTap: () {
+          // Close comments when tapping on transparent areas
           FocusScope.of(context).unfocus();
           Navigator.of(context).pop();
         },
-        child: SizedBox(
-          height: screenHeight,
+        child: Container(
+          height: MediaQuery.of(context).size.height,
           child: Stack(
             children: [
-              // ----------------------------------------------------------------
-              // Top tap-to-close area.
-              // Uses bottom: instead of height: so it always fills the exact
-              // space above the panel regardless of keyboard state.
-              // ----------------------------------------------------------------
+              // Top area - tap to close (completely transparent)
               Positioned(
                 top: 0,
                 left: 0,
                 right: 0,
-                bottom: keyboardHeight + panelHeight,
+                height: MediaQuery.of(context).size.height * 0.3,
                 child: GestureDetector(
                   onTap: () {
                     FocusScope.of(context).unfocus();
                     Navigator.of(context).pop();
                   },
-                  child: Container(color: Colors.transparent),
+                  child: Container(
+                    color: Colors.transparent,
+                  ),
                 ),
               ),
 
-              // ----------------------------------------------------------------
-              // Comments panel.
-              // bottom: keyboardHeight keeps the panel's lower edge flush with
-              // the top of the keyboard at all times, so the whole sheet slides
-              // smoothly upward rather than having its internals jump around.
-              // ----------------------------------------------------------------
+              // Comments Panel - Bottom area with transparency
               Positioned(
-                bottom: keyboardHeight,
+                bottom: 0,
                 left: 0,
                 right: 0,
-                height: panelHeight,
                 child: Container(
+                  height: MediaQuery.of(context).size.height * 0.7,
                   decoration: const BoxDecoration(
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
