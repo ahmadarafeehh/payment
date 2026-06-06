@@ -90,18 +90,19 @@ class _AddPostScreenState extends State<AddPostScreen>
   late Animation<double> _pulseAnimation;
 
   // ── Emoji reaction picker ──────────────────────────────────────────────────
-  static const List<String> _availableEmojis = [
-    '❤️',
-    '😂',
-    '😍',
-    '🔥',
-    '😎',
-    '🥰',
-    '😮',
-    '👏',
-    '💯',
-    '😡',
-  ];
+static const List<String> _availableEmojis = [
+  '❤️',
+  '😂',
+  '😍',
+  '🔥',
+  '😎',
+  '🥰',
+  '😮',
+  '👏',
+  '💯',
+  '😡',
+  '💀',  // <-- added skull
+];
   String _selectedEmoji = '❤️';
 
   // ===========================================================================
