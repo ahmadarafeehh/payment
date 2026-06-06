@@ -871,17 +871,24 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
         userProvider.firebaseUid ?? userProvider.supabaseUid;
-    if (currentUserId == null || currentUserId.isEmpty) return;
+    if (currentUserId == null || currentUserId.isEmpty) {
+      
+      return;
+    }
     try {
       final response = await _supabase
           .from('users')
-          .select('is_test')
+          .select('test') // ✅ changed from 'is_test' to 'test'
           .eq('uid', currentUserId)
           .maybeSingle();
+      
       if (mounted && response != null) {
-        setState(() => _isTestUser = response['is_test'] ?? false);
+        final isTest = response['test'] ?? false;
+        
+        setState(() => _isTestUser = isTest);
       }
     } catch (e, stack) {
+      
       _logProfileError(
         operation: 'loadTestStatus',
         error: e,
@@ -2301,7 +2308,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   @override
   void dispose() {
     // ✅ screen tracking: exit other_profile screen
-    if (_currentUserIdForTracking != null && _currentUserIdForTracking!.isNotEmpty) {
+    if (_currentUserIdForTracking != null &&
+        _currentUserIdForTracking!.isNotEmpty) {
       AnalyticsService.screenExit(
         screenName: 'other_profile',
         uid: _currentUserIdForTracking!,
