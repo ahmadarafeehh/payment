@@ -1,4 +1,3 @@
-// File: search_screen.dart
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -669,6 +668,7 @@ class _SearchScreenState extends State<SearchScreen>
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
         await _enrichPostsWithUserData(newPosts);
+        if (!mounted) return; // ✅ FIX: guard after await
         _precacheImages(newPosts);
 
         for (final post in newPosts) {
@@ -725,6 +725,7 @@ class _SearchScreenState extends State<SearchScreen>
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
         await _enrichPostsWithUserData(newPosts);
+        if (!mounted) return; // ✅ FIX: guard after await
         _precacheImages(newPosts);
 
         for (final post in newPosts) {
@@ -787,6 +788,7 @@ class _SearchScreenState extends State<SearchScreen>
         final newPosts =
             response.map<Map<String, dynamic>>(_normalisePost).toList();
         await _enrichPostsWithUserData(newPosts);
+        if (!mounted) return []; // ✅ FIX: guard after await (return empty list)
         _precacheImages(newPosts);
 
         for (final post in newPosts) {
