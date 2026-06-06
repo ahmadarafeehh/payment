@@ -11,7 +11,7 @@ import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:Ratedly/screens/feed/post_card.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:Ratedly/screens/Profile_page/custom_camera_screen.dart';
-import 'package:flutter_app_badger/flutter_app_badger.dart'; // ← new import
+import 'package:flutter_app_badger/flutter_app_badger.dart';
 
 // ============================================================================
 // Color schemes (unchanged)
@@ -55,7 +55,7 @@ class _NavLightColors extends _NavColorSet {
 }
 
 // ============================================================================
-// Main screen (most code is untouched – only the badge logic changes)
+// Main screen
 // ============================================================================
 class MobileScreenLayout extends StatefulWidget {
   const MobileScreenLayout({Key? key}) : super(key: key);
@@ -98,9 +98,9 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
       final currentUserUid =
           userProvider.firebaseUid ?? FirebaseAuth.instance.currentUser?.uid;
       if (currentUserUid != null) {
-        // Mark all notifications as read in the database
+        // Mark only notifications as read – messages are untouched
         await NotificationService.markNotificationsAsRead(currentUserUid);
-        // Immediately remove the app icon badge
+        // Immediately remove the app icon badge (it will be recalculated below)
         FlutterAppBadger.removeBadge();
       }
     }
@@ -291,9 +291,8 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
 }
 
 // ============================================================================
-// Notification badge icon – NOW SYNCS WITH IOS APP ICON BADGE
+// Notification badge icon – NOW INCLUDES UNREAD MESSAGES
 // ============================================================================
-
 class _UltraCompactNotificationBadgeIcon extends StatefulWidget {
   final String currentUserId;
   final int currentPage;
@@ -323,99 +322,97 @@ class _UltraCompactNotificationBadgeIcon extends StatefulWidget {
 
 class _UltraCompactNotificationBadgeIconState
     extends State<_UltraCompactNotificationBadgeIcon> {
-  int _notificationCount = 0;
+  int _totalUnreadCount = 0;   // combined: notifications + messages
   bool _hasLoaded = false;
+
   StreamSubscription<List<Map<String, dynamic>>>? _notificationStream;
+  StreamSubscription<List<Map<String, dynamic>>>? _messageStream;
   Timer? _pollingTimer;
 
   @override
   void initState() {
     super.initState();
-    _loadNotificationCount();
-    _setupNotificationStream();
+    _loadCounts();
+    _setupStreams();
     _startPolling();
   }
 
-  Future<void> _loadNotificationCount() async {
+  Future<void> _loadCounts() async {
     try {
       if (widget.currentUserId.isEmpty) return;
-
       final supabase = Supabase.instance.client;
-      final response = await supabase
+
+      // 1. Unread notifications (exclude messages)
+      final notifs = await supabase
           .from('notifications')
-          .select('id, is_read, type, target_user_id')
+          .select('id, is_read, type')
           .eq('target_user_id', widget.currentUserId)
           .eq('is_read', false)
-          .neq('type', 'message')
-          .limit(100);
+          .neq('type', 'message');
+
+      // 2. Unread messages
+      final msgs = await supabase
+          .from('messages')
+          .select('id, is_read')
+          .eq('receiver_id', widget.currentUserId)
+          .eq('is_read', false);
 
       if (mounted) {
         setState(() {
-          _notificationCount = response.length;
+          _totalUnreadCount = notifs.length + msgs.length;
           _hasLoaded = true;
         });
-        // ********** SYNC THE IOS BADGE **********
         _syncBadge();
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) setState(() => _hasLoaded = true);
     }
   }
 
-  void _setupNotificationStream() {
-    try {
-      if (widget.currentUserId.isEmpty) return;
+  void _setupStreams() {
+    if (widget.currentUserId.isEmpty) return;
+    final supabase = Supabase.instance.client;
 
-      final supabase = Supabase.instance.client;
+    // Stream for notifications
+    _notificationStream = supabase
+        .from('notifications')
+        .stream(primaryKey: ['id'])
+        .eq('target_user_id', widget.currentUserId)
+        .listen((_) => _loadCounts());
 
-      _notificationStream = supabase
-          .from('notifications')
-          .stream(primaryKey: ['id'])
-          .eq('target_user_id', widget.currentUserId)
-          .listen((List<Map<String, dynamic>> notifications) {
-            final unreadNotifications = notifications.where((n) {
-              final targetUserId = n['target_user_id']?.toString();
-              final isRead = n['is_read'] == true;
-              final type = n['type']?.toString();
-              return targetUserId == widget.currentUserId &&
-                  !isRead &&
-                  type != 'message';
-            }).toList();
-
-            if (mounted) {
-              setState(() => _notificationCount = unreadNotifications.length);
-              // ********** SYNC THE IOS BADGE **********
-              _syncBadge();
-            }
-          }, onError: (_) {});
-    } catch (e) {}
+    // Stream for messages – fires on any insert/update to the user's messages
+    _messageStream = supabase
+        .from('messages')
+        .stream(primaryKey: ['id'])
+        .eq('receiver_id', widget.currentUserId)
+        .listen((_) => _loadCounts());
   }
 
   void _startPolling() {
-    _pollingTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+    _pollingTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted && widget.currentUserId.isNotEmpty) {
-        _loadNotificationCount();
+        _loadCounts();
       }
     });
   }
 
-  /// Call this every time _notificationCount changes.
+  /// Sync the iOS app icon badge with the current total unread count.
   void _syncBadge() {
-    // Use the same unread count that the in-app badge shows.
-    FlutterAppBadger.updateBadgeCount(_notificationCount);
+    FlutterAppBadger.updateBadgeCount(_totalUnreadCount);
   }
 
   @override
   void didUpdateWidget(_UltraCompactNotificationBadgeIcon oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.currentUserId != widget.currentUserId) {
-      _loadNotificationCount();
+      _loadCounts();
     }
   }
 
   @override
   void dispose() {
     _notificationStream?.cancel();
+    _messageStream?.cancel();
     _pollingTimer?.cancel();
     super.dispose();
   }
@@ -436,8 +433,8 @@ class _UltraCompactNotificationBadgeIconState
         isDarkMode ? const Color(0xFF333333) : Colors.white;
     final badgeTextColor = isDarkMode ? const Color(0xFFd9d9d9) : Colors.black;
 
-    final shouldShowBadge = _notificationCount > 0;
-    final displayCount = _formatCount(_notificationCount);
+    final shouldShowBadge = _totalUnreadCount > 0;
+    final displayCount = _formatCount(_totalUnreadCount);
 
     return Stack(
       alignment: Alignment.center,
