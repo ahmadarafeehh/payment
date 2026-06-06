@@ -1072,7 +1072,15 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   Widget _buildProfileHeader(_ColorSet colors) {
     return Column(children: [
-      SizedBox(height: 80, child: Center(child: _buildProfilePicture(colors))),
+      SizedBox(
+        height: 80,
+        child: Center(
+          child: Transform.translate(
+            offset: const Offset(0, -12),   // moves profile picture up by 12px
+            child: _buildProfilePicture(colors),
+          ),
+        ),
+      ),
       Column(children: [
         SizedBox(
           width: double.infinity,
