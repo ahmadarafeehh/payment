@@ -1,3 +1,4 @@
+// lib/screens/Profile_page/other_user_profile_screen.dart
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -19,7 +20,7 @@ import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ Added analytics service
+import 'package:Ratedly/services/analytics_service.dart';
 
 // -----------------------------------------------------------------------------
 // Color definitions
@@ -1654,7 +1655,10 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   Widget _buildOtherProfileHeader(_OtherProfileColorSet colors) {
     return Column(children: [
-      _buildProfilePicture(colors),
+      Transform.translate(
+        offset: const Offset(0, -12), // moves profile picture up by 12px
+        child: _buildProfilePicture(colors),
+      ),
       Padding(
         padding: const EdgeInsets.only(top: 8),
         child: Row(children: [
