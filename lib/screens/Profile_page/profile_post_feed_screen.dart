@@ -163,22 +163,13 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     }
   }
 
-  void _onPostDeleted(int index) {
-    widget.onPostDeleted?.call();
-    if (!mounted) return;
-    setState(() {
-      _posts.removeAt(index);
-      if (_currentIndex >= _posts.length && _currentIndex > 0) {
-        _currentIndex = _posts.length - 1;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_pageController.hasClients) {
-            _pageController.jumpToPage(_currentIndex);
-          }
-        });
-      }
-    });
-  }
-
+void _onPostDeleted(int index) {
+  // Refresh the profile data (e.g., post count)
+  widget.onPostDeleted?.call();
+  if (!mounted) return;
+  // Pop back to the profile screen
+  Navigator.pop(context);
+}
   void _goToProfile() {
     Navigator.push(
       context,
