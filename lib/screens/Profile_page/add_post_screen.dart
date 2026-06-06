@@ -19,41 +19,16 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 // Identity matrix — passthrough when no filter/adjust is applied.
 const List<double> _kIdentityMatrix = [
-  1,
-  0,
-  0,
-  0,
-  0,
-  0,
-  1,
-  0,
-  0,
-  0,
-  0,
-  0,
-  1,
-  0,
-  0,
-  0,
-  0,
-  0,
-  1,
-  0,
+  1, 0, 0, 0, 0,
+  0, 1, 0, 0, 0,
+  0, 0, 1, 0, 0,
+  0, 0, 0, 1, 0,
 ];
 
 class AddPostScreen extends StatefulWidget {
   final VoidCallback? onPostUploaded;
-
-  /// Pre-captured / pre-edited image bytes.
   final Uint8List? initialFile;
-
-  /// Pre-edited video file passed from VideoEditScreen.
   final File? initialVideoFile;
-
-  /// Full edit state from VideoEditScreen — filters, adjustments,
-  /// draw strokes, text overlays, and rotation quarters are re-applied
-  /// as widget layers on the preview AND serialised into the post record
-  /// so every viewer can reconstruct the same visual output.
   final VideoEditResult? editResult;
 
   const AddPostScreen({
@@ -80,35 +55,21 @@ class _AddPostScreenState extends State<AddPostScreen>
   final double _maxVideoSize = 50 * 1024 * 1024;
   bool _hasAgreedToWarning = false;
 
-  // Video preview player
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
   bool _isPlaying = false;
 
-  // Pulse animation for upload button
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
-  // ── Emoji reaction picker ──────────────────────────────────────────────────
-static const List<String> _availableEmojis = [
-  '❤️',
-  '😂',
-  '😍',
-  '🔥',
-  '😎',
-  '🥰',
-  '😮',
-  '👏',
-  '💯',
-  '😡',
-  '💀',  // <-- added skull
-];
+  static const List<String> _availableEmojis = [
+    '❤️', '😂', '😍', '🔥', '😎', '🥰', '😮', '👏', '💯', '😡', '💀',
+  ];
   String _selectedEmoji = '❤️';
 
   // ===========================================================================
   // ERROR LOGGING
   // ===========================================================================
-
   Future<void> _logError({
     required String operation,
     required dynamic error,
@@ -130,7 +91,6 @@ static const List<String> _availableEmojis = [
   // ===========================================================================
   // LIFECYCLE
   // ===========================================================================
-
   @override
   void initState() {
     super.initState();
@@ -199,7 +159,6 @@ static const List<String> _availableEmojis = [
   // ===========================================================================
   // AGREEMENT
   // ===========================================================================
-
   Future<void> _checkIfUserAgreed() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -225,7 +184,6 @@ static const List<String> _availableEmojis = [
   // ===========================================================================
   // ENTRY POINT
   // ===========================================================================
-
   Future<void> _onUploadButtonPressed() async {
     if (!_hasAgreedToWarning) {
       final agreed = await _showWarningDialog();
@@ -263,8 +221,7 @@ static const List<String> _availableEmojis = [
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text(
               'I Understand',
-              style:
-                  TextStyle(color: primaryColor, fontWeight: FontWeight.bold),
+              style: TextStyle(color: primaryColor, fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -334,7 +291,6 @@ static const List<String> _availableEmojis = [
   // ===========================================================================
   // MEDIA PICKING
   // ===========================================================================
-
   Future<void> _pickAndProcessImage(ImageSource source) async {
     try {
       setState(() {
@@ -441,8 +397,7 @@ static const List<String> _availableEmojis = [
       }
     } catch (e, stack) {
       setState(() => isLoading = false);
-      await _logError(
-          operation: '_pickVideoFromGallery', error: e, stack: stack);
+      await _logError(operation: '_pickVideoFromGallery', error: e, stack: stack);
       if (context.mounted) {
         showSnackBar(context, 'Failed to pick video: $e');
       }
@@ -476,7 +431,6 @@ static const List<String> _availableEmojis = [
   // ===========================================================================
   // POST UPLOAD
   // ===========================================================================
-
   void postMedia(AppUser user) async {
     if (_descriptionController.text.length > 250) {
       if (context.mounted) {
@@ -515,7 +469,6 @@ static const List<String> _availableEmojis = [
 
       if (_isVideo) {
         final Map<String, dynamic>? editJson = widget.editResult?.toJson();
-
         res = await SupabasePostsMethods().uploadVideoPostFromFile(
           _descriptionController.text,
           _videoFile!,
@@ -538,17 +491,17 @@ static const List<String> _availableEmojis = [
         );
       }
 
-      // ─────────────────────────────────────────────────────────────────
-      // ✅ Updated: pop both AddPost and CustomCamera to return to profile
-      // ─────────────────────────────────────────────────────────────────
+      // ── Updated pop logic: pop ALL screens back to the profile ──
       if (res == "success" && context.mounted) {
         setState(() => isLoading = false);
         showSnackBar(context, _isVideo ? 'Video Posted!' : 'Posted!');
         clearMedia();
-        widget.onPostUploaded?.call();         // triggers getData() on profile
-        // Pop back to the profile screen (pop AddPost then CustomCamera)
-        Navigator.of(context).pop();           // removes AddPostScreen
-        Navigator.of(context).pop();           // removes CustomCameraScreen
+        widget.onPostUploaded?.call();
+
+        final navigator = Navigator.of(context);
+        // Pop until we reach the route that was pushed from the profile screen
+        navigator.popUntil((route) => route.settings.name == 'cameraFromProfile');
+        navigator.pop(); // pop the camera route itself → back to profile
       } else if (context.mounted) {
         setState(() => isLoading = false);
         showSnackBar(context, 'Error: $res');
@@ -582,8 +535,6 @@ static const List<String> _availableEmojis = [
   // ===========================================================================
   // HELPERS
   // ===========================================================================
-
-  /// Combined colour matrix from the edit result, or identity if none.
   List<double> get _colorMatrix {
     final r = widget.editResult;
     if (r == null) return _kIdentityMatrix;
@@ -696,7 +647,6 @@ static const List<String> _availableEmojis = [
   // ===========================================================================
   // EMOJI PICKER
   // ===========================================================================
-
   Widget _buildEmojiPicker() {
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 14, 16, 0),
@@ -741,9 +691,7 @@ static const List<String> _availableEmojis = [
                     child: Center(
                       child: Text(
                         emoji,
-                        style: TextStyle(
-                          fontSize: isSelected ? 24 : 20,
-                        ),
+                        style: TextStyle(fontSize: isSelected ? 24 : 20),
                       ),
                     ),
                   ),
@@ -759,7 +707,6 @@ static const List<String> _availableEmojis = [
   // ===========================================================================
   // CAPTION SECTION
   // ===========================================================================
-
   Widget _buildPostButton(bool isLoading, VoidCallback onPressed) {
     return IgnorePointer(
       ignoring: isLoading,
@@ -798,13 +745,11 @@ static const List<String> _availableEmojis = [
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // ── Avatar + text field row ────────────────────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 8, 0),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Avatar
                 Container(
                   width: 38,
                   height: 38,
@@ -823,10 +768,7 @@ static const List<String> _availableEmojis = [
                             size: 38, color: primaryColor),
                   ),
                 ),
-
                 const SizedBox(width: 10),
-
-                // Username + text field stacked
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -869,8 +811,6 @@ static const List<String> _availableEmojis = [
                     ],
                   ),
                 ),
-
-                // Dismiss keyboard button
                 if (_captionFocusNode.hasFocus)
                   Padding(
                     padding: const EdgeInsets.only(left: 4, top: 2),
@@ -897,8 +837,6 @@ static const List<String> _availableEmojis = [
               ],
             ),
           ),
-
-          // ── Character counter with progress bar ───────────────────────
           if (isNearLimit) ...[
             const SizedBox(height: 8),
             Padding(
@@ -916,9 +854,7 @@ static const List<String> _availableEmojis = [
               ),
             ),
           ],
-
           const SizedBox(height: 10),
-
           if (isNearLimit)
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
@@ -946,7 +882,6 @@ static const List<String> _availableEmojis = [
   // ===========================================================================
   // BUILD
   // ===========================================================================
-
   @override
   Widget build(BuildContext context) {
     final user = Provider.of<UserProvider>(context).user;
@@ -1010,7 +945,6 @@ static const List<String> _availableEmojis = [
 // =============================================================================
 // PERMISSION DENIED SHEET
 // =============================================================================
-
 class _PermissionSheet extends StatelessWidget {
   final bool isPermanent;
   final bool needsMic;
