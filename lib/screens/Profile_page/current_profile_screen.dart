@@ -20,7 +20,7 @@ import 'package:country_flags/country_flags.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
+import 'package:Ratedly/services/analytics_service.dart';
 
 class _ColorSet {
   final Color textColor;
@@ -259,7 +259,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   @override
   void initState() {
     super.initState();
-    // ✅ screen tracking: enter profile screen
     AnalyticsService.screenEnter('current_profile');
 
     WidgetsBinding.instance.addObserver(this);
@@ -270,7 +269,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   @override
   void dispose() {
-    // ✅ screen tracking: exit profile screen
     AnalyticsService.screenExit(
       screenName: 'profile',
       uid: widget.uid,
@@ -1272,6 +1270,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
                     builder: (_) => CustomCameraScreen(
                       onPostUploaded: () async => getData(),
                     ),
+                    settings: const RouteSettings(name: 'cameraFromProfile'),  // <-- ADDED
                   ),
                 ).then((_) {
                   Future.delayed(const Duration(milliseconds: 300), () {
@@ -1329,6 +1328,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             builder: (_) => CustomCameraScreen(
               onPostUploaded: () async => getData(),
             ),
+            settings: const RouteSettings(name: 'cameraFromProfile'),  // <-- ADDED
           ),
         ).then((_) {
           Future.delayed(const Duration(milliseconds: 300), () {
