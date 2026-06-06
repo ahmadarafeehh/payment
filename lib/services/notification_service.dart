@@ -23,6 +23,32 @@ class NotificationService {
     return DateTime.now().millisecondsSinceEpoch % 2147483647;
   }
 
+  // ─── COLD START ──────────────────────────────────────────────────────────
+  /// Called from main() after Firebase + Supabase are ready but BEFORE
+  /// _appInitState switches out of the skeleton screen.
+  ///
+  /// Storing + pre-fetching here means the post data is ready before the
+  /// real UI ever renders, so executePendingNavigation() can push
+  /// ProfilePostFeedScreen on the very first frame — with no feed flash.
+  static Future<void> handleColdStart() async {
+    try {
+      final initialMessage = await firebase_messaging.FirebaseMessaging.instance
+          .getInitialMessage();
+      if (initialMessage == null) return;
+
+      final data = Map<String, dynamic>.from(initialMessage.data);
+
+      // storePendingNavigation sets isNavigatingToPost = true synchronously,
+      // so the opaque overlay is active before the real UI renders.
+      NotificationNavigationHandler.storePendingNavigation(data);
+
+      // Pre-fetch post + user data while the skeleton is still on screen.
+      // By the time _appInitState flips to ready, the data is cached and
+      // executePendingNavigation() pushes the route with zero Supabase delay.
+      await NotificationNavigationHandler.prefetchNavigationData(data);
+    } catch (_) {}
+  }
+
   // ─── INIT ────────────────────────────────────────────────────────────────
   Future<void> init() async {
     try {
@@ -55,30 +81,11 @@ class NotificationService {
         await _saveToken(newToken);
       });
 
-      // ── Cold-start: app was fully terminated and launched by a notification tap.
-      //
-      // FIX: Previously, storePendingNavigation() was called here but
-      // executePendingNavigation() was only called from the postFrameCallback
-      // in _OptimizedMyAppState.initState(), which fires BEFORE getInitialMessage()
-      // resolves. The result was that _pendingData was always null at that point
-      // and the cold-start tap was silently discarded.
-      //
-      // Fix: call executePendingNavigation() immediately after storing the data.
-      // By the time getInitialMessage() completes (it is an async Firebase I/O
-      // call), _OptimizedMyApp has already rendered and notificationNavigatorKey
-      // is attached to the MaterialApp, so the push succeeds.
-      // The postFrameCallback in _OptimizedMyApp is kept as a harmless fallback
-      // (it becomes a no-op because _pendingData is cleared on first consumption).
-      final initialMessage = await firebase_messaging
-          .FirebaseMessaging.instance
-          .getInitialMessage();
-      if (initialMessage != null) {
-        NotificationNavigationHandler.storePendingNavigation(
-          Map<String, dynamic>.from(initialMessage.data),
-        );
-        // ✅ FIX: execute here, not only in the postFrameCallback.
-        await NotificationNavigationHandler.executePendingNavigation();
-      }
+      // Cold-start is handled in main() via handleColdStart() — not here.
+      // By the time init() runs (in _initializeNonEssentialServicesInBackground),
+      // handleColdStart() has already stored + pre-fetched the notification data
+      // and executePendingNavigation() has already been called from the
+      // postFrameCallback in _OptimizedMyAppState. Nothing to do here.
 
       const DarwinInitializationSettings initializationSettingsIOS =
           DarwinInitializationSettings();
@@ -156,17 +163,12 @@ class NotificationService {
     ]);
   }
 
-  /// Saves the FCM token to Supabase.
-  ///
-  /// Always saves by the `uid` column (text primary key), which is
-  /// always populated for every user — both Firebase and Supabase auth users.
   Future<void> _saveTokenToSupabase(String token) async {
     try {
       final supabase = Supabase.instance.client;
       final firebaseUser = firebase_auth.FirebaseAuth.instance.currentUser;
       final supabaseUser = supabase.auth.currentUser;
 
-      // ── Firebase auth user ───────────────────────────────────────────────
       if (firebaseUser != null) {
         await supabase
             .from('users')
@@ -174,7 +176,6 @@ class NotificationService {
         return;
       }
 
-      // ── Supabase auth user ───────────────────────────────────────────────
       if (supabaseUser != null) {
         await supabase
             .from('users')
@@ -189,14 +190,10 @@ class NotificationService {
   Future<void> _saveTokenToFirestore(String token) async {
     try {
       final user = firebase_auth.FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        return;
-      }
+      if (user == null) return;
 
       await user.reload();
-      if (!user.emailVerified) {
-        return;
-      }
+      if (!user.emailVerified) return;
 
       await FirebaseFirestore.instance
           .collection('users')
@@ -231,8 +228,7 @@ class NotificationService {
       firebase_messaging.RemoteMessage message) async {
     try {
       await Firebase.initializeApp();
-      final title =
-          message.data['title'] ?? message.notification?.title ?? '';
+      final title = message.data['title'] ?? message.notification?.title ?? '';
       final body = message.data['body'] ?? message.notification?.body ?? '';
 
       if (title.isNotEmpty || body.isNotEmpty) {
@@ -269,7 +265,6 @@ class NotificationService {
       finalTitle,
       finalBody,
       const NotificationDetails(iOS: iosDetails),
-      // Payload carries the full FCM data map so the tap handler can navigate.
       payload: jsonEncode(data),
     );
   }
