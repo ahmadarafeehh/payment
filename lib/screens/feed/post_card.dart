@@ -1854,6 +1854,12 @@ class _PostCardState extends State<PostCard>
     final scaffoldBg = widget.skeletonColor ?? const Color(0xFF1C1C1C);
 
     return Scaffold(
+      // ─────────────────────────────────────────────────────────────────────
+      // FIX: Prevent the post from being pushed up when the keyboard opens
+      // inside the CommentsBottomSheet. The bottom sheet handles its own
+      // keyboard insets via MediaQuery.viewInsets in _buildBottomInputBar.
+      // ─────────────────────────────────────────────────────────────────────
+      resizeToAvoidBottomInset: false,
       backgroundColor: scaffoldBg,
       body: Stack(
         children: [
