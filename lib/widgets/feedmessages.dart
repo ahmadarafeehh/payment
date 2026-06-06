@@ -206,14 +206,13 @@ class _FeedMessagesState extends State<FeedMessages>
   final SupabaseClient _supabase = Supabase.instance.client;
   List<Map<String, dynamic>> _existingChats = [];
   List<String> _blockedUsers = [];
-  List<Map<String, dynamic>> _suggestedUsers = [];
+
   final Map<String, Map<String, dynamic>> _userCache = {};
   final Map<String, Map<String, dynamic>> _lastMessageCache = {};
   final Map<String, int> _unreadCountCache = {};
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
   bool _isLoading = true;
-  bool _showSuggestions = false;
   bool _loadingMore = false;
   bool _hasMoreChats = true;
   String? _currentUserId;
@@ -370,8 +369,11 @@ class _FeedMessagesState extends State<FeedMessages>
       final validChats = <Map<String, dynamic>>[];
       for (final chat in chats) {
         final participants = List<String>.from(chat['participants']);
-        final otherUserId = participants
-            .firstWhere((id) => id != _currentUserId, orElse: () => '');
+        // Safely get other user (fix for bad chat data)
+        final otherUserId = participants.firstWhere(
+          (id) => id != _currentUserId,
+          orElse: () => '',
+        );
         if (otherUserId.isNotEmpty) {
           final chatCopy = Map<String, dynamic>.from(chat);
           chatCopy['last_mutual_exchange'] =
@@ -404,8 +406,11 @@ class _FeedMessagesState extends State<FeedMessages>
     final userIDs = <String>[];
     for (final chat in _existingChats) {
       final participants = List<String>.from(chat['participants']);
-      final otherUserId = participants.firstWhere((id) => id != _currentUserId);
-      userIDs.add(otherUserId);
+      final otherUserId = participants.firstWhere(
+        (id) => id != _currentUserId,
+        orElse: () => '',
+      );
+      if (otherUserId.isNotEmpty) userIDs.add(otherUserId);
     }
     try {
       await Future.wait([
@@ -413,7 +418,7 @@ class _FeedMessagesState extends State<FeedMessages>
         _loadLastMessagesBatch(
             _existingChats.map((c) => c['id'] as String).toList()),
         _loadUnreadCountsBatch(_existingChats),
-        _loadSuggestions(),
+        // _loadSuggestions() removed entirely
       ]);
       for (final userId in userIDs) {
         final userData = _userCache[userId];
@@ -560,8 +565,14 @@ class _FeedMessagesState extends State<FeedMessages>
     final newChatIds = <String>[];
     for (final chat in newChats) {
       final participants = List<String>.from(chat['participants']);
-      final otherUserId = participants.firstWhere((id) => id != _currentUserId);
-      if (!_userCache.containsKey(otherUserId)) newUserIds.add(otherUserId);
+      // Fixed: use orElse to avoid StateError
+      final otherUserId = participants.firstWhere(
+        (id) => id != _currentUserId,
+        orElse: () => '',
+      );
+      if (otherUserId.isNotEmpty && !_userCache.containsKey(otherUserId)) {
+        newUserIds.add(otherUserId);
+      }
       newChatIds.add(chat['id'] as String);
     }
     try {
@@ -616,74 +627,9 @@ class _FeedMessagesState extends State<FeedMessages>
     }
   }
 
-  Future<void> _loadSuggestions() async {
-    if (_existingChats.length >= 3 || _currentUserId == null) return;
-    try {
-      final suggestedUserIds =
-          await _getSuggestedUsers(3 - _existingChats.length);
-      if (suggestedUserIds.isNotEmpty) {
-        final users = await _supabase
-            .from('users')
-            .select()
-            .inFilter('uid', suggestedUserIds);
-        if (mounted) {
-          setState(() {
-            _suggestedUsers = users.cast<Map<String, dynamic>>();
-            _showSuggestions = users.isNotEmpty;
-          });
-        }
-        for (final user in users) {
-          final userId = user['uid'] ?? '';
-          final photoUrl = user['photoUrl'] ?? user['photo_url'] ?? '';
-          if (_isProfileVideo(photoUrl))
-            _initializeVideoController(userId, photoUrl);
-        }
-      }
-    } catch (e) {
-      await _logMessageError(
-        operationType: 'load_suggestions',
-        userId: _currentUserId,
-        error: e,
-      );
-    }
-  }
-
-  Future<List<String>> _getSuggestedUsers(int count) async {
-    if (count <= 0 || _currentUserId == null) return [];
-    final existingUserIds = _existingChats.map((chat) {
-      final participants = List<String>.from(chat['participants']);
-      return participants.firstWhere((id) => id != _currentUserId);
-    }).toList();
-    try {
-      final followsData = await _supabase
-          .from('follows')
-          .select('follower_id, following_id')
-          .or('follower_id.eq.${_currentUserId},following_id.eq.${_currentUserId}');
-      final following = <String>[];
-      final followers = <String>[];
-      for (final follow in followsData) {
-        if (follow['follower_id'] == _currentUserId)
-          following.add(follow['following_id'] as String);
-        if (follow['following_id'] == _currentUserId)
-          followers.add(follow['follower_id'] as String);
-      }
-      List<String> candidates = [...following, ...followers]
-          .where((id) => id != _currentUserId)
-          .where((id) => !existingUserIds.contains(id))
-          .where((id) => !_blockedUsers.contains(id))
-          .toSet()
-          .toList();
-      return candidates.take(count).toList();
-    } catch (e) {
-      await _logMessageError(
-        operationType: 'get_suggested_users',
-        userId: _currentUserId,
-        additionalData: {'count': count},
-        error: e,
-      );
-      return [];
-    }
-  }
+  // ────────────────────────────────────────────────
+  // REMOVED: _loadSuggestions & _getSuggestedUsers
+  // ────────────────────────────────────────────────
 
   String _formatTimestamp(DateTime? timestamp) {
     if (timestamp == null) return 'Just now';
@@ -762,46 +708,15 @@ class _FeedMessagesState extends State<FeedMessages>
     );
   }
 
-  Widget _buildSuggestionItem(
-      Map<String, dynamic> userData, _FeedMessagesColorSet colors) {
-    final username = userData['username'] ?? 'Unknown';
-    final photoUrl = userData['photoUrl'] ?? userData['photo_url'] ?? '';
-    final userId = userData['uid'] ?? '';
-    return Container(
-      decoration: BoxDecoration(
-          border:
-              Border(bottom: BorderSide(color: colors.cardColor, width: 0.5))),
-      child: ListTile(
-        leading: _buildUserAvatar(userId, photoUrl, colors),
-        title: VerifiedUsernameWidget(
-          username: username,
-          uid: userId,
-          style: TextStyle(color: colors.textColor),
-        ),
-        trailing: Icon(Icons.person_add_alt_1, color: colors.iconColor),
-        onTap: () async {
-          _pauseAllVideos();
-          final result = await Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => MessagingScreen(
-                recipientUid: userId,
-                recipientUsername: username,
-                recipientPhotoUrl: photoUrl,
-              ),
-            ),
-          );
-          if (result == true) _refreshData();
-        },
-      ),
-    );
-  }
+  // REMOVED: _buildSuggestionItem
 
   Widget _buildChatItem(
       Map<String, dynamic> chat, _FeedMessagesColorSet colors) {
     final participants = List<String>.from(chat['participants']);
-    final otherUserId =
-        participants.firstWhere((id) => id != _currentUserId, orElse: () => '');
+    final otherUserId = participants.firstWhere(
+      (id) => id != _currentUserId,
+      orElse: () => '',
+    );
     if (otherUserId.isEmpty) return const SizedBox.shrink();
 
     final isBlocked = _blockedUsers.contains(otherUserId);
@@ -842,7 +757,6 @@ class _FeedMessagesState extends State<FeedMessages>
           children: [
             Expanded(
               child: isBlocked
-                  // Plain text for blocked users — no verified badge, no country flag
                   ? Text(
                       displayUsername,
                       style: TextStyle(color: colors.textColor),
@@ -958,29 +872,7 @@ class _FeedMessagesState extends State<FeedMessages>
     );
   }
 
-  Widget _buildSuggestionSkeleton(_FeedMessagesColorSet colors) {
-    return Container(
-      decoration: BoxDecoration(
-          border:
-              Border(bottom: BorderSide(color: colors.cardColor, width: 0.5))),
-      child: ListTile(
-        leading: CircleAvatar(
-            radius: 21, backgroundColor: colors.cardColor.withOpacity(0.5)),
-        title: Container(
-            height: 16,
-            width: 100,
-            decoration: BoxDecoration(
-                color: colors.cardColor.withOpacity(0.5),
-                borderRadius: BorderRadius.circular(4))),
-        trailing: Container(
-            width: 24,
-            height: 24,
-            decoration: BoxDecoration(
-                color: colors.cardColor.withOpacity(0.4),
-                shape: BoxShape.circle)),
-      ),
-    );
-  }
+  // REMOVED: _buildSuggestionSkeleton
 
   Widget _buildSectionHeaderSkeleton(_FeedMessagesColorSet colors) {
     return Padding(
@@ -1095,15 +987,13 @@ class _FeedMessagesState extends State<FeedMessages>
   }
 
   Widget _buildEnhancedSkeletonLoading(_FeedMessagesColorSet colors) {
+    // Simplified: no suggestion skeletons
     return ListView(
       children: [
         _buildSectionHeaderSkeleton(colors),
         _buildDetailedChatSkeleton(colors),
         _buildDetailedChatSkeleton(colors),
         _buildDetailedChatSkeleton(colors),
-        _buildSectionHeaderSkeleton(colors),
-        _buildSuggestionSkeleton(colors),
-        _buildSuggestionSkeleton(colors),
         _buildDetailedChatSkeleton(colors),
         _buildDetailedChatSkeleton(colors),
       ],
@@ -1113,11 +1003,9 @@ class _FeedMessagesState extends State<FeedMessages>
   Widget _buildContent(_FeedMessagesColorSet colors) {
     if (_currentUserId == null) return _buildNotSignedInMessage(colors);
     final hasChats = _existingChats.isNotEmpty;
-    final hasSuggestions = _showSuggestions && _suggestedUsers.isNotEmpty;
-    if (!hasChats && !hasSuggestions) return _buildEmptyStateMessage(colors);
-    final totalItemCount = _existingChats.length +
-        _suggestedUsers.length +
-        (_hasMoreChats ? 1 : 0);
+    if (!hasChats) return _buildEmptyStateMessage(colors);
+
+    final totalItemCount = _existingChats.length + (_hasMoreChats ? 1 : 0);
     return NotificationListener<ScrollNotification>(
       onNotification: (scrollNotification) {
         if (scrollNotification is ScrollEndNotification) {
@@ -1131,10 +1019,6 @@ class _FeedMessagesState extends State<FeedMessages>
         itemBuilder: (context, index) {
           if (index < _existingChats.length) {
             return _buildChatItem(_existingChats[index], colors);
-          } else if (index < _existingChats.length + _suggestedUsers.length) {
-            final suggestionIndex = index - _existingChats.length;
-            return _buildSuggestionItem(
-                _suggestedUsers[suggestionIndex], colors);
           } else {
             return _buildLoadingIndicator(colors);
           }
