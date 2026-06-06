@@ -23,8 +23,10 @@ class NotificationNavigationHandler {
   // Cold-start support
   // ---------------------------------------------------------------------------
   // When the app is fully terminated and the user taps a notification, the
-  // navigator isn't mounted yet. We store the data here and consume it once
-  // the root widget calls executePendingNavigation().
+  // navigator isn't mounted yet.  We store the data here and consume it once
+  // executePendingNavigation() is called from NotificationService.init() after
+  // getInitialMessage() resolves (at which point the navigator is guaranteed
+  // to be attached).
   static Map<String, dynamic>? _pendingData;
 
   /// Call this from NotificationService.init() when getInitialMessage() returns
@@ -33,22 +35,18 @@ class NotificationNavigationHandler {
     _pendingData = Map<String, dynamic>.from(data);
   }
 
-  /// Call this from your root widget's initState (or didChangeDependencies)
-  /// after MaterialApp has been built, so the navigator key is fully attached.
+  /// Consumes any stored cold-start navigation data and executes the navigation.
   ///
-  /// Example in your root StatefulWidget:
-  ///
-  ///   @override
-  ///   void initState() {
-  ///     super.initState();
-  ///     WidgetsBinding.instance.addPostFrameCallback((_) {
-  ///       NotificationNavigationHandler.executePendingNavigation();
-  ///     });
-  ///   }
+  /// Called from two places:
+  ///   1. NotificationService.init(), immediately after storePendingNavigation()
+  ///      — this is the primary, reliable call site.
+  ///   2. _OptimizedMyAppState.initState() via addPostFrameCallback
+  ///      — kept as a harmless fallback; it is a no-op if _pendingData has
+  ///        already been consumed in (1).
   static Future<void> executePendingNavigation() async {
     final data = _pendingData;
     if (data == null) return;
-    _pendingData = null;
+    _pendingData = null; // consume before awaiting to prevent double-execution
     await handleNotificationData(data);
   }
 
@@ -96,7 +94,18 @@ class NotificationNavigationHandler {
   }
 
   static Future<void> _navigateToPost(String postId) async {
-    final navState = notificationNavigatorKey.currentState;
+    // ── Wait for the navigator to be ready ───────────────────────────────
+    //
+    // FIX: The original code returned immediately if currentState was null.
+    // In practice this can happen on very fast cold-starts (the key is set
+    // but the navigator hasn't processed its first frame yet).  Retry up to
+    // 5 times (1.5 s total) before giving up.
+    NavigatorState? navState;
+    for (var attempt = 0; attempt < 5; attempt++) {
+      navState = notificationNavigatorKey.currentState;
+      if (navState != null) break;
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
     if (navState == null) return;
 
     try {
@@ -145,8 +154,13 @@ class NotificationNavigationHandler {
         targetIndex = 0;
       }
 
-      // 5. Push the feed screen
-      navState.push(
+      // 5. Re-read navState — it may have been reassigned during the awaits
+      //    above if the widget tree rebuilt. Fetch it fresh before pushing.
+      final currentNavState = notificationNavigatorKey.currentState;
+      if (currentNavState == null) return;
+
+      // 6. Push the feed screen
+      currentNavState.push(
         MaterialPageRoute(
           builder: (_) => ProfilePostFeedScreen(
             initialPosts: posts,
