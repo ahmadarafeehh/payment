@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
-import 'package:Ratedly/screens/Profile_page/other_user_profile_screen.dart';
+import 'package:Ratedly/screens/Profile_page/other_user_profile.dart';
 
 final GlobalKey<NavigatorState> notificationNavigatorKey =
     GlobalKey<NavigatorState>();
@@ -130,8 +130,7 @@ class NotificationNavigationHandler {
   static Future<void> handleNotificationData(Map<String, dynamic> data) async {
     final type = data['type']?.toString();
 
-    final bool isPostLinked =
-        type != null && _postLinkedTypes.contains(type);
+    final bool isPostLinked = type != null && _postLinkedTypes.contains(type);
     final bool isProfileLinked =
         type != null && _profileLinkedTypes.contains(type);
     final bool willNavigate = isPostLinked || isProfileLinked;
@@ -229,7 +228,7 @@ class NotificationNavigationHandler {
     // ADDED 'followerId' to support your Cloud Function's customData key
     String? uid = data['followerUid']?.toString() ??
         data['follower_uid']?.toString() ??
-        data['followerId']?.toString() ??      // <-- ADDED THIS LINE
+        data['followerId']?.toString() ?? // <-- ADDED THIS LINE
         data['fromUid']?.toString() ??
         data['from_uid']?.toString();
     if (uid != null && uid.isNotEmpty) return uid;
