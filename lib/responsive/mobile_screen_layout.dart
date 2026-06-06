@@ -291,7 +291,8 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
 }
 
 // ============================================================================
-// Notification badge icon – NOW INCLUDES UNREAD MESSAGES
+// Notification badge icon – in‑app shows only notifications,
+// while the home‑screen app badge shows notifications + messages.
 // ============================================================================
 class _UltraCompactNotificationBadgeIcon extends StatefulWidget {
   final String currentUserId;
@@ -321,8 +322,9 @@ class _UltraCompactNotificationBadgeIcon extends StatefulWidget {
 }
 
 class _UltraCompactNotificationBadgeIconState
-    extends State<_UltraCompactNotificationBadgeIcon> {
-  int _totalUnreadCount = 0;   // combined: notifications + messages
+    extends State<_UltraCompactNotificationBadgeIcon>
+    with WidgetsBindingObserver {
+  int _totalUnreadCount = 0;   // in‑app badge shows only notifications
   bool _hasLoaded = false;
 
   StreamSubscription<List<Map<String, dynamic>>>? _notificationStream;
@@ -332,9 +334,17 @@ class _UltraCompactNotificationBadgeIconState
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadCounts();
     _setupStreams();
     _startPolling();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadCounts();
+    }
   }
 
   Future<void> _loadCounts() async {
@@ -357,15 +367,26 @@ class _UltraCompactNotificationBadgeIconState
           .eq('receiver_id', widget.currentUserId)
           .eq('is_read', false);
 
+      final notificationsCount = notifs.length;
+      final messagesCount = msgs.length;
+
       if (mounted) {
         setState(() {
-          _totalUnreadCount = notifs.length + msgs.length;
+          // In‑app badge shows notifications only
+          _totalUnreadCount = notificationsCount;
           _hasLoaded = true;
         });
-        _syncBadge();
+
+        // App icon badge shows combined total
+        FlutterAppBadger.updateBadgeCount(notificationsCount + messagesCount);
       }
     } catch (_) {
-      if (mounted) setState(() => _hasLoaded = true);
+      if (mounted) {
+        setState(() {
+          _totalUnreadCount = 0;
+          _hasLoaded = true;
+        });
+      }
     }
   }
 
@@ -380,7 +401,7 @@ class _UltraCompactNotificationBadgeIconState
         .eq('target_user_id', widget.currentUserId)
         .listen((_) => _loadCounts());
 
-    // Stream for messages – fires on any insert/update to the user's messages
+    // Stream for messages
     _messageStream = supabase
         .from('messages')
         .stream(primaryKey: ['id'])
@@ -396,11 +417,6 @@ class _UltraCompactNotificationBadgeIconState
     });
   }
 
-  /// Sync the iOS app icon badge with the current total unread count.
-  void _syncBadge() {
-    FlutterAppBadger.updateBadgeCount(_totalUnreadCount);
-  }
-
   @override
   void didUpdateWidget(_UltraCompactNotificationBadgeIcon oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -411,6 +427,7 @@ class _UltraCompactNotificationBadgeIconState
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _notificationStream?.cancel();
     _messageStream?.cancel();
     _pollingTimer?.cancel();
