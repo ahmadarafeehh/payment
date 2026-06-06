@@ -1898,6 +1898,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,   // ← KEY CHANGE: prevent keyboard from resizing the feed
       backgroundColor: colors.backgroundColor,
       body: Stack(
         children: [
