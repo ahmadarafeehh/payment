@@ -49,6 +49,19 @@ class NotificationNavigationHandler {
   static Map<String, dynamic>? _pendingData;
   static _PreFetchedPostData? _prefetchedPostData;
 
+  // ─────────── NEW: Wait for Supabase session (fixes cold‑start RLS) ───────
+  /// Waits up to 5 s for a valid Supabase session before giving up.
+  static Future<void> _waitForSupabaseSession() async {
+    final supabase = Supabase.instance.client;
+    if (supabase.auth.currentSession != null) return;
+
+    for (int i = 0; i < 50; i++) {          // 50 × 100 ms = 5 s max
+      await Future.delayed(const Duration(milliseconds: 100));
+      if (supabase.auth.currentSession != null) return;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   /// Called from NotificationService.handleColdStart() — after Supabase is
   /// ready but BEFORE _appInitState switches out of the skeleton screen.
   static Future<void> prefetchNavigationData(Map<String, dynamic> data) async {
@@ -63,6 +76,9 @@ class NotificationNavigationHandler {
 
     final postId = _extractPostId(data);
     if (postId == null || postId.isEmpty) return;
+
+    // ✅ NEW: wait for session before any Supabase query
+    await _waitForSupabaseSession();
 
     try {
       final supabase = Supabase.instance.client;
@@ -121,6 +137,10 @@ class NotificationNavigationHandler {
     final data = _pendingData;
     if (data == null) return;
     _pendingData = null;
+
+    // ✅ NEW: wait for session before handling notification data
+    await _waitForSupabaseSession();
+
     await handleNotificationData(data);
   }
 
@@ -228,7 +248,7 @@ class NotificationNavigationHandler {
     // ADDED 'followerId' to support your Cloud Function's customData key
     String? uid = data['followerUid']?.toString() ??
         data['follower_uid']?.toString() ??
-        data['followerId']?.toString() ?? // <-- ADDED THIS LINE
+        data['followerId']?.toString() ??
         data['fromUid']?.toString() ??
         data['from_uid']?.toString();
     if (uid != null && uid.isNotEmpty) return uid;
@@ -254,13 +274,16 @@ class NotificationNavigationHandler {
   }
 
   // ---------------------------------------------------------------------------
-  // Navigate to post (existing logic)
+  // Navigate to post (existing logic + session wait at start)
   // ---------------------------------------------------------------------------
   static Future<void> _navigateToPost(
     String postId,
     String notificationType,
     Map<String, dynamic> rawData,
   ) async {
+    // ✅ NEW: ensure session is restored before any Supabase query
+    await _waitForSupabaseSession();
+
     NavigatorState? navState;
     int attempts = 0;
     for (; attempts < 5; attempts++) {
