@@ -7,6 +7,23 @@ final GlobalKey<NavigatorState> notificationNavigatorKey =
     GlobalKey<NavigatorState>();
 
 // ---------------------------------------------------------------------------
+// Pre-fetched data holder
+// ---------------------------------------------------------------------------
+class _PreFetchedPostData {
+  final List<Map<String, dynamic>> posts;
+  final int targetIndex;
+  final Map<String, dynamic> userData;
+  final String ownerUid;
+
+  _PreFetchedPostData({
+    required this.posts,
+    required this.targetIndex,
+    required this.userData,
+    required this.ownerUid,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // NotificationNavigationHandler
 // ---------------------------------------------------------------------------
 class NotificationNavigationHandler {
@@ -18,48 +35,88 @@ class NotificationNavigationHandler {
     'reply_like',
   };
 
-  static Map<String, dynamic>? _pendingData;
+  // ── Overlay control ──────────────────────────────────────────────────────
+  /// Drives the full-screen opaque cover in MaterialApp.builder.
+  /// Set synchronously before any async work so the feed is hidden
+  /// the moment a notification tap is handled.
+  static final isNavigatingToPost = ValueNotifier<bool>(false);
 
-  // ── Logging helper ──────────────────────────────────────────────────────
-  static Future<void> _log({
-    required String eventType,
-    String? notificationType,
-    String? postId,
-    bool? navigatorReady,
-    int? navigatorAttempts,
-    String? errorMessage,
-    String? stackTrace,
-    Map<String, dynamic>? rawData,
-    Map<String, dynamic>? additionalData,
-  }) async {
+  // ── Cold-start support ───────────────────────────────────────────────────
+  static Map<String, dynamic>? _pendingData;
+  static _PreFetchedPostData? _prefetchedPostData;
+
+  /// Called from NotificationService.handleColdStart() — after Supabase is
+  /// ready but BEFORE _appInitState switches out of the skeleton screen.
+  /// Eagerly fetches post + user rows so executePendingNavigation() can
+  /// push the route with zero additional Supabase delay.
+  static Future<void> prefetchNavigationData(Map<String, dynamic> data) async {
+    final type = data['type']?.toString();
+    if (type == null || !_postLinkedTypes.contains(type)) return;
+
+    final postId = _extractPostId(data);
+    if (postId == null || postId.isEmpty) return;
+
     try {
-      await Supabase.instance.client.from('notification_tap_logs').insert({
-        'event_type': eventType,
-        'notification_type': notificationType,
-        'post_id': postId,
-        'navigator_ready': navigatorReady,
-        'navigator_attempts': navigatorAttempts,
-        'error_message': errorMessage,
-        'stack_trace': stackTrace,
-        'raw_data': rawData,
-        'additional_data': additionalData,
-      });
+      final supabase = Supabase.instance.client;
+
+      final postRow = await supabase
+          .from('posts')
+          .select()
+          .eq('postId', postId)
+          .maybeSingle();
+      if (postRow == null) return;
+
+      final ownerUid = postRow['uid']?.toString() ?? '';
+      if (ownerUid.isEmpty) return;
+
+      final userRow = await supabase
+          .from('users')
+          .select('uid, username, photoUrl')
+          .eq('uid', ownerUid)
+          .maybeSingle();
+      if (userRow == null) return;
+
+      const pageSize = 20;
+      final rawPosts = await supabase
+          .from('posts')
+          .select()
+          .eq('uid', ownerUid)
+          .order('datePublished', ascending: false)
+          .limit(pageSize);
+
+      final posts = List<Map<String, dynamic>>.from(
+        (rawPosts as List).map((p) => Map<String, dynamic>.from(p as Map)),
+      );
+
+      int targetIndex =
+          posts.indexWhere((p) => p['postId']?.toString() == postId);
+      if (targetIndex == -1) {
+        posts.insert(0, Map<String, dynamic>.from(postRow as Map));
+        targetIndex = 0;
+      }
+
+      _prefetchedPostData = _PreFetchedPostData(
+        posts: posts,
+        targetIndex: targetIndex,
+        userData: Map<String, dynamic>.from(userRow as Map),
+        ownerUid: ownerUid,
+      );
     } catch (_) {
-      // Never let logging crash the app.
+      // If pre-fetch fails, _navigateToPost will re-fetch normally.
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Cold-start support
-  // ---------------------------------------------------------------------------
+  /// Stores cold-start data and immediately activates the overlay so the
+  /// feed is never visible, even on the very first rendered frame.
   static void storePendingNavigation(Map<String, dynamic> data) {
     _pendingData = Map<String, dynamic>.from(data);
+    isNavigatingToPost.value = true;
   }
 
   static Future<void> executePendingNavigation() async {
     final data = _pendingData;
     if (data == null) return;
-    _pendingData = null;
+    _pendingData = null; // consume before awaiting — prevents double execution
     await handleNotificationData(data);
   }
 
@@ -69,26 +126,41 @@ class NotificationNavigationHandler {
   static Future<void> handleNotificationData(Map<String, dynamic> data) async {
     final type = data['type']?.toString();
 
-    // ── Log every tap so we know the handler was reached ──────────────────
+    // ── Validate synchronously, before any await ─────────────────────────
+    final bool isPostLinked =
+        type != null && _postLinkedTypes.contains(type);
+    final String? postId = isPostLinked ? _extractPostId(data) : null;
+    final bool willNavigate =
+        isPostLinked && postId != null && postId.isNotEmpty;
+
+    // Show the opaque cover NOW — synchronous, fires before the first await.
+    // For cold-start this is a no-op (storePendingNavigation already set it).
+    // For background→foreground this hides the feed immediately.
+    if (willNavigate) {
+      isNavigatingToPost.value = true;
+    }
+
+    // ── Async work starts here ────────────────────────────────────────────
     await _log(
       eventType: 'tap_received',
       notificationType: type,
       rawData: data,
     );
 
-    if (type == null || !_postLinkedTypes.contains(type)) {
+    if (!isPostLinked) {
       await _log(
         eventType: 'type_not_post_linked',
         notificationType: type,
         rawData: data,
-        additionalData: {'reason': type == null ? 'type_is_null' : 'type_not_in_set'},
+        additionalData: {
+          'reason': type == null ? 'type_is_null' : 'type_not_in_set',
+        },
       );
+      isNavigatingToPost.value = false;
       return;
     }
 
-    final postId = _extractPostId(data);
-
-    if (postId == null || postId.isEmpty) {
+    if (!willNavigate) {
       await _log(
         eventType: 'post_id_missing',
         notificationType: type,
@@ -98,10 +170,18 @@ class NotificationNavigationHandler {
           'top_level_keys': data.keys.toList(),
         },
       );
+      isNavigatingToPost.value = false;
       return;
     }
 
-    await _navigateToPost(postId, type, data);
+    try {
+      await _navigateToPost(postId!, type!, data);
+    } finally {
+      // Always clear — whether navigation succeeded, failed, or the route
+      // was popped later. The overlay must never be left open permanently.
+      isNavigatingToPost.value = false;
+      _prefetchedPostData = null;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -128,7 +208,6 @@ class NotificationNavigationHandler {
     String notificationType,
     Map<String, dynamic> rawData,
   ) async {
-    // ── Wait for the navigator ─────────────────────────────────────────────
     NavigatorState? navState;
     int attempts = 0;
     for (; attempts < 5; attempts++) {
@@ -151,84 +230,93 @@ class NotificationNavigationHandler {
 
     try {
       final supabase = Supabase.instance.client;
+      const pageSize = 20;
 
-      // 1. Fetch the target post
-      final postRow = await supabase
-          .from('posts')
-          .select()
-          .eq('postId', postId)
-          .maybeSingle();
+      List<Map<String, dynamic>> posts;
+      int targetIndex;
+      Map<String, dynamic> userData;
+      String ownerUid;
 
-      if (postRow == null) {
-        await _log(
-          eventType: 'post_not_found',
-          notificationType: notificationType,
-          postId: postId,
-          navigatorReady: true,
-          navigatorAttempts: attempts,
-          rawData: rawData,
+      // ── Use pre-fetched data when available (cold-start fast path) ──────
+      final cached = _prefetchedPostData;
+      if (cached != null) {
+        posts = cached.posts;
+        targetIndex = cached.targetIndex;
+        userData = cached.userData;
+        ownerUid = cached.ownerUid;
+      } else {
+        // ── Normal fetch (background → foreground path) ──────────────────
+        final postRow = await supabase
+            .from('posts')
+            .select()
+            .eq('postId', postId)
+            .maybeSingle();
+        if (postRow == null) {
+          await _log(
+            eventType: 'post_not_found',
+            notificationType: notificationType,
+            postId: postId,
+            navigatorReady: true,
+            navigatorAttempts: attempts,
+            rawData: rawData,
+          );
+          return;
+        }
+
+        ownerUid = postRow['uid']?.toString() ?? '';
+        if (ownerUid.isEmpty) {
+          await _log(
+            eventType: 'post_owner_uid_empty',
+            notificationType: notificationType,
+            postId: postId,
+            navigatorReady: true,
+            navigatorAttempts: attempts,
+            rawData: rawData,
+            additionalData: {'postRow_keys': postRow.keys.toList()},
+          );
+          return;
+        }
+
+        final userRow = await supabase
+            .from('users')
+            .select('uid, username, photoUrl')
+            .eq('uid', ownerUid)
+            .maybeSingle();
+        if (userRow == null) {
+          await _log(
+            eventType: 'user_not_found',
+            notificationType: notificationType,
+            postId: postId,
+            navigatorReady: true,
+            navigatorAttempts: attempts,
+            rawData: rawData,
+            additionalData: {'owner_uid': ownerUid},
+          );
+          return;
+        }
+
+        userData = Map<String, dynamic>.from(userRow as Map);
+
+        final rawPosts = await supabase
+            .from('posts')
+            .select()
+            .eq('uid', ownerUid)
+            .order('datePublished', ascending: false)
+            .limit(pageSize);
+
+        posts = List<Map<String, dynamic>>.from(
+          (rawPosts as List).map((p) => Map<String, dynamic>.from(p as Map)),
         );
-        return;
+
+        targetIndex =
+            posts.indexWhere((p) => p['postId']?.toString() == postId);
+        if (targetIndex == -1) {
+          posts.insert(0, Map<String, dynamic>.from(postRow as Map));
+          targetIndex = 0;
+        }
       }
 
-      final ownerUid = postRow['uid']?.toString() ?? '';
-      if (ownerUid.isEmpty) {
-        await _log(
-          eventType: 'post_owner_uid_empty',
-          notificationType: notificationType,
-          postId: postId,
-          navigatorReady: true,
-          navigatorAttempts: attempts,
-          rawData: rawData,
-          additionalData: {'postRow_keys': postRow.keys.toList()},
-        );
-        return;
-      }
-
-      // 2. Fetch the post owner's profile
-      final userRow = await supabase
-          .from('users')
-          .select('uid, username, photoUrl')
-          .eq('uid', ownerUid)
-          .maybeSingle();
-
-      if (userRow == null) {
-        await _log(
-          eventType: 'user_not_found',
-          notificationType: notificationType,
-          postId: postId,
-          navigatorReady: true,
-          navigatorAttempts: attempts,
-          rawData: rawData,
-          additionalData: {'owner_uid': ownerUid},
-        );
-        return;
-      }
-
-      final userData = Map<String, dynamic>.from(userRow as Map);
-
-      // 3. Fetch the first page of the owner's posts
-      const int pageSize = 20;
-      final rawPosts = await supabase
-          .from('posts')
-          .select()
-          .eq('uid', ownerUid)
-          .order('datePublished', ascending: false)
-          .limit(pageSize);
-
-      final posts = List<Map<String, dynamic>>.from(
-        (rawPosts as List).map((p) => Map<String, dynamic>.from(p as Map)),
-      );
-
-      // 4. Locate target post; prepend if not in page 1
-      int targetIndex =
-          posts.indexWhere((p) => p['postId']?.toString() == postId);
-      if (targetIndex == -1) {
-        posts.insert(0, Map<String, dynamic>.from(postRow as Map));
-        targetIndex = 0;
-      }
-
-      // 5. Re-read navState after all the awaits
+      // Re-read navState after all awaits
       final currentNavState = notificationNavigatorKey.currentState;
       if (currentNavState == null) {
         await _log(
@@ -242,7 +330,7 @@ class NotificationNavigationHandler {
         return;
       }
 
-      // 6. Push the feed screen
+      final String resolvedOwnerUid = ownerUid;
       currentNavState.push(
         MaterialPageRoute(
           builder: (_) => ProfilePostFeedScreen(
@@ -254,7 +342,7 @@ class NotificationNavigationHandler {
               final more = await supabase
                   .from('posts')
                   .select()
-                  .eq('uid', ownerUid)
+                  .eq('uid', resolvedOwnerUid)
                   .order('datePublished', ascending: false)
                   .range(currentCount, currentCount + pageSize - 1);
               return List<Map<String, dynamic>>.from(
@@ -265,7 +353,6 @@ class NotificationNavigationHandler {
         ),
       );
 
-      // ✅ Log success
       await _log(
         eventType: 'navigation_success',
         notificationType: notificationType,
@@ -277,6 +364,7 @@ class NotificationNavigationHandler {
           'target_index': targetIndex,
           'total_posts_loaded': posts.length,
           'owner_uid': ownerUid,
+          'used_prefetch': cached != null,
         },
       );
     } catch (e, st) {
@@ -291,5 +379,32 @@ class NotificationNavigationHandler {
         rawData: rawData,
       );
     }
+  }
+
+  // ── Logging helper ────────────────────────────────────────────────────────
+  static Future<void> _log({
+    required String eventType,
+    String? notificationType,
+    String? postId,
+    bool? navigatorReady,
+    int? navigatorAttempts,
+    String? errorMessage,
+    String? stackTrace,
+    Map<String, dynamic>? rawData,
+    Map<String, dynamic>? additionalData,
+  }) async {
+    try {
+      await Supabase.instance.client.from('notification_tap_logs').insert({
+        'event_type': eventType,
+        'notification_type': notificationType,
+        'post_id': postId,
+        'navigator_ready': navigatorReady,
+        'navigator_attempts': navigatorAttempts,
+        'error_message': errorMessage,
+        'stack_trace': stackTrace,
+        'raw_data': rawData,
+        'additional_data': additionalData,
+      });
+    } catch (_) {}
   }
 }
