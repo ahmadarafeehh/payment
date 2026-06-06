@@ -7,7 +7,6 @@ import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-// ✅ NEW import – navigation handler + global navigator key
 import 'package:Ratedly/services/notification_navigation_handler.dart';
 
 class NotificationService {
@@ -46,8 +45,7 @@ class NotificationService {
       firebase_messaging.FirebaseMessaging.onMessage
           .listen(_handleForegroundMessage);
 
-      // ✅ FIXED: background → foreground tap must NAVIGATE, not show another
-      //           local notification.
+      // Background → foreground tap: navigate directly to the linked post.
       firebase_messaging.FirebaseMessaging.onMessageOpenedApp
           .listen(_handleNotificationTap);
 
@@ -57,10 +55,20 @@ class NotificationService {
         await _saveToken(newToken);
       });
 
-      // ✅ NEW: cold-start – app was fully terminated and launched by a
-      //         notification tap.  The navigator isn't ready yet so we store
-      //         the data and let the root widget execute it via
-      //         NotificationNavigationHandler.executePendingNavigation().
+      // ── Cold-start: app was fully terminated and launched by a notification tap.
+      //
+      // FIX: Previously, storePendingNavigation() was called here but
+      // executePendingNavigation() was only called from the postFrameCallback
+      // in _OptimizedMyAppState.initState(), which fires BEFORE getInitialMessage()
+      // resolves. The result was that _pendingData was always null at that point
+      // and the cold-start tap was silently discarded.
+      //
+      // Fix: call executePendingNavigation() immediately after storing the data.
+      // By the time getInitialMessage() completes (it is an async Firebase I/O
+      // call), _OptimizedMyApp has already rendered and notificationNavigatorKey
+      // is attached to the MaterialApp, so the push succeeds.
+      // The postFrameCallback in _OptimizedMyApp is kept as a harmless fallback
+      // (it becomes a no-op because _pendingData is cleared on first consumption).
       final initialMessage = await firebase_messaging
           .FirebaseMessaging.instance
           .getInitialMessage();
@@ -68,6 +76,8 @@ class NotificationService {
         NotificationNavigationHandler.storePendingNavigation(
           Map<String, dynamic>.from(initialMessage.data),
         );
+        // ✅ FIX: execute here, not only in the postFrameCallback.
+        await NotificationNavigationHandler.executePendingNavigation();
       }
 
       const DarwinInitializationSettings initializationSettingsIOS =
@@ -81,7 +91,6 @@ class NotificationService {
             try {
               final data =
                   jsonDecode(response.payload!) as Map<String, dynamic>;
-              // ✅ FIXED: was a no-op – now navigates to the linked post.
               await NotificationNavigationHandler.handleNotificationData(data);
             } catch (_) {}
           }
@@ -94,8 +103,6 @@ class NotificationService {
   }
 
   // ─── NOTIFICATION TAP (background → foreground) ──────────────────────────
-  // ✅ NEW: dedicated handler for when the user taps an FCM notification while
-  //         the app is in the background.  Navigates to the linked post.
   Future<void> _handleNotificationTap(
       firebase_messaging.RemoteMessage message) async {
     await NotificationNavigationHandler.handleNotificationData(
@@ -151,12 +158,8 @@ class NotificationService {
 
   /// Saves the FCM token to Supabase.
   ///
-  /// KEY FIX: Always saves by the `uid` column (text primary key), which is
+  /// Always saves by the `uid` column (text primary key), which is
   /// always populated for every user — both Firebase and Supabase auth users.
-  ///
-  /// The previous bug saved Supabase-auth users by `supabase_uid`, which is
-  /// a nullable column. If it was null the UPDATE matched zero rows, the token
-  /// was never stored, and the Cloud Function silently skipped those users.
   Future<void> _saveTokenToSupabase(String token) async {
     try {
       final supabase = Supabase.instance.client;
@@ -221,9 +224,9 @@ class NotificationService {
   Future<void> _handleForegroundMessage(
       firebase_messaging.RemoteMessage message) async {}
 
-  /// Background / terminated message: called by the OS-level background
-  /// isolate (registered via FirebaseMessaging.onBackgroundMessage in main.dart).
-  /// Shows a local notification so the user can later tap it to navigate.
+  /// Background / terminated message handler (registered in main.dart via
+  /// FirebaseMessaging.onBackgroundMessage). Shows a local notification so
+  /// the user can later tap it to navigate.
   static Future<void> handleBackgroundMessage(
       firebase_messaging.RemoteMessage message) async {
     try {
@@ -266,7 +269,7 @@ class NotificationService {
       finalTitle,
       finalBody,
       const NotificationDetails(iOS: iosDetails),
-      // ✅ Payload carries the full FCM data map so the tap handler can navigate
+      // Payload carries the full FCM data map so the tap handler can navigate.
       payload: jsonEncode(data),
     );
   }
