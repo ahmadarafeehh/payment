@@ -3,14 +3,15 @@ import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
-import 'package:Ratedly/screens/Profile_page/image_screen.dart';
+// Removed: import 'package:Ratedly/screens/Profile_page/image_screen.dart';
+import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart'; // ← NEW import
 import 'package:Ratedly/utils/global_variable.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/services/notification_service.dart';
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ Analytics logging
+import 'package:Ratedly/services/analytics_service.dart';
 
 import 'package:Ratedly/screens/first_time/number_particle.dart';
 import 'package:Ratedly/screens/first_time/falling_number_painter.dart';
@@ -123,9 +124,6 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
 class _FollowBadge extends StatefulWidget {
   final String ownerUid;
   final String currentUserId;
-
-  /// The type of the parent notification (e.g. 'post_rating', 'comment').
-  /// Used to decide which contextual push body to send after a follow.
   final String? notificationType;
 
   const _FollowBadge({
@@ -321,7 +319,6 @@ class _FollowBadgeState extends State<_FollowBadge>
           });
           _scaleController.forward(from: 0.0);
         }
-        // No logging for decline (optional, can add 'decline' later if needed)
       } else {
         // Follow (optimistic UI + request handling)
         setState(() => _isFollowing = true);
@@ -333,19 +330,16 @@ class _FollowBadgeState extends State<_FollowBadge>
           }
         });
 
-        // Determine if we need a contextual notification
         final bool hasContextualNotification =
             widget.notificationType == 'post_rating' ||
                 widget.notificationType == 'comment';
 
-        // Perform follow – suppress generic notification when contextual will be sent
         await SupabaseProfileMethods().followUser(
           widget.currentUserId,
           widget.ownerUid,
           sendNotification: !hasContextualNotification,
         );
 
-        // After follow, check if it turned into a pending request (private account)
         final pending = await _supabase
             .from('user_follow_request')
             .select()
@@ -354,14 +348,12 @@ class _FollowBadgeState extends State<_FollowBadge>
             .maybeSingle();
 
         if (mounted && pending != null) {
-          // Private account → became a follow request, no notification
           setState(() {
             _isFollowing = false;
             _hasPendingRequest = true;
             _showBadge = true;
           });
           _scaleController.forward(from: 0.0);
-          // Log REQUEST action
           AnalyticsService.logFollowPress(
             followerUid: widget.currentUserId,
             followedUid: widget.ownerUid,
@@ -369,13 +361,11 @@ class _FollowBadgeState extends State<_FollowBadge>
             action: 'request',
           );
         } else {
-          // Public account follow succeeded – send contextual notification if needed
           if (widget.notificationType == 'post_rating') {
             await _sendRatingFollowNotification();
           } else if (widget.notificationType == 'comment') {
             await _sendCommentFollowNotification();
           }
-          // Log FOLLOW action
           AnalyticsService.logFollowPress(
             followerUid: widget.currentUserId,
             followedUid: widget.ownerUid,
@@ -549,7 +539,7 @@ class _NotificationScreenState extends State<NotificationScreen>
   final List<NumberParticle> _particles = [];
   final Random _random = Random();
   double _screenHeight = 0;
-  String? _currentUserId; // ✅ screen tracking: store user ID for exit
+  String? _currentUserId;
 
   _NotificationColorSet _getColors(ThemeProvider themeProvider) {
     final isDarkMode = themeProvider.themeMode == ThemeMode.dark;
@@ -559,7 +549,6 @@ class _NotificationScreenState extends State<NotificationScreen>
   @override
   void initState() {
     super.initState();
-    // ✅ screen tracking: enter notifications screen
     AnalyticsService.screenEnter('notifications');
 
     _animationController = AnimationController(
@@ -571,7 +560,6 @@ class _NotificationScreenState extends State<NotificationScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // ✅ screen tracking: store current user ID when available
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     if (userProvider.user != null && _currentUserId == null) {
       _currentUserId = userProvider.user!.uid;
@@ -614,7 +602,6 @@ class _NotificationScreenState extends State<NotificationScreen>
 
   @override
   void dispose() {
-    // ✅ screen tracking: exit notifications screen
     if (_currentUserId != null) {
       AnalyticsService.screenExit(
         screenName: 'notifications',
@@ -837,7 +824,6 @@ class _FastNotificationListState extends State<_FastNotificationList> {
         return customData['likerUid'] ?? customData['liker_uid'];
       case 'follow':
         return customData['followerId'] ?? customData['follower_id'];
-      // ADDED: two new contextual follow types
       case 'follow_from_rating':
       case 'follow_from_comment':
         return customData['followerId'] ?? customData['follower_id'];
@@ -993,32 +979,76 @@ class _FastNotificationItem extends StatelessWidget {
         MaterialPageRoute(builder: (context) => ProfileScreen(uid: uid)));
   }
 
+  // ─────────────────────────────── NEW ───────────────────────────────
+  // Instead of ImageViewScreen, push the ProfilePostFeedScreen so the
+  // user lands on the profile post feed with the tapped post visible.
   Future<void> _navigateToPost(BuildContext context, String postId) async {
     if (postId.isEmpty) return;
+
     try {
-      final response = await Supabase.instance.client
+      // 1. Fetch the post to get owner's uid and full details
+      final postResponse = await Supabase.instance.client
           .from('posts')
           .select()
           .eq('postId', postId)
           .maybeSingle();
-      if (response != null) {
-        final postData = response as Map<String, dynamic>;
-        Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ImageViewScreen(
-                imageUrl: postData['postUrl']?.toString() ?? '',
-                postId: postId,
-                description: postData['description']?.toString() ?? '',
-                userId: postData['uid']?.toString() ?? '',
-                username: postData['username']?.toString() ?? '',
-                profImage: postData['profImage']?.toString() ?? '',
-                datePublished: postData['datePublished']?.toString() ?? '',
-              ),
-            ));
+
+      if (postResponse == null) return;
+      final post = postResponse as Map<String, dynamic>;
+      final ownerUid = post['uid']?.toString() ?? '';
+
+      // 2. Fetch the owner’s user data (username, photoUrl)
+      final userResponse = await Supabase.instance.client
+          .from('users')
+          .select('uid, username, photoUrl')
+          .eq('uid', ownerUid)
+          .maybeSingle();
+
+      final userData = userResponse != null
+          ? Map<String, dynamic>.from(userResponse)
+          : <String, dynamic>{};
+
+      // Ensure minimal fields exist
+      userData['uid'] ??= ownerUid;
+      userData['username'] ??= 'unknown';
+      userData['photoUrl'] ??= '';
+
+      // 3. Build initial posts list with the tapped post
+      final initialPosts = <Map<String, dynamic>>[post];
+
+      // 4. onLoadMore function: loads more posts by the same user
+      // (the type matches the `_LoadMore` typedef used in ProfilePostFeedScreen)
+      Future<List<Map<String, dynamic>>> onLoadMore(int currentCount) async {
+        final supabase = Supabase.instance.client;
+        final more = await supabase
+            .from('posts')
+            .select()
+            .eq('uid', ownerUid)
+            .order('datePublished', ascending: false)
+            .range(currentCount, currentCount + 9); // load next 10
+
+        return List<Map<String, dynamic>>.from(more);
       }
-    } catch (e) {}
+
+      // 5. Push ProfilePostFeedScreen
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ProfilePostFeedScreen(
+            initialPosts: initialPosts,
+            initialIndex: 0, // the tapped post is the first (only) item
+            userData: userData,
+            onLoadMore: onLoadMore,
+            initialHasMore: true, // likely more posts exist
+            // onPostDeleted optional
+          ),
+        ),
+      );
+    } catch (e) {
+      // fail silently – errors are logged elsewhere if needed
+    }
   }
+  // ────────────────────────────────────────────────────────────────────
 
   String _extractUserId() {
     final type = notification['type'] as String?;
@@ -1036,7 +1066,6 @@ class _FastNotificationItem extends StatelessWidget {
         return customData['likerUid'] ?? customData['liker_uid'] ?? '';
       case 'follow':
         return customData['followerId'] ?? customData['follower_id'] ?? '';
-      // ADDED: two new contextual follow types
       case 'follow_from_rating':
       case 'follow_from_comment':
         return customData['followerId'] ?? customData['follower_id'] ?? '';
