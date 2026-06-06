@@ -343,17 +343,24 @@ class _MessagingScreenState extends State<MessagingScreen>
         page: _currentPage + 1,
         limit: _messagesPerPage,
       );
+
       if (olderMessages.isEmpty) {
+        // FIX: check mounted before setState
+        if (!mounted) return;
         setState(() {
           _hasMoreMessages = false;
           _isLoadingMore = false;
         });
         return;
       }
+
       if (olderMessages.isNotEmpty) {
         final oldest = _parseTimestamp(olderMessages.last['timestamp']);
         if (oldest != null) _oldestMessageTimestamp = oldest;
       }
+
+      // FIX: check mounted before setState
+      if (!mounted) return;
       setState(() {
         _cachedMessages.insertAll(0, olderMessages);
         _currentPage++;
@@ -367,7 +374,9 @@ class _MessagingScreenState extends State<MessagingScreen>
         additionalData: {'currentPage': _currentPage},
         error: e,
       );
-      setState(() => _isLoadingMore = false);
+      if (mounted) {
+        setState(() => _isLoadingMore = false);
+      }
     }
   }
 
@@ -514,6 +523,9 @@ class _MessagingScreenState extends State<MessagingScreen>
         final oldest = _parseTimestamp(processedMessages.last['timestamp']);
         if (oldest != null) _oldestMessageTimestamp = oldest;
       }
+
+      // FIX: check mounted before setState
+      if (!mounted) return;
       setState(() {
         _cachedMessages = processedMessages;
         _currentPage = 0;
@@ -600,9 +612,8 @@ class _MessagingScreenState extends State<MessagingScreen>
     }
   }
 
-  // ========== STREAK INDICATOR METHODS (abbreviated for brevity) ==========
+  // ========== STREAK INDICATOR METHODS ==========
   Future<void> _updateStreakData() async {
-    // ... (full method as in original code – unchanged)
     final String? currentChatId = chatId;
     if (currentChatId == null) return;
     try {
@@ -640,6 +651,9 @@ class _MessagingScreenState extends State<MessagingScreen>
       } else if (streakCount == 0) {
         emoji = '';
       }
+
+      // FIX: check mounted before setState
+      if (!mounted) return;
       setState(() {
         _streakCount = streakCount;
         _streakEmoji = emoji;
@@ -668,7 +682,6 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   Future<void> _maybeShowStreakTooltip() async {
-    // ... (full method as in original code – unchanged)
     if (_hasShownStreakTooltip) return;
     if (_streakCount <= 0) return;
     final prefs = await SharedPreferences.getInstance();
@@ -773,7 +786,6 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   void _showMilestoneCelebration(int streak) {
-    // ... (full method as in original code – unchanged)
     _celebrationOverlay?.remove();
     final overlayState = Overlay.of(context);
     if (!mounted || overlayState == null) return;
@@ -900,7 +912,6 @@ class _MessagingScreenState extends State<MessagingScreen>
   }
 
   Future<void> _initializeVideoController(String videoUrl) async {
-    // ... (full method as in original code – unchanged)
     if (_videoControllers.containsKey(videoUrl) ||
         _videoControllersInitialized[videoUrl] == true) return;
     try {
@@ -1318,6 +1329,9 @@ class _MessagingScreenState extends State<MessagingScreen>
         final oldest = _parseTimestamp(processedMessages.last['timestamp']);
         if (oldest != null) _oldestMessageTimestamp = oldest;
       }
+
+      // FIX: check mounted before setState
+      if (!mounted) return;
       setState(() {
         _cachedMessages = processedMessages;
         _hasMoreMessages =
@@ -2246,7 +2260,7 @@ class BlockedContentMessage extends StatelessWidget {
 }
 
 // ============================================================================
-// STREAK MILESTONE CELEBRATION WIDGET (abbreviated for brevity)
+// STREAK MILESTONE CELEBRATION WIDGET
 // ============================================================================
 class _MilestoneCelebrationWidget extends StatefulWidget {
   final int streak;
