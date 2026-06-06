@@ -13,7 +13,6 @@ import 'package:Ratedly/screens/signup/auth_wrapper.dart';
 import 'package:Ratedly/utils/colors.dart';
 import 'package:Ratedly/services/analytics_service.dart';
 import 'package:Ratedly/services/notification_service.dart';
-// ✅ NEW: global navigator key + pending-navigation support
 import 'package:Ratedly/services/notification_navigation_handler.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:Ratedly/services/country_service.dart';
@@ -56,6 +55,17 @@ void main() async {
       _initializeFirebase(),
       _initializeSupabase(),
     ]);
+
+    // Handle cold-start notification tap AFTER Firebase + Supabase are ready
+    // but BEFORE switching out of the skeleton screen.
+    //
+    // handleColdStart() calls getInitialMessage(), then synchronously sets
+    // isNavigatingToPost = true (via storePendingNavigation) and pre-fetches
+    // the post + user data from Supabase. By the time _appInitState flips to
+    // ready and the real UI renders, the overlay is already active and the
+    // data is cached — so the feed never appears at all.
+    await NotificationService.handleColdStart();
+
     _appInitState.value = _InitState.ready;
   } catch (_) {
     _appInitState.value = _InitState.error;
@@ -178,8 +188,6 @@ class _AppBootstrap extends StatelessWidget {
   }
 }
 
-// ✅ CHANGED: StatelessWidget → StatefulWidget so we can fire
-//    executePendingNavigation() once the navigator key is attached.
 class _OptimizedMyApp extends StatefulWidget {
   final ThemeData lightTheme;
   final ThemeData darkTheme;
@@ -193,10 +201,9 @@ class _OptimizedMyAppState extends State<_OptimizedMyApp> {
   @override
   void initState() {
     super.initState();
-    // ✅ NEW: runs after the first frame – at this point notificationNavigatorKey
-    //    is attached to the MaterialApp and it is safe to push routes.
-    //    This consumes any notification tap that launched the app from a
-    //    fully-terminated state (cold start).
+    // Runs after the first frame — notificationNavigatorKey is now attached.
+    // For cold-start: data was pre-fetched in main() so this push is instant.
+    // For normal launch: _pendingData is null so this is a no-op.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       NotificationNavigationHandler.executePendingNavigation();
     });
@@ -219,11 +226,41 @@ class _OptimizedMyAppState extends State<_OptimizedMyApp> {
             theme: widget.lightTheme,
             darkTheme: widget.darkTheme,
             themeMode: themeProvider.themeMode,
-            // ✅ NEW: attach the global key so NotificationNavigationHandler
-            //    can push routes from outside the widget tree.
             navigatorKey: notificationNavigatorKey,
             home: useDebugHome ? const DebugHome() : const AuthWrapper(),
             navigatorObservers: [CountryCheckObserver()],
+            // ── Notification-navigation overlay ──────────────────────────
+            // Covers the entire app with an opaque screen-coloured box while
+            // notification-driven navigation is in progress.
+            //
+            // Cold-start: isNavigatingToPost was set to true in main() before
+            //   _appInitState flipped to ready, so this overlay is active from
+            //   the very first rendered frame — the feed is never visible.
+            //
+            // Background → foreground: set synchronously in handleNotificationData
+            //   before any Supabase await, so the feed is hidden within one vsync
+            //   (~16 ms) of the tap — audio never starts.
+            //
+            // Cleared in the finally block of handleNotificationData once the
+            //   route has been pushed (or on any failure path).
+            builder: (context, child) {
+              return Stack(
+                children: [
+                  child!,
+                  ValueListenableBuilder<bool>(
+                    valueListenable:
+                        NotificationNavigationHandler.isNavigatingToPost,
+                    builder: (ctx, navigating, _) {
+                      if (!navigating) return const SizedBox.shrink();
+                      return ColoredBox(
+                        color: Theme.of(ctx).scaffoldBackgroundColor,
+                        child: const SizedBox.expand(),
+                      );
+                    },
+                  ),
+                ],
+              );
+            },
           );
         },
       ),
