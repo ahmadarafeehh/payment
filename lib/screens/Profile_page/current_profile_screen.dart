@@ -1270,7 +1270,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
                     builder: (_) => CustomCameraScreen(
                       onPostUploaded: () async => getData(),
                     ),
-                    settings: const RouteSettings(name: 'cameraFromProfile'),  // <-- ADDED
+                    settings: const RouteSettings(
+                        name: 'cameraFromProfile'), // <-- ADDED
                   ),
                 ).then((_) {
                   Future.delayed(const Duration(milliseconds: 300), () {
@@ -1328,7 +1329,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             builder: (_) => CustomCameraScreen(
               onPostUploaded: () async => getData(),
             ),
-            settings: const RouteSettings(name: 'cameraFromProfile'),  // <-- ADDED
+            settings:
+                const RouteSettings(name: 'cameraFromProfile'), // <-- ADDED
           ),
         ).then((_) {
           Future.delayed(const Duration(milliseconds: 300), () {
