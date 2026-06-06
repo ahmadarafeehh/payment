@@ -11,8 +11,11 @@ import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:Ratedly/screens/feed/post_card.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:Ratedly/screens/Profile_page/custom_camera_screen.dart';
+import 'package:flutter_app_badger/flutter_app_badger.dart'; // ← new import
 
-// Define color schemes for both themes at top level
+// ============================================================================
+// Color schemes (unchanged)
+// ============================================================================
 class _NavColorSet {
   final Color backgroundColor;
   final Color iconColor;
@@ -51,6 +54,9 @@ class _NavLightColors extends _NavColorSet {
         );
 }
 
+// ============================================================================
+// Main screen (most code is untouched – only the badge logic changes)
+// ============================================================================
 class MobileScreenLayout extends StatefulWidget {
   const MobileScreenLayout({Key? key}) : super(key: key);
 
@@ -92,13 +98,15 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
       final currentUserUid =
           userProvider.firebaseUid ?? FirebaseAuth.instance.currentUser?.uid;
       if (currentUserUid != null) {
-        NotificationService.markNotificationsAsRead(currentUserUid);
+        // Mark all notifications as read in the database
+        await NotificationService.markNotificationsAsRead(currentUserUid);
+        // Immediately remove the app icon badge
+        FlutterAppBadger.removeBadge();
       }
     }
     pageController.jumpToPage(page);
   }
 
-  /// Opens the camera screen directly without changing the active nav page.
   void _openCamera() {
     _pauseCurrentVideo();
     Navigator.push(
@@ -156,15 +164,10 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            // Home
             _buildNavItem(Icons.home, 0, colors),
-            // Search
             _buildNavItem(Icons.search, 1, colors),
-            // Plus — opens camera, not a PageView page
             _buildPlusButton(colors),
-            // Notifications
             _buildNotificationNavItem(currentUserId, 2, colors),
-            // Profile
             _buildNavItem(Icons.person, 3, colors),
           ],
         ),
@@ -172,7 +175,6 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
     );
   }
 
-  // ── Standard nav item ────────────────────────────────────────────────────
   Widget _buildNavItem(IconData icon, int index, _NavColorSet colors) {
     final isActive = _page == index;
 
@@ -217,7 +219,6 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
     );
   }
 
-  // ── Plus button — navigates to camera, never "active" ───────────────────
   Widget _buildPlusButton(_NavColorSet colors) {
     return GestureDetector(
       onTap: _openCamera,
@@ -240,7 +241,6 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
     );
   }
 
-  // ── Notification nav item ────────────────────────────────────────────────
   Widget _buildNotificationNavItem(
       String userId, int index, _NavColorSet colors) {
     final isActive = _page == index;
@@ -290,9 +290,9 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
   }
 }
 
-// =============================================================================
-// Notification badge icon — unchanged
-// =============================================================================
+// ============================================================================
+// Notification badge icon – NOW SYNCS WITH IOS APP ICON BADGE
+// ============================================================================
 
 class _UltraCompactNotificationBadgeIcon extends StatefulWidget {
   final String currentUserId;
@@ -354,6 +354,8 @@ class _UltraCompactNotificationBadgeIconState
           _notificationCount = response.length;
           _hasLoaded = true;
         });
+        // ********** SYNC THE IOS BADGE **********
+        _syncBadge();
       }
     } catch (e) {
       if (mounted) setState(() => _hasLoaded = true);
@@ -382,6 +384,8 @@ class _UltraCompactNotificationBadgeIconState
 
             if (mounted) {
               setState(() => _notificationCount = unreadNotifications.length);
+              // ********** SYNC THE IOS BADGE **********
+              _syncBadge();
             }
           }, onError: (_) {});
     } catch (e) {}
@@ -393,6 +397,12 @@ class _UltraCompactNotificationBadgeIconState
         _loadNotificationCount();
       }
     });
+  }
+
+  /// Call this every time _notificationCount changes.
+  void _syncBadge() {
+    // Use the same unread count that the in-app badge shows.
+    FlutterAppBadger.updateBadgeCount(_notificationCount);
   }
 
   @override
