@@ -7,6 +7,9 @@ import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+// ✅ NEW import – navigation handler + global navigator key
+import 'package:Ratedly/services/notification_navigation_handler.dart';
+
 class NotificationService {
   final firebase_messaging.FirebaseMessaging _firebaseMessaging =
       firebase_messaging.FirebaseMessaging.instance;
@@ -39,16 +42,33 @@ class NotificationService {
         sound: false,
       );
 
+      // Foreground messages → do nothing (no local notification)
       firebase_messaging.FirebaseMessaging.onMessage
           .listen(_handleForegroundMessage);
+
+      // ✅ FIXED: background → foreground tap must NAVIGATE, not show another
+      //           local notification.
       firebase_messaging.FirebaseMessaging.onMessageOpenedApp
-          .listen(_handleBackgroundMessage);
+          .listen(_handleNotificationTap);
 
       await _handleTokenRetrieval();
 
       _firebaseMessaging.onTokenRefresh.listen((newToken) async {
         await _saveToken(newToken);
       });
+
+      // ✅ NEW: cold-start – app was fully terminated and launched by a
+      //         notification tap.  The navigator isn't ready yet so we store
+      //         the data and let the root widget execute it via
+      //         NotificationNavigationHandler.executePendingNavigation().
+      final initialMessage = await firebase_messaging
+          .FirebaseMessaging.instance
+          .getInitialMessage();
+      if (initialMessage != null) {
+        NotificationNavigationHandler.storePendingNavigation(
+          Map<String, dynamic>.from(initialMessage.data),
+        );
+      }
 
       const DarwinInitializationSettings initializationSettingsIOS =
           DarwinInitializationSettings();
@@ -59,8 +79,11 @@ class NotificationService {
             (NotificationResponse response) async {
           if (response.payload != null) {
             try {
-              jsonDecode(response.payload!);
-            } catch (e) {}
+              final data =
+                  jsonDecode(response.payload!) as Map<String, dynamic>;
+              // ✅ FIXED: was a no-op – now navigates to the linked post.
+              await NotificationNavigationHandler.handleNotificationData(data);
+            } catch (_) {}
           }
         },
       );
@@ -68,6 +91,16 @@ class NotificationService {
       await _configureNotificationChannels();
       _setupAuthListener();
     } catch (e) {}
+  }
+
+  // ─── NOTIFICATION TAP (background → foreground) ──────────────────────────
+  // ✅ NEW: dedicated handler for when the user taps an FCM notification while
+  //         the app is in the background.  Navigates to the linked post.
+  Future<void> _handleNotificationTap(
+      firebase_messaging.RemoteMessage message) async {
+    await NotificationNavigationHandler.handleNotificationData(
+      Map<String, dynamic>.from(message.data),
+    );
   }
 
   // ─── AUTH LISTENER ───────────────────────────────────────────────────────
@@ -131,7 +164,6 @@ class NotificationService {
       final supabaseUser = supabase.auth.currentUser;
 
       // ── Firebase auth user ───────────────────────────────────────────────
-      // uid column stores the Firebase UID directly.
       if (firebaseUser != null) {
         await supabase
             .from('users')
@@ -140,9 +172,6 @@ class NotificationService {
       }
 
       // ── Supabase auth user ───────────────────────────────────────────────
-      // uid column stores the Supabase auth UUID as text (set at registration).
-      // Do NOT use supabase_uid here — that column is nullable and will silently
-      // match zero rows if it hasn't been populated yet (e.g. migrated accounts).
       if (supabaseUser != null) {
         await supabase
             .from('users')
@@ -187,25 +216,31 @@ class NotificationService {
   }
 
   // ─── MESSAGE HANDLERS ────────────────────────────────────────────────────
+
+  /// Foreground message: do nothing (no local notification shown).
   Future<void> _handleForegroundMessage(
       firebase_messaging.RemoteMessage message) async {}
 
-  static Future<void> _handleBackgroundMessage(
+  /// Background / terminated message: called by the OS-level background
+  /// isolate (registered via FirebaseMessaging.onBackgroundMessage in main.dart).
+  /// Shows a local notification so the user can later tap it to navigate.
+  static Future<void> handleBackgroundMessage(
       firebase_messaging.RemoteMessage message) async {
     try {
       await Firebase.initializeApp();
-      final title = message.data['title'] ?? message.notification?.title ?? '';
+      final title =
+          message.data['title'] ?? message.notification?.title ?? '';
       final body = message.data['body'] ?? message.notification?.body ?? '';
 
       if (title.isNotEmpty || body.isNotEmpty) {
-        final NotificationService service = NotificationService();
+        final service = NotificationService();
         await service._showNotification(
           title: title,
           body: body,
           data: message.data,
         );
       }
-    } catch (e) {}
+    } catch (_) {}
   }
 
   Future<void> _showNotification({
@@ -231,6 +266,7 @@ class NotificationService {
       finalTitle,
       finalBody,
       const NotificationDetails(iOS: iosDetails),
+      // ✅ Payload carries the full FCM data map so the tap handler can navigate
       payload: jsonEncode(data),
     );
   }
@@ -257,5 +293,19 @@ class NotificationService {
           .collection('Push Not')
           .add(notificationData);
     } catch (e) {}
+  }
+
+  // ─── READ RECEIPTS ───────────────────────────────────────────────────────
+  static Future<void> markNotificationsAsRead(String userId) async {
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase
+          .from('notifications')
+          .update({'is_read': true})
+          .eq('target_user_id', userId)
+          .eq('is_read', false);
+    } catch (e) {
+      rethrow;
+    }
   }
 }
