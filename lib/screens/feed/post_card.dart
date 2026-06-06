@@ -24,7 +24,9 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ already imported
+import 'package:Ratedly/services/analytics_service.dart';
+// ⭐ Import the rating list screen
+import 'package:Ratedly/widgets/rating_list_screen_postcard.dart'; // adjust path if needed
 
 void unawaited(Future<void> future) {}
 
@@ -1596,33 +1598,42 @@ class _PostCardState extends State<PostCard>
               if (_isPostDataLoading)
                 _buildVoterCountSkeleton()
               else
-                Container(
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(20),
+                // ⭐ REPLACED: now tappable to show voter list for everyone
+                GestureDetector(
+                  onTap: () => RatingListScreen.show(
+                    context,
+                    postId: _postId,
+                    isVideo: _isVideo,
+                    videoController: _isVideo ? _videoController : null,
                   ),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                  child: _totalRatingsCount == 0
-                      ? Text(
-                          _isTestUser
-                              ? 'Start the Reaction'
-                              : 'Be the first to react',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: Colors.white,
-                            fontWeight: FontWeight.w500,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                    child: _totalRatingsCount == 0
+                        ? Text(
+                            _isTestUser
+                                ? 'Start the Reaction'
+                                : 'Be the first to react',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: Colors.white,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          )
+                        : Text(
+                            '$_totalRatingsCount '
+                            '${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: Colors.white,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
-                        )
-                      : Text(
-                          '$_totalRatingsCount '
-                          '${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: Colors.white,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
+                  ),
                 ),
             ],
           ),
@@ -1854,11 +1865,6 @@ class _PostCardState extends State<PostCard>
     final scaffoldBg = widget.skeletonColor ?? const Color(0xFF1C1C1C);
 
     return Scaffold(
-      // ─────────────────────────────────────────────────────────────────────
-      // FIX: Prevent the post from being pushed up when the keyboard opens
-      // inside the CommentsBottomSheet. The bottom sheet handles its own
-      // keyboard insets via MediaQuery.viewInsets in _buildBottomInputBar.
-      // ─────────────────────────────────────────────────────────────────────
       resizeToAvoidBottomInset: false,
       backgroundColor: scaffoldBg,
       body: Stack(
