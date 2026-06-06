@@ -13,6 +13,8 @@ import 'package:Ratedly/screens/signup/auth_wrapper.dart';
 import 'package:Ratedly/utils/colors.dart';
 import 'package:Ratedly/services/analytics_service.dart';
 import 'package:Ratedly/services/notification_service.dart';
+// ✅ NEW: global navigator key + pending-navigation support
+import 'package:Ratedly/services/notification_navigation_handler.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:Ratedly/services/country_service.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
@@ -40,7 +42,6 @@ void main() async {
     } catch (_) {}
   }
 
-  // ✅ RevenueCat init — replaces the old IAPService().init()
   await IAPService.init();
 
   runApp(
@@ -177,10 +178,29 @@ class _AppBootstrap extends StatelessWidget {
   }
 }
 
-class _OptimizedMyApp extends StatelessWidget {
+// ✅ CHANGED: StatelessWidget → StatefulWidget so we can fire
+//    executePendingNavigation() once the navigator key is attached.
+class _OptimizedMyApp extends StatefulWidget {
   final ThemeData lightTheme;
   final ThemeData darkTheme;
   const _OptimizedMyApp({required this.lightTheme, required this.darkTheme});
+
+  @override
+  State<_OptimizedMyApp> createState() => _OptimizedMyAppState();
+}
+
+class _OptimizedMyAppState extends State<_OptimizedMyApp> {
+  @override
+  void initState() {
+    super.initState();
+    // ✅ NEW: runs after the first frame – at this point notificationNavigatorKey
+    //    is attached to the MaterialApp and it is safe to push routes.
+    //    This consumes any notification tap that launched the app from a
+    //    fully-terminated state (cold start).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      NotificationNavigationHandler.executePendingNavigation();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -196,9 +216,12 @@ class _OptimizedMyApp extends StatelessWidget {
           return MaterialApp(
             debugShowCheckedModeBanner: false,
             title: 'Ratedly',
-            theme: lightTheme,
-            darkTheme: darkTheme,
+            theme: widget.lightTheme,
+            darkTheme: widget.darkTheme,
             themeMode: themeProvider.themeMode,
+            // ✅ NEW: attach the global key so NotificationNavigationHandler
+            //    can push routes from outside the widget tree.
+            navigatorKey: notificationNavigatorKey,
             home: useDebugHome ? const DebugHome() : const AuthWrapper(),
             navigatorObservers: [CountryCheckObserver()],
           );
