@@ -2,12 +2,13 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
+import 'package:Ratedly/screens/Profile_page/other_user_profile_screen.dart';
 
 final GlobalKey<NavigatorState> notificationNavigatorKey =
     GlobalKey<NavigatorState>();
 
 // ---------------------------------------------------------------------------
-// Pre-fetched data holder
+// Pre-fetched data holder (post navigation only)
 // ---------------------------------------------------------------------------
 class _PreFetchedPostData {
   final List<Map<String, dynamic>> posts;
@@ -27,6 +28,7 @@ class _PreFetchedPostData {
 // NotificationNavigationHandler
 // ---------------------------------------------------------------------------
 class NotificationNavigationHandler {
+  // Notification types that navigate to a specific post
   static const _postLinkedTypes = {
     'post_rating',
     'comment',
@@ -35,10 +37,12 @@ class NotificationNavigationHandler {
     'reply_like',
   };
 
+  // Notification types that navigate to a user profile
+  static const _profileLinkedTypes = {
+    'follow',
+  };
+
   // ── Overlay control ──────────────────────────────────────────────────────
-  /// Drives the full-screen opaque cover in MaterialApp.builder.
-  /// Set synchronously before any async work so the feed is hidden
-  /// the moment a notification tap is handled.
   static final isNavigatingToPost = ValueNotifier<bool>(false);
 
   // ── Cold-start support ───────────────────────────────────────────────────
@@ -47,10 +51,14 @@ class NotificationNavigationHandler {
 
   /// Called from NotificationService.handleColdStart() — after Supabase is
   /// ready but BEFORE _appInitState switches out of the skeleton screen.
-  /// Eagerly fetches post + user rows so executePendingNavigation() can
-  /// push the route with zero additional Supabase delay.
   static Future<void> prefetchNavigationData(Map<String, dynamic> data) async {
     final type = data['type']?.toString();
+
+    // Profile navigation (follow): no Supabase pre-fetch needed —
+    // OtherUserProfileScreen loads its own data. The overlay is already
+    // active from storePendingNavigation(), so nothing else to do here.
+    if (type != null && _profileLinkedTypes.contains(type)) return;
+
     if (type == null || !_postLinkedTypes.contains(type)) return;
 
     final postId = _extractPostId(data);
@@ -101,13 +109,9 @@ class NotificationNavigationHandler {
         userData: Map<String, dynamic>.from(userRow as Map),
         ownerUid: ownerUid,
       );
-    } catch (_) {
-      // If pre-fetch fails, _navigateToPost will re-fetch normally.
-    }
+    } catch (_) {}
   }
 
-  /// Stores cold-start data and immediately activates the overlay so the
-  /// feed is never visible, even on the very first rendered frame.
   static void storePendingNavigation(Map<String, dynamic> data) {
     _pendingData = Map<String, dynamic>.from(data);
     isNavigatingToPost.value = true;
@@ -116,7 +120,7 @@ class NotificationNavigationHandler {
   static Future<void> executePendingNavigation() async {
     final data = _pendingData;
     if (data == null) return;
-    _pendingData = null; // consume before awaiting — prevents double execution
+    _pendingData = null;
     await handleNotificationData(data);
   }
 
@@ -126,30 +130,26 @@ class NotificationNavigationHandler {
   static Future<void> handleNotificationData(Map<String, dynamic> data) async {
     final type = data['type']?.toString();
 
-    // ── Validate synchronously, before any await ─────────────────────────
     final bool isPostLinked =
         type != null && _postLinkedTypes.contains(type);
-    final String? postId = isPostLinked ? _extractPostId(data) : null;
-    final bool willNavigate =
-        isPostLinked && postId != null && postId.isNotEmpty;
+    final bool isProfileLinked =
+        type != null && _profileLinkedTypes.contains(type);
+    final bool willNavigate = isPostLinked || isProfileLinked;
 
-    // Show the opaque cover NOW — synchronous, fires before the first await.
-    // For cold-start this is a no-op (storePendingNavigation already set it).
-    // For background→foreground this hides the feed immediately.
+    // Activate opaque overlay synchronously — before any await.
     if (willNavigate) {
       isNavigatingToPost.value = true;
     }
 
-    // ── Async work starts here ────────────────────────────────────────────
     await _log(
       eventType: 'tap_received',
       notificationType: type,
       rawData: data,
     );
 
-    if (!isPostLinked) {
+    if (!willNavigate) {
       await _log(
-        eventType: 'type_not_post_linked',
+        eventType: 'type_not_handled',
         notificationType: type,
         rawData: data,
         additionalData: {
@@ -160,25 +160,42 @@ class NotificationNavigationHandler {
       return;
     }
 
-    if (!willNavigate) {
-      await _log(
-        eventType: 'post_id_missing',
-        notificationType: type,
-        rawData: data,
-        additionalData: {
-          'customData_raw': data['customData'],
-          'top_level_keys': data.keys.toList(),
-        },
-      );
-      isNavigatingToPost.value = false;
-      return;
-    }
-
     try {
-      await _navigateToPost(postId!, type!, data);
+      if (isPostLinked) {
+        final postId = _extractPostId(data);
+        if (postId == null || postId.isEmpty) {
+          await _log(
+            eventType: 'post_id_missing',
+            notificationType: type,
+            rawData: data,
+            additionalData: {
+              'customData_raw': data['customData'],
+              'top_level_keys': data.keys.toList(),
+            },
+          );
+          isNavigatingToPost.value = false;
+          return;
+        }
+        await _navigateToPost(postId, type!, data);
+      } else {
+        // isProfileLinked (follow)
+        final followerUid = _extractFollowerUid(data);
+        if (followerUid == null || followerUid.isEmpty) {
+          await _log(
+            eventType: 'follower_uid_missing',
+            notificationType: type,
+            rawData: data,
+            additionalData: {
+              'customData_raw': data['customData'],
+              'top_level_keys': data.keys.toList(),
+            },
+          );
+          isNavigatingToPost.value = false;
+          return;
+        }
+        await _navigateToProfile(followerUid, type!, data);
+      }
     } finally {
-      // Always clear — whether navigation succeeded, failed, or the route
-      // was popped later. The overlay must never be left open permanently.
       isNavigatingToPost.value = false;
       _prefetchedPostData = null;
     }
@@ -187,6 +204,8 @@ class NotificationNavigationHandler {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /// Extracts postId — handles top-level, nested map, and JSON-string customData.
   static String? _extractPostId(Map<String, dynamic> data) {
     String? id = data['postId']?.toString() ?? data['post_id']?.toString();
     if (id != null && id.isNotEmpty) return id;
@@ -203,6 +222,41 @@ class NotificationNavigationHandler {
     return id;
   }
 
+  /// Extracts the follower's UID from a follow notification payload.
+  /// Handles top-level, nested map, and JSON-string customData.
+  static String? _extractFollowerUid(Map<String, dynamic> data) {
+    // Try common top-level key names first
+    // ADDED 'followerId' to support your Cloud Function's customData key
+    String? uid = data['followerUid']?.toString() ??
+        data['follower_uid']?.toString() ??
+        data['followerId']?.toString() ??      // <-- ADDED THIS LINE
+        data['fromUid']?.toString() ??
+        data['from_uid']?.toString();
+    if (uid != null && uid.isNotEmpty) return uid;
+
+    final raw = data['customData'];
+    if (raw is Map) {
+      uid = raw['followerUid']?.toString() ??
+          raw['follower_uid']?.toString() ??
+          raw['followerId']?.toString() ??
+          raw['fromUid']?.toString() ??
+          raw['from_uid']?.toString();
+    } else if (raw is String && raw.isNotEmpty) {
+      try {
+        final parsed = jsonDecode(raw) as Map<String, dynamic>;
+        uid = parsed['followerUid']?.toString() ??
+            parsed['follower_uid']?.toString() ??
+            parsed['followerId']?.toString() ??
+            parsed['fromUid']?.toString() ??
+            parsed['from_uid']?.toString();
+      } catch (_) {}
+    }
+    return uid;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Navigate to post (existing logic)
+  // ---------------------------------------------------------------------------
   static Future<void> _navigateToPost(
     String postId,
     String notificationType,
@@ -237,7 +291,6 @@ class NotificationNavigationHandler {
       Map<String, dynamic> userData;
       String ownerUid;
 
-      // ── Use pre-fetched data when available (cold-start fast path) ──────
       final cached = _prefetchedPostData;
       if (cached != null) {
         posts = cached.posts;
@@ -245,7 +298,6 @@ class NotificationNavigationHandler {
         userData = cached.userData;
         ownerUid = cached.ownerUid;
       } else {
-        // ── Normal fetch (background → foreground path) ──────────────────
         final postRow = await supabase
             .from('posts')
             .select()
@@ -272,7 +324,6 @@ class NotificationNavigationHandler {
             navigatorReady: true,
             navigatorAttempts: attempts,
             rawData: rawData,
-            additionalData: {'postRow_keys': postRow.keys.toList()},
           );
           return;
         }
@@ -290,7 +341,6 @@ class NotificationNavigationHandler {
             navigatorReady: true,
             navigatorAttempts: attempts,
             rawData: rawData,
-            additionalData: {'owner_uid': ownerUid},
           );
           return;
         }
@@ -316,7 +366,6 @@ class NotificationNavigationHandler {
         }
       }
 
-      // Re-read navState after all awaits
       final currentNavState = notificationNavigatorKey.currentState;
       if (currentNavState == null) {
         await _log(
@@ -377,6 +426,63 @@ class NotificationNavigationHandler {
         errorMessage: e.toString(),
         stackTrace: st.toString(),
         rawData: rawData,
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Navigate to profile (follow notification)
+  // ---------------------------------------------------------------------------
+  static Future<void> _navigateToProfile(
+    String followerUid,
+    String notificationType,
+    Map<String, dynamic> rawData,
+  ) async {
+    NavigatorState? navState;
+    int attempts = 0;
+    for (; attempts < 5; attempts++) {
+      navState = notificationNavigatorKey.currentState;
+      if (navState != null) break;
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
+    if (navState == null) {
+      await _log(
+        eventType: 'navigator_not_ready',
+        notificationType: notificationType,
+        navigatorReady: false,
+        navigatorAttempts: attempts,
+        rawData: rawData,
+        additionalData: {'follower_uid': followerUid},
+      );
+      return;
+    }
+
+    try {
+      navState.push(
+        MaterialPageRoute(
+          builder: (_) => OtherUserProfileScreen(uid: followerUid),
+        ),
+      );
+
+      await _log(
+        eventType: 'navigation_success',
+        notificationType: notificationType,
+        navigatorReady: true,
+        navigatorAttempts: attempts,
+        rawData: rawData,
+        additionalData: {'follower_uid': followerUid},
+      );
+    } catch (e, st) {
+      await _log(
+        eventType: 'error',
+        notificationType: notificationType,
+        navigatorReady: navState != null,
+        navigatorAttempts: attempts,
+        errorMessage: e.toString(),
+        stackTrace: st.toString(),
+        rawData: rawData,
+        additionalData: {'follower_uid': followerUid},
       );
     }
   }
