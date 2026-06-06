@@ -538,12 +538,17 @@ static const List<String> _availableEmojis = [
         );
       }
 
+      // ─────────────────────────────────────────────────────────────────
+      // ✅ Updated: pop both AddPost and CustomCamera to return to profile
+      // ─────────────────────────────────────────────────────────────────
       if (res == "success" && context.mounted) {
         setState(() => isLoading = false);
         showSnackBar(context, _isVideo ? 'Video Posted!' : 'Posted!');
         clearMedia();
-        widget.onPostUploaded?.call();
-        Navigator.popUntil(context, (route) => route.isFirst);
+        widget.onPostUploaded?.call();         // triggers getData() on profile
+        // Pop back to the profile screen (pop AddPost then CustomCamera)
+        Navigator.of(context).pop();           // removes AddPostScreen
+        Navigator.of(context).pop();           // removes CustomCameraScreen
       } else if (context.mounted) {
         setState(() => isLoading = false);
         showSnackBar(context, 'Error: $res');
