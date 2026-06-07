@@ -6,7 +6,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-
+import 'package:flutter/material.dart';
 import 'package:Ratedly/services/notification_navigation_handler.dart';
 
 class NotificationService {
@@ -24,12 +24,6 @@ class NotificationService {
   }
 
   // ─── COLD START ──────────────────────────────────────────────────────────
-  /// Called from main() after Firebase + Supabase are ready but BEFORE
-  /// _appInitState switches out of the skeleton screen.
-  ///
-  /// Storing + pre-fetching here means the post data is ready before the
-  /// real UI ever renders, so executePendingNavigation() can push
-  /// ProfilePostFeedScreen on the very first frame — with no feed flash.
   static Future<void> handleColdStart() async {
     try {
       final initialMessage = await firebase_messaging.FirebaseMessaging.instance
@@ -38,26 +32,39 @@ class NotificationService {
 
       final data = Map<String, dynamic>.from(initialMessage.data);
 
-      // storePendingNavigation sets isNavigatingToPost = true synchronously,
-      // so the opaque overlay is active before the real UI renders.
       NotificationNavigationHandler.storePendingNavigation(data);
-
-      // Pre-fetch post + user data while the skeleton is still on screen.
-      // By the time _appInitState flips to ready, the data is cached and
-      // executePendingNavigation() pushes the route with zero Supabase delay.
       await NotificationNavigationHandler.prefetchNavigationData(data);
-    } catch (_) {}
+    } catch (e, st) {
+      // Log cold-start failures so we know if getInitialMessage itself throws.
+      await NotificationNavigationHandler.logEvent(
+        eventType: 'cold_start_error',
+        errorMessage: e.toString(),
+        additionalData: {'stack_trace': st.toString()},
+      );
+    }
   }
 
   // ─── INIT ────────────────────────────────────────────────────────────────
   Future<void> init() async {
     try {
-      await _firebaseMessaging.requestPermission(
+      final settings = await _firebaseMessaging.requestPermission(
         alert: true,
         badge: true,
         criticalAlert: true,
         provisional: true,
         sound: true,
+      );
+
+      // Log the permission outcome so we can diagnose delivery issues
+      // where the user may have denied permissions.
+      await NotificationNavigationHandler.logEvent(
+        eventType: 'notification_permission_result',
+        additionalData: {
+          'authorization_status': settings.authorizationStatus.name,
+          'alert': settings.alert.name,
+          'badge': settings.badge.name,
+          'sound': settings.sound.name,
+        },
       );
 
       await firebase_messaging.FirebaseMessaging.instance
@@ -67,11 +74,9 @@ class NotificationService {
         sound: false,
       );
 
-      // Foreground messages → do nothing (no local notification)
       firebase_messaging.FirebaseMessaging.onMessage
           .listen(_handleForegroundMessage);
 
-      // Background → foreground tap: navigate directly to the linked post.
       firebase_messaging.FirebaseMessaging.onMessageOpenedApp
           .listen(_handleNotificationTap);
 
@@ -80,12 +85,6 @@ class NotificationService {
       _firebaseMessaging.onTokenRefresh.listen((newToken) async {
         await _saveToken(newToken);
       });
-
-      // Cold-start is handled in main() via handleColdStart() — not here.
-      // By the time init() runs (in _initializeNonEssentialServicesInBackground),
-      // handleColdStart() has already stored + pre-fetched the notification data
-      // and executePendingNavigation() has already been called from the
-      // postFrameCallback in _OptimizedMyAppState. Nothing to do here.
 
       const DarwinInitializationSettings initializationSettingsIOS =
           DarwinInitializationSettings();
@@ -99,14 +98,26 @@ class NotificationService {
               final data =
                   jsonDecode(response.payload!) as Map<String, dynamic>;
               await NotificationNavigationHandler.handleNotificationData(data);
-            } catch (_) {}
+            } catch (e) {
+              await NotificationNavigationHandler.logEvent(
+                eventType: 'local_notification_payload_parse_error',
+                errorMessage: e.toString(),
+                additionalData: {'raw_payload': response.payload},
+              );
+            }
           }
         },
       );
 
       await _configureNotificationChannels();
       _setupAuthListener();
-    } catch (e) {}
+    } catch (e, st) {
+      await NotificationNavigationHandler.logEvent(
+        eventType: 'notification_service_init_error',
+        errorMessage: e.toString(),
+        additionalData: {'stack_trace': st.toString()},
+      );
+    }
   }
 
   // ─── NOTIFICATION TAP (background → foreground) ──────────────────────────
@@ -114,6 +125,19 @@ class NotificationService {
       firebase_messaging.RemoteMessage message) async {
     await NotificationNavigationHandler.handleNotificationData(
       Map<String, dynamic>.from(message.data),
+    );
+  }
+
+  // ─── FOREGROUND MESSAGE ──────────────────────────────────────────────────
+  /// We intentionally don't show a local notification for foreground messages,
+  /// but we do log receipt so we know the message arrived and can compare
+  /// against the notifications table.
+  Future<void> _handleForegroundMessage(
+      firebase_messaging.RemoteMessage message) async {
+    await NotificationNavigationHandler.logEvent(
+      eventType: 'foreground_message_received',
+      notificationType: message.data['type']?.toString(),
+      rawData: Map<String, dynamic>.from(message.data),
     );
   }
 
@@ -215,21 +239,24 @@ class NotificationService {
     } catch (e) {}
   }
 
-  // ─── MESSAGE HANDLERS ────────────────────────────────────────────────────
-
-  /// Foreground message: do nothing (no local notification shown).
-  Future<void> _handleForegroundMessage(
-      firebase_messaging.RemoteMessage message) async {}
-
-  /// Background / terminated message handler (registered in main.dart via
-  /// FirebaseMessaging.onBackgroundMessage). Shows a local notification so
-  /// the user can later tap it to navigate.
+  // ─── BACKGROUND MESSAGE HANDLER ──────────────────────────────────────────
+  /// Runs when the app is terminated and a message arrives. Supabase is not
+  /// initialized here, so we can't write to notification_tap_logs. The local
+  /// notification shown here will produce a tap_received log via
+  /// onDidReceiveNotificationResponse when the user taps it.
   static Future<void> handleBackgroundMessage(
       firebase_messaging.RemoteMessage message) async {
     try {
       await Firebase.initializeApp();
+
+      final type = message.data['type']?.toString() ?? 'unknown';
       final title = message.data['title'] ?? message.notification?.title ?? '';
       final body = message.data['body'] ?? message.notification?.body ?? '';
+
+      debugPrint(
+        '[NotifBG] Background message received — type=$type '
+        'title="$title" messageId=${message.messageId}',
+      );
 
       if (title.isNotEmpty || body.isNotEmpty) {
         final service = NotificationService();
@@ -238,8 +265,13 @@ class NotificationService {
           body: body,
           data: message.data,
         );
+      } else {
+        debugPrint(
+            '[NotifBG] Skipped local notification — title and body both empty');
       }
-    } catch (_) {}
+    } catch (e, st) {
+      ('[NotifBG] handleBackgroundMessage error: $e\n$st');
+    }
   }
 
   Future<void> _showNotification({
@@ -277,6 +309,20 @@ class NotificationService {
     String? body,
     Map<String, dynamic>? customData,
   }) async {
+    final logData = <String, dynamic>{
+      'type': type,
+      'targetUserId': targetUserId,
+      'title': title,
+      'customData': customData ?? {},
+    };
+
+    // Log before the Firestore write so we have a record even if the write fails.
+    await NotificationNavigationHandler.logEvent(
+      eventType: 'notification_queued',
+      notificationType: type,
+      rawData: logData,
+    );
+
     try {
       final notificationData = {
         'type': type,
@@ -290,7 +336,23 @@ class NotificationService {
       await FirebaseFirestore.instance
           .collection('Push Not')
           .add(notificationData);
-    } catch (e) {}
+
+      // Confirm the Firestore doc was created and the Cloud Function will pick it up.
+      await NotificationNavigationHandler.logEvent(
+        eventType: 'notification_queued_success',
+        notificationType: type,
+        rawData: logData,
+      );
+    } catch (e, st) {
+      // Log failures so we know when notifications are silently dropped.
+      await NotificationNavigationHandler.logEvent(
+        eventType: 'notification_queue_error',
+        notificationType: type,
+        rawData: logData,
+        errorMessage: e.toString(),
+        additionalData: {'stack_trace': st.toString()},
+      );
+    }
   }
 
   // ─── READ RECEIPTS ───────────────────────────────────────────────────────
