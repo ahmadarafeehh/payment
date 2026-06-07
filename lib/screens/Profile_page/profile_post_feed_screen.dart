@@ -21,7 +21,8 @@ import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import 'package:Ratedly/services/analytics_service.dart';
 
-typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(int currentCount);
+typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
+    int currentCount);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Global video manager – ensures only one video plays at a time
@@ -204,6 +205,8 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     final page = rawPage.round();
 
     if (page != _currentIndex) {
+      // ✅ FIX: stop all videos immediately before changing the active page
+      VideoManager.pauseAllVideos();
       setState(() => _currentIndex = page);
     }
 
@@ -483,7 +486,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
     // Sync the actual play state with the manager
     if (_videoController != null && _isVideoInitialized) {
       final actuallyPlaying = _videoController!.value.isPlaying;
-      final shouldBePlaying = _videoManager.isCurrentlyPlaying(_videoController!);
+      final shouldBePlaying =
+          _videoManager.isCurrentlyPlaying(_videoController!);
       if (actuallyPlaying != shouldBePlaying && widget.isActive) {
         if (shouldBePlaying && !actuallyPlaying) {
           _videoController!.play();
@@ -1026,7 +1030,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
                       Center(child: CircularProgressIndicator(color: textColor))
                     else
                       Center(
-                          child: Icon(Icons.videocam, color: textColor, size: 48)),
+                          child:
+                              Icon(Icons.videocam, color: textColor, size: 48)),
 
                     // Video edit strokes
                     if (_editResult != null && _editResult!.strokes.isNotEmpty)
@@ -1049,20 +1054,17 @@ class _FeedPostPageState extends State<_FeedPostPage>
                                 return Positioned(
                                   left: (o.position.dx *
                                           overlayConstraints.maxWidth)
-                                      .clamp(
-                                          0.0, overlayConstraints.maxWidth - 10),
+                                      .clamp(0.0,
+                                          overlayConstraints.maxWidth - 10),
                                   top: (o.position.dy *
                                           overlayConstraints.maxHeight)
                                       .clamp(0.0,
                                           overlayConstraints.maxHeight - 10),
-                                  child: Stack(
-                                      clipBehavior: Clip.none,
-                                      children: [
-                                        Text(o.text,
-                                            style: overlayShadowStyle(o)),
-                                        Text(o.text,
-                                            style: overlayTextStyle(o)),
-                                      ]),
+                                  child:
+                                      Stack(clipBehavior: Clip.none, children: [
+                                    Text(o.text, style: overlayShadowStyle(o)),
+                                    Text(o.text, style: overlayTextStyle(o)),
+                                  ]),
                                 );
                               }).toList(),
                             ),
