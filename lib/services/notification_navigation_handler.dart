@@ -47,7 +47,7 @@ class NotificationNavigationHandler {
   static Map<String, dynamic>? _pendingData;
   static _PreFetchedPostData? _prefetchedPostData;
 
-  // ─────────── Wait for Supabase session (fixes cold‑start RLS) ───────────
+  // ── Wait for Supabase session ────────────────────────────────────────────
   static Future<void> _waitForSupabaseSession() async {
     final supabase = Supabase.instance.client;
     if (supabase.auth.currentSession != null) return;
@@ -58,18 +58,25 @@ class NotificationNavigationHandler {
     }
   }
 
-  // ── Cold-start pre-fetch ────────────────────────────────────────────────
+  // ── Pre-fetch ────────────────────────────────────────────────────────────
   static Future<void> prefetchNavigationData(Map<String, dynamic> data) async {
     final type = data['type']?.toString();
 
     if (type != null && _profileLinkedTypes.contains(type)) return;
-
     if (type == null || !_postLinkedTypes.contains(type)) return;
 
     final postId = _extractPostId(data);
     if (postId == null || postId.isEmpty) return;
 
     await _waitForSupabaseSession();
+
+    // Log that prefetch has started so we know cold-start data loading began.
+    await _log(
+      eventType: 'prefetch_started',
+      notificationType: type,
+      postId: postId,
+      rawData: data,
+    );
 
     try {
       final supabase = Supabase.instance.client;
@@ -79,17 +86,44 @@ class NotificationNavigationHandler {
           .select()
           .eq('postId', postId)
           .maybeSingle();
-      if (postRow == null) return;
+
+      if (postRow == null) {
+        await _log(
+          eventType: 'prefetch_post_not_found',
+          notificationType: type,
+          postId: postId,
+          rawData: data,
+        );
+        return;
+      }
 
       final ownerUid = postRow['uid']?.toString() ?? '';
-      if (ownerUid.isEmpty) return;
+      if (ownerUid.isEmpty) {
+        await _log(
+          eventType: 'prefetch_owner_uid_empty',
+          notificationType: type,
+          postId: postId,
+          rawData: data,
+        );
+        return;
+      }
 
       final userRow = await supabase
           .from('users')
           .select('uid, username, photoUrl')
           .eq('uid', ownerUid)
           .maybeSingle();
-      if (userRow == null) return;
+
+      if (userRow == null) {
+        await _log(
+          eventType: 'prefetch_user_not_found',
+          notificationType: type,
+          postId: postId,
+          rawData: data,
+          additionalData: {'owner_uid': ownerUid},
+        );
+        return;
+      }
 
       const pageSize = 20;
       final rawPosts = await supabase
@@ -116,18 +150,53 @@ class NotificationNavigationHandler {
         userData: Map<String, dynamic>.from(userRow as Map),
         ownerUid: ownerUid,
       );
-    } catch (_) {}
+
+      await _log(
+        eventType: 'prefetch_success',
+        notificationType: type,
+        postId: postId,
+        rawData: data,
+        additionalData: {
+          'target_index': targetIndex,
+          'total_posts_loaded': posts.length,
+          'owner_uid': ownerUid,
+        },
+      );
+    } catch (e, st) {
+      // Previously catch (_) swallowed errors silently — now we capture them.
+      await _log(
+        eventType: 'prefetch_error',
+        notificationType: type,
+        postId: postId,
+        rawData: data,
+        errorMessage: e.toString(),
+        stackTrace: st.toString(),
+      );
+    }
   }
 
   static void storePendingNavigation(Map<String, dynamic> data) {
     _pendingData = Map<String, dynamic>.from(data);
     isNavigatingToPost.value = true;
+    // Fire-and-forget: method is intentionally sync so the overlay activates
+    // immediately. The log will complete in the background.
+    _log(
+      eventType: 'cold_start_pending_stored',
+      notificationType: data['type']?.toString(),
+      rawData: data,
+    );
   }
 
   static Future<void> executePendingNavigation() async {
     final data = _pendingData;
     if (data == null) return;
     _pendingData = null;
+
+    await _log(
+      eventType: 'cold_start_executing',
+      notificationType: data['type']?.toString(),
+      rawData: data,
+    );
 
     await _waitForSupabaseSession();
     await handleNotificationData(data);
@@ -433,6 +502,10 @@ class NotificationNavigationHandler {
     String notificationType,
     Map<String, dynamic> rawData,
   ) async {
+    // FIX: was missing _waitForSupabaseSession — caused all follow-notification
+    // logs to fail silently under RLS if the session hadn't refreshed yet.
+    await _waitForSupabaseSession();
+
     NavigatorState? navState;
     int attempts = 0;
     for (; attempts < 5; attempts++) {
@@ -482,6 +555,24 @@ class NotificationNavigationHandler {
     }
   }
 
+  // ── Public log wrapper ────────────────────────────────────────────────────
+  /// Allows external classes (e.g. NotificationService) to write to the same
+  /// log table without exposing the full private _log signature.
+  static Future<void> logEvent({
+    required String eventType,
+    String? notificationType,
+    Map<String, dynamic>? rawData,
+    Map<String, dynamic>? additionalData,
+    String? errorMessage,
+  }) =>
+      _log(
+        eventType: eventType,
+        notificationType: notificationType,
+        rawData: rawData,
+        additionalData: additionalData,
+        errorMessage: errorMessage,
+      );
+
   // ── Logging helper ────────────────────────────────────────────────────────
   static Future<void> _log({
     required String eventType,
@@ -495,6 +586,11 @@ class NotificationNavigationHandler {
     Map<String, dynamic>? additionalData,
   }) async {
     try {
+      // FIX: wait for a valid session before writing. Previously this was
+      // called at tap_received time — before the session was ready — and the
+      // RLS rejection was silently swallowed, dropping the entire log row.
+      await _waitForSupabaseSession();
+
       await Supabase.instance.client.from('notification_tap_logs').insert({
         'event_type': eventType,
         'notification_type': notificationType,
@@ -506,15 +602,15 @@ class NotificationNavigationHandler {
         'raw_data': rawData,
         'additional_data': additionalData,
       });
-    } catch (_) {}
+    } catch (e, st) {
+      // FIX: previously catch (_) discarded all failures invisibly.
+      // debugPrint surfaces them in the console without crashing the app.
+      debugPrint(
+          '[NotifLog] ⚠️ Failed to write log (event=$eventType): $e\n$st');
+    }
   }
 
-  // ═════════════════════════════════════════════════════════════════════════
-  // NEW: Log notification send events
-  // ═════════════════════════════════════════════════════════════════════════
-  /// Call this whenever your app queues a notification (i.e. after writing
-  /// to the "Push Not" Firestore collection). It inserts a row with
-  /// event_type = 'notification_sent' into the same analytics table.
+  // ── Notification sent helper ──────────────────────────────────────────────
   static Future<void> logNotificationSent({
     required String type,
     required String targetUserId,
