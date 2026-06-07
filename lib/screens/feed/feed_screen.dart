@@ -30,6 +30,9 @@ import 'package:Ratedly/services/analytics_service.dart';
 // --- NEW: Import the survey widget ---
 import 'package:Ratedly/widgets/referral_survey.dart';
 
+// --- NEW: Import the notification navigation handler ---
+import 'package:Ratedly/screens/notification_navigation_handler.dart';
+
 // -----------------------------------------------------------------------------
 // FEED ERROR LOGGER – logs only to feed_errors table
 // -----------------------------------------------------------------------------
@@ -94,7 +97,8 @@ class _LightColors extends _ColorSet {
 }
 
 class FeedScreen extends StatefulWidget {
-  const FeedScreen({Key? key}) : super(key: key);
+  final bool isTabActive; // NEW – parent passes false when another tab is selected
+  const FeedScreen({Key? key, this.isTabActive = true}) : super(key: key);
 
   @override
   State<FeedScreen> createState() => _FeedScreenState();
@@ -857,6 +861,25 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     // ✅ screen tracking: initial tab is For You (index 1)
     _currentScreenName = 'for you';
     AnalyticsService.screenEnter('for you');
+
+    // NEW: immediately pause and clear visibility when notification navigation starts
+    NotificationNavigationHandler.isNavigatingToPost
+        .addListener(_onNotificationNavigation);
+  }
+
+  // NEW: Notification navigation handler
+  void _onNotificationNavigation() {
+    if (!mounted) return;
+    if (NotificationNavigationHandler.isNavigatingToPost.value) {
+      // Synchronously stop any playing audio and mark all posts as invisible.
+      // This causes the next PostCard rebuild to receive isVisible:false, so
+      // any async video-init completions will call _pauseVideo() instead of _playVideo().
+      VideoManager.pauseAllVideos();
+      setState(() {
+        _postVisibility.updateAll((key, value) => false);
+        _currentPlayingPostId = null;
+      });
+    }
   }
 
   @override
@@ -907,6 +930,29 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       }
     } else if (currentUserId == null) {
       _loadInitialData();
+    }
+  }
+
+  // NEW: Handle tab-switch via isTabActive
+  @override
+  void didUpdateWidget(FeedScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.isTabActive && !widget.isTabActive) {
+      // Feed tab became inactive — stop everything immediately.
+      VideoManager.pauseAllVideos();
+      setState(() {
+        _postVisibility.updateAll((key, value) => false);
+        _currentPlayingPostId = null;
+      });
+    } else if (!oldWidget.isTabActive && widget.isTabActive) {
+      // Feed tab became active again — restore the current page's playback state.
+      final page =
+          _selectedTab == 1 ? _currentForYouPage : _currentFollowingPage;
+      final posts = _selectedTab == 1 ? _forYouPosts : _followingPosts;
+      if (posts.isNotEmpty) {
+        _updatePostVisibility(page, posts, _selectedTab == 1);
+      }
     }
   }
 
@@ -1779,6 +1825,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    // NEW – must be first to avoid listener firing on a disposed widget
+    NotificationNavigationHandler.isNavigatingToPost
+        .removeListener(_onNotificationNavigation);
+
     // ✅ Exit the current screen if user is logged in
     if (_currentScreenName != null &&
         currentUserId != null &&
