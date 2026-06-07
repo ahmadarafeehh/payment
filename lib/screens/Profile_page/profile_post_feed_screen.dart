@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -18,13 +19,95 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:timeago/timeago.dart' as timeago;
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
+import 'package:Ratedly/services/analytics_service.dart';
 
-typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
-    int currentCount);
+typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(int currentCount);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reaction error logger — logs only exceptions to `reactions_error` table
+// Global video manager – ensures only one video plays at a time
+// ─────────────────────────────────────────────────────────────────────────────
+void unawaited(Future<void> future) {}
+
+class VideoManager {
+  static final VideoManager _instance = VideoManager._internal();
+  factory VideoManager() => _instance;
+  VideoManager._internal();
+
+  VideoPlayerController? _currentPlayingController;
+  String? _currentPostId;
+  final Map<String, VideoPlayerController> _activeControllers = {};
+
+  static void pauseAllVideos() => _instance._pauseAllVideos();
+
+  void playVideo(VideoPlayerController controller, String postId) {
+    if (_currentPlayingController != null &&
+        _currentPlayingController != controller) {
+      _currentPlayingController!.pause();
+    }
+    _currentPlayingController = controller;
+    _currentPostId = postId;
+    _activeControllers[postId] = controller;
+    controller.play();
+  }
+
+  void pauseVideo(VideoPlayerController controller) {
+    if (_currentPlayingController == controller) {
+      controller.pause();
+      _currentPlayingController = null;
+      _currentPostId = null;
+    }
+    _activeControllers.removeWhere((key, value) => value == controller);
+  }
+
+  void disposeController(VideoPlayerController controller, String postId) {
+    if (_currentPlayingController == controller) {
+      _currentPlayingController = null;
+      _currentPostId = null;
+    }
+    _activeControllers.remove(postId);
+    controller.pause();
+    controller.dispose();
+  }
+
+  bool isCurrentlyPlaying(VideoPlayerController controller) =>
+      _currentPlayingController == controller;
+
+  void onPostInvisible(String postId) {
+    if (_currentPostId == postId && _currentPlayingController != null) {
+      _currentPlayingController!.pause();
+      _currentPlayingController = null;
+      _currentPostId = null;
+    }
+    _activeControllers.remove(postId);
+  }
+
+  String? get currentPlayingPostId => _currentPostId;
+
+  void pauseCurrentVideo() {
+    if (_currentPlayingController != null) {
+      _currentPlayingController!.pause();
+      _currentPlayingController = null;
+      _currentPostId = null;
+    }
+  }
+
+  void _pauseAllVideos() {
+    if (_currentPlayingController != null) {
+      _currentPlayingController!.pause();
+      _currentPlayingController = null;
+      _currentPostId = null;
+    }
+    _activeControllers.forEach((postId, controller) {
+      if (controller.value.isInitialized && controller.value.isPlaying) {
+        controller.pause();
+      }
+    });
+    _activeControllers.clear();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reaction error logger – logs only exceptions to `reactions_error` table
 // ─────────────────────────────────────────────────────────────────────────────
 Future<void> _logReactionError({
   required String operationType,
@@ -77,24 +160,8 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   bool _hasMore = false;
   bool _loadingMore = false;
 
-  // ✅ screen tracking
   bool _trackingStarted = false;
   String? _currentUserId;
-
-  bool _isVideoUrl(String url) {
-    final u = url.toLowerCase();
-    return u.endsWith('.mp4') ||
-        u.endsWith('.mov') ||
-        u.endsWith('.avi') ||
-        u.endsWith('.wmv') ||
-        u.endsWith('.flv') ||
-        u.endsWith('.mkv') ||
-        u.endsWith('.webm') ||
-        u.endsWith('.m4v') ||
-        u.endsWith('.3gp') ||
-        u.contains('/video/') ||
-        u.contains('video=true');
-  }
 
   @override
   void initState() {
@@ -121,7 +188,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
 
   @override
   void dispose() {
-    // ✅ screen tracking: exit
     if (_currentUserId != null && _currentUserId!.isNotEmpty) {
       AnalyticsService.screenExit(
         screenName: 'profile_post_feed',
@@ -163,13 +229,12 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     }
   }
 
-void _onPostDeleted(int index) {
-  // Refresh the profile data (e.g., post count)
-  widget.onPostDeleted?.call();
-  if (!mounted) return;
-  // Pop back to the profile screen
-  Navigator.pop(context);
-}
+  void _onPostDeleted(int index) {
+    widget.onPostDeleted?.call();
+    if (!mounted) return;
+    Navigator.pop(context);
+  }
+
   void _goToProfile() {
     Navigator.push(
       context,
@@ -255,12 +320,13 @@ class _FeedPostPage extends StatefulWidget {
 }
 
 class _FeedPostPageState extends State<_FeedPostPage>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   @override
   bool get wantKeepAlive => true;
 
   final SupabaseClient _supabase = Supabase.instance.client;
   final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
+  final VideoManager _videoManager = VideoManager(); // ← SINGLETON
 
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
@@ -295,9 +361,15 @@ class _FeedPostPageState extends State<_FeedPostPage>
         u.contains('video=true');
   }
 
+  // ------ NEW getter to check if THIS video is playing ------
+  bool get _isVideoPlaying =>
+      _videoController != null &&
+      _videoManager.isCurrentlyPlaying(_videoController!);
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // ← lifecycle observer
     _parseEditMetadata();
     _fetchAllData();
     if (widget.isActive) _onBecomeActive();
@@ -315,16 +387,25 @@ class _FeedPostPageState extends State<_FeedPostPage>
 
   @override
   void dispose() {
-    _videoController?.pause();
-    _videoController?.dispose();
-    _videoController = null;
+    WidgetsBinding.instance.removeObserver(this);
+    _disposeVideoController();
     super.dispose();
   }
 
+  // ----- APP LIFECYCLE: pause when app goes to background -----
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _pauseVideo();
+    }
+  }
+
+  // ----- VIDEO LIFE CYCLE -----
   void _onBecomeActive() {
     if (_isVideo) {
       if (_isVideoInitialized) {
-        _videoController?.play();
+        _playVideo();
       } else if (!_isVideoLoading) {
         _initVideo();
       }
@@ -332,9 +413,122 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   void _onBecomeInactive() {
-    _videoController?.pause();
+    _pauseVideo();
   }
 
+  // ----- PLAY / PAUSE using VideoManager -----
+  void _playVideo() {
+    if (_videoController != null &&
+        _isVideoInitialized &&
+        mounted &&
+        widget.isActive) {
+      _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
+      _videoManager.playVideo(_videoController!, _postId);
+      setState(() {});
+    }
+  }
+
+  void _pauseVideo() {
+    if (_videoController != null && _isVideoInitialized && mounted) {
+      _videoManager.pauseVideo(_videoController!);
+      setState(() {});
+    }
+  }
+
+  void _togglePlayback() {
+    if (!_isVideoInitialized || _videoController == null) return;
+    if (_isVideoPlaying) {
+      _pauseVideo();
+    } else {
+      _playVideo();
+    }
+    setState(() {});
+  }
+
+  void _toggleMute() {
+    if (!_isVideoInitialized || _videoController == null) return;
+    setState(() {
+      _isMuted = !_isMuted;
+      _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
+    });
+  }
+
+  // ----- CLEANUP -----
+  void _disposeVideoController() {
+    if (_videoController != null) {
+      _videoController!.removeListener(_videoListener);
+      if (_isVideoPlaying) {
+        _videoManager.pauseVideo(_videoController!);
+      }
+      _videoController!.pause();
+      _videoController!.dispose();
+      _videoController = null;
+    }
+    _isVideoInitialized = false;
+    _isVideoLoading = false;
+  }
+
+  // ----- LISTENER (keeps UI in sync with manager) -----
+  void _videoListener() {
+    if (!mounted) return;
+    // If video ended, loop it and keep playing if still active
+    if (_videoController != null &&
+        _videoController!.value.position == _videoController!.value.duration &&
+        _videoController!.value.duration != Duration.zero) {
+      _videoController!.seekTo(Duration.zero);
+      if (widget.isActive && !_isVideoPlaying) {
+        _videoController!.play();
+      }
+    }
+    // Sync the actual play state with the manager
+    if (_videoController != null && _isVideoInitialized) {
+      final actuallyPlaying = _videoController!.value.isPlaying;
+      final shouldBePlaying = _videoManager.isCurrentlyPlaying(_videoController!);
+      if (actuallyPlaying != shouldBePlaying && widget.isActive) {
+        if (shouldBePlaying && !actuallyPlaying) {
+          _videoController!.play();
+        } else if (!shouldBePlaying && actuallyPlaying) {
+          _videoController!.pause();
+        }
+      }
+    }
+  }
+
+  // ----- INIT VIDEO (unchanged except for listener & playback call) -----
+  Future<void> _initVideo() async {
+    if (_isVideoLoading || _isVideoInitialized || _postUrl.isEmpty) return;
+
+    setState(() => _isVideoLoading = true);
+
+    try {
+      final controller = VideoPlayerController.networkUrl(
+        Uri.parse(_postUrl),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+      );
+
+      await controller.initialize();
+
+      controller.setLooping(true);
+      controller.addListener(_videoListener); // ← attach listener
+
+      if (mounted) {
+        setState(() {
+          _videoController = controller;
+          _isVideoInitialized = true;
+          _isVideoLoading = false;
+        });
+        if (widget.isActive) {
+          _playVideo(); // ← use manager
+        }
+      } else {
+        controller.dispose();
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isVideoLoading = false);
+    }
+  }
+
+  // ----- RATINGS & DATA (unchanged) -----
   void _parseEditMetadata() {
     final raw = widget.post['video_edit_metadata'];
     if (raw == null) return;
@@ -343,9 +537,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
           ? raw
           : Map<String, dynamic>.from(raw as Map);
       _editResult = VideoEditResult.fromJson(map, File(''));
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
   }
 
   Future<void> _fetchAllData() async {
@@ -437,61 +629,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
       if (mounted) {
         setState(() => _commentCount = comments.length + replies.length);
       }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  Future<void> _initVideo() async {
-    if (_isVideoLoading || _isVideoInitialized || _postUrl.isEmpty) {
-      return;
-    }
-
-    setState(() => _isVideoLoading = true);
-
-    try {
-      final controller = VideoPlayerController.networkUrl(
-        Uri.parse(_postUrl),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-      );
-
-      await controller.initialize();
-
-      controller.setLooping(true);
-      if (mounted) {
-        setState(() {
-          _videoController = controller;
-          _isVideoInitialized = true;
-          _isVideoLoading = false;
-        });
-        if (widget.isActive) {
-          controller.play();
-        }
-      } else {
-        controller.dispose();
-      }
-    } catch (e) {
-      if (mounted) setState(() => _isVideoLoading = false);
-    }
-  }
-
-  void _togglePlayback() {
-    if (!_isVideoInitialized || _videoController == null) return;
-    setState(() {
-      if (_videoController!.value.isPlaying) {
-        _videoController!.pause();
-      } else {
-        _videoController!.play();
-      }
-    });
-  }
-
-  void _toggleMute() {
-    if (!_isVideoInitialized || _videoController == null) return;
-    setState(() {
-      _isMuted = !_isMuted;
-      _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
-    });
+    } catch (e) {}
   }
 
   void _handleRatingSubmitted(double rating) async {
@@ -541,23 +679,18 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   void _openRatingsPanel() {
-    _videoController?.pause();
+    _pauseVideo(); // ← pause using manager
     RatingListScreen.show(
       context,
       postId: _postId,
       isVideo: _isVideo,
       videoController: _videoController,
       onClose: () {
-        if (widget.isActive) {
-          _videoController?.play();
-        }
+        if (widget.isActive) _playVideo();
       },
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // DELETE POST – silent; errors are logged to posts_errors, not shown to user
-  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _deletePost(BuildContext context) async {
     final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
     final isDark = themeProvider.themeMode == ThemeMode.dark;
@@ -565,7 +698,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     final textColor = isDark ? const Color(0xFFd9d9d9) : Colors.black;
     final progressColor = isDark ? Colors.white70 : Colors.grey[700]!;
 
-    // Non‑dismissible loading dialog
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -595,17 +727,12 @@ class _FeedPostPageState extends State<_FeedPostPage>
 
     try {
       final result = await _postsMethods.deletePost(_postId);
-      if (mounted) Navigator.of(context).pop(); // dismiss loading dialog
-
-      // Only remove the post from the feed if backend confirmed success.
-      // Errors are already logged by deletePost – no user feedback.
+      if (mounted) Navigator.of(context).pop();
       if (result == 'success') {
         widget.onPostDeleted?.call();
       }
     } catch (_) {
-      // Exception already logged by deletePost, just dismiss loader
       if (mounted) Navigator.of(context).pop();
-      // No snackbar shown
     }
   }
 
@@ -620,9 +747,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
           children: [
             InkWell(
               onTap: () async {
-                // Close options menu dialog
                 Navigator.of(context).pop();
-                // Call delete with loading dialog
                 await _deletePost(context);
               },
               child: Padding(
@@ -678,7 +803,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Header
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
@@ -718,8 +842,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
             ],
           ),
         ),
-
-        // Media
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -728,8 +850,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
             },
           ),
         ),
-
-        // Fixed bottom area
         if (description.isNotEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -740,7 +860,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
               overflow: TextOverflow.ellipsis,
             ),
           ),
-
         if (!_isLoadingRatings)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -756,7 +875,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
           )
         else
           const SizedBox(height: 48),
-
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8),
           child: Row(
@@ -857,6 +975,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
         maxHeight: maxHeight);
   }
 
+  // ── UPDATED VIDEO PLAYER WITH TAP‑TO‑PAUSE AND PLAY OVERLAY ──────────
   Widget _buildVideoPlayer(
       List<double> matrix, int quarters, Color cardColor, Color textColor,
       {double? maxHeight}) {
@@ -880,88 +999,117 @@ class _FeedPostPageState extends State<_FeedPostPage>
           child: ClipRect(
             child: Container(
               color: Colors.black,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (_isVideoInitialized && _videoController != null)
-                    ColorFiltered(
-                      colorFilter: ColorFilter.matrix(matrix),
-                      child: Transform.rotate(
-                        angle: quarters * math.pi / 2,
-                        child: needsCropping
-                            ? FittedBox(
-                                fit: BoxFit.cover,
-                                child: SizedBox(
-                                  width: _videoController!.value.size.width,
-                                  height: _videoController!.value.size.height,
-                                  child: VideoPlayer(_videoController!),
-                                ),
-                              )
-                            : VideoPlayer(_videoController!),
-                      ),
-                    )
-                  else if (_isVideoLoading)
-                    Center(child: CircularProgressIndicator(color: textColor))
-                  else
-                    Center(
-                        child:
-                            Icon(Icons.videocam, color: textColor, size: 48)),
-                  if (_editResult != null && _editResult!.strokes.isNotEmpty)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: CustomPaint(
-                          painter: DrawingPainter(
-                              strokes: _editResult!.strokes,
-                              currentStroke: null),
+              child: GestureDetector(
+                // Tapping the video toggles play/pause
+                onTap: _togglePlayback,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (_isVideoInitialized && _videoController != null)
+                      ColorFiltered(
+                        colorFilter: ColorFilter.matrix(matrix),
+                        child: Transform.rotate(
+                          angle: quarters * math.pi / 2,
+                          child: needsCropping
+                              ? FittedBox(
+                                  fit: BoxFit.cover,
+                                  child: SizedBox(
+                                    width: _videoController!.value.size.width,
+                                    height: _videoController!.value.size.height,
+                                    child: VideoPlayer(_videoController!),
+                                  ),
+                                )
+                              : VideoPlayer(_videoController!),
                         ),
-                      ),
-                    ),
-                  if (_editResult != null && _editResult!.overlays.isNotEmpty)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: LayoutBuilder(
-                          builder: (_, overlayConstraints) => Stack(
-                            children: _editResult!.overlays.map((o) {
-                              return Positioned(
-                                left: (o.position.dx *
-                                        overlayConstraints.maxWidth)
-                                    .clamp(
-                                        0.0, overlayConstraints.maxWidth - 10),
-                                top: (o.position.dy *
-                                        overlayConstraints.maxHeight)
-                                    .clamp(
-                                        0.0, overlayConstraints.maxHeight - 10),
-                                child:
-                                    Stack(clipBehavior: Clip.none, children: [
-                                  Text(o.text, style: overlayShadowStyle(o)),
-                                  Text(o.text, style: overlayTextStyle(o)),
-                                ]),
-                              );
-                            }).toList(),
+                      )
+                    else if (_isVideoLoading)
+                      Center(child: CircularProgressIndicator(color: textColor))
+                    else
+                      Center(
+                          child: Icon(Icons.videocam, color: textColor, size: 48)),
+
+                    // Video edit strokes
+                    if (_editResult != null && _editResult!.strokes.isNotEmpty)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: CustomPaint(
+                            painter: DrawingPainter(
+                                strokes: _editResult!.strokes,
+                                currentStroke: null),
                           ),
                         ),
                       ),
-                    ),
-                  if (_isVideoInitialized)
-                    Positioned(
-                      bottom: 16,
-                      right: 16,
-                      child: GestureDetector(
-                        onTap: _toggleMute,
+                    // Video edit overlays
+                    if (_editResult != null && _editResult!.overlays.isNotEmpty)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: LayoutBuilder(
+                            builder: (_, overlayConstraints) => Stack(
+                              children: _editResult!.overlays.map((o) {
+                                return Positioned(
+                                  left: (o.position.dx *
+                                          overlayConstraints.maxWidth)
+                                      .clamp(
+                                          0.0, overlayConstraints.maxWidth - 10),
+                                  top: (o.position.dy *
+                                          overlayConstraints.maxHeight)
+                                      .clamp(0.0,
+                                          overlayConstraints.maxHeight - 10),
+                                  child: Stack(
+                                      clipBehavior: Clip.none,
+                                      children: [
+                                        Text(o.text,
+                                            style: overlayShadowStyle(o)),
+                                        Text(o.text,
+                                            style: overlayTextStyle(o)),
+                                      ]),
+                                );
+                              }).toList(),
+                            ),
+                          ),
+                        ),
+                      ),
+
+                    // 🎬 PLAY BUTTON OVERLAY (shown when paused)
+                    if (_isVideoInitialized && !_isVideoPlaying)
+                      Center(
                         child: Container(
-                          width: 36,
-                          height: 36,
+                          width: 80,
+                          height: 80,
                           decoration: const BoxDecoration(
-                              color: Colors.black54, shape: BoxShape.circle),
-                          child: Icon(
-                            _isMuted ? Icons.volume_off : Icons.volume_up,
-                            size: 18,
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.play_arrow,
+                            size: 40,
                             color: Colors.white,
                           ),
                         ),
                       ),
-                    ),
-                ],
+
+                    // 🔊 Mute button
+                    if (_isVideoInitialized)
+                      Positioned(
+                        bottom: 16,
+                        right: 16,
+                        child: GestureDetector(
+                          onTap: _toggleMute,
+                          child: Container(
+                            width: 36,
+                            height: 36,
+                            decoration: const BoxDecoration(
+                                color: Colors.black54, shape: BoxShape.circle),
+                            child: Icon(
+                              _isMuted ? Icons.volume_off : Icons.volume_up,
+                              size: 18,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -1075,7 +1223,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   void _showComments(BuildContext context) {
-    _videoController?.pause();
+    _pauseVideo(); // ← pause via manager
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1085,7 +1233,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
         postImage: _postUrl,
         isVideo: _isVideo,
         onClose: () {
-          if (widget.isActive) _videoController?.play();
+          if (widget.isActive) _playVideo();
         },
         videoController: _videoController,
       ),
