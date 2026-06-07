@@ -408,8 +408,11 @@ class _PostCardState extends State<PostCard>
             }
           }
         });
+        // ③ Defer playback so ModalRoute is fully resolved before _playVideo() checks route currency
         if (widget.isVisible) {
-          _playVideo();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && widget.isVisible) _playVideo();
+          });
         } else {
           _pauseVideo();
         }
@@ -917,7 +920,9 @@ class _PostCardState extends State<PostCard>
           _isVideoLoading = false;
           _videoLoadFailed = false;
         });
-        if (widget.isVisible) {
+        // ② Route check before playing/pausing after async init
+        final route = ModalRoute.of(context);
+        if (widget.isVisible && (route == null || route.isCurrent)) {
           _playVideo();
         } else {
           _pauseVideo();
@@ -976,11 +981,18 @@ class _PostCardState extends State<PostCard>
     }
   }
 
+  // ① Updated _playVideo() with ModalRoute.isCurrent guard
   void _playVideo() {
     if (_videoController != null &&
         _isVideoInitialized &&
         mounted &&
         widget.isVisible) {
+      // Guard: don't start playback if a route has been pushed on top of the feed
+      // (e.g. notification navigation). ModalRoute is null only in rare edge cases;
+      // treat null as "no restriction".
+      final route = ModalRoute.of(context);
+      if (route != null && !route.isCurrent) return;
+
       _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
       _videoManager.playVideo(_videoController!, _postId);
       if (mounted) setState(() {});
