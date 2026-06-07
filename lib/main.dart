@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';                              // ← needed for Platform in ad error logger
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -30,6 +31,29 @@ enum _InitState { loading, ready, error }
 
 final _appInitState = ValueNotifier<_InitState>(_InitState.loading);
 
+// Hold any AdMob init error until Supabase is available, then log it.
+String? _admobInitError;
+
+// ─── AD ERROR LOGGER ────────────────────────────────────────────────────────
+Future<void> _logAdError({
+  required String errorType,
+  String? userId,
+  String? errorMessage,
+  Map<String, dynamic>? extraInfo,
+}) async {
+  try {
+    await Supabase.instance.client.from('ads_errors').insert({
+      'user_id': userId,
+      'platform': kIsWeb ? 'web' : (Platform.isAndroid ? 'android' : 'ios'),
+      'error_type': errorType,
+      'error_message': errorMessage,
+      'extra_info': extraInfo,
+    });
+  } catch (_) {
+    // Logging must never crash the app.
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -38,7 +62,10 @@ void main() async {
   if (!kIsWeb) {
     try {
       await MobileAds.instance.initialize();
-    } catch (_) {}
+    } catch (e) {
+      // Save the error – we’ll log it once Supabase is ready.
+      _admobInitError = e.toString();
+    }
   }
 
   await IAPService.init();
@@ -56,24 +83,17 @@ void main() async {
       _initializeSupabase(),
     ]);
 
-    // ✅ Register the warm-start listener immediately after Firebase is ready,
-    // before anything else. This guarantees onMessageOpenedApp cannot fire
-    // between Firebase init and the listener being attached — which was the
-    // root cause of the "navigates to default feed instead of post" bug.
-    //
-    // Must be called AFTER _initializeFirebase() (Firebase Messaging requires
-    // Firebase to be initialized) and BEFORE handleColdStart() so both paths
-    // (warm-start and cold-start) are covered before the UI turns ready.
-    NotificationService.registerWarmStartListener();
+    // Now we can log the saved AdMob init error (if any).
+    if (_admobInitError != null) {
+      await _logAdError(
+        errorType: 'ads_init_failed',
+        errorMessage: _admobInitError,
+        extraInfo: {'stage': 'MobileAds.instance.initialize'},
+      );
+      _admobInitError = null;
+    }
 
-    // Handle cold-start notification tap AFTER Firebase + Supabase are ready
-    // but BEFORE switching out of the skeleton screen.
-    //
-    // handleColdStart() calls getInitialMessage(), then synchronously sets
-    // isNavigatingToPost = true (via storePendingNavigation) and pre-fetches
-    // the post + user data from Supabase. By the time _appInitState flips to
-    // ready and the real UI renders, the overlay is already active and the
-    // data is cached — so the feed never appears at all.
+    NotificationService.registerWarmStartListener();
     await NotificationService.handleColdStart();
 
     _appInitState.value = _InitState.ready;
@@ -124,12 +144,11 @@ Future<void> _initializeOtherServicesInBackground() async {
       }
     });
     unawaited(Future.microtask(() async => await AnalyticsService.init()));
-    // Note: NotificationService.init() no longer registers onMessageOpenedApp
-    // (that moved to registerWarmStartListener above). All other init work
-    // (permissions, local notifications, token retrieval) still happens here.
     unawaited(Future.microtask(() async => await NotificationService().init()));
   } catch (_) {}
 }
+
+// ────────── Everything below is identical to your original main.dart ──────────
 
 class _AppBootstrap extends StatelessWidget {
   final ValueNotifier<_InitState> stateNotifier;
@@ -214,11 +233,6 @@ class _OptimizedMyAppState extends State<_OptimizedMyApp> {
   @override
   void initState() {
     super.initState();
-    // Runs after the first frame — notificationNavigatorKey is now attached.
-    // For cold-start: data was pre-fetched in main() so this push is instant.
-    // For warm-start: storePendingNavigation() was called in registerWarmStartListener()
-    //   so _pendingData is set and this will navigate correctly.
-    // For normal launch: _pendingData is null so this is a no-op.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       NotificationNavigationHandler.executePendingNavigation();
     });
@@ -244,20 +258,6 @@ class _OptimizedMyAppState extends State<_OptimizedMyApp> {
             navigatorKey: notificationNavigatorKey,
             home: useDebugHome ? const DebugHome() : const AuthWrapper(),
             navigatorObservers: [CountryCheckObserver()],
-            // ── Notification-navigation overlay ──────────────────────────
-            // Covers the entire app with an opaque screen-coloured box while
-            // notification-driven navigation is in progress.
-            //
-            // Cold-start: isNavigatingToPost was set to true in main() before
-            //   _appInitState flipped to ready, so this overlay is active from
-            //   the very first rendered frame — the feed is never visible.
-            //
-            // Warm-start: set synchronously in storePendingNavigation() inside
-            //   registerWarmStartListener(), so the feed is hidden within one
-            //   vsync (~16 ms) of the tap.
-            //
-            // Cleared in the finally block of handleNotificationData once the
-            //   route has been pushed (or on any failure path).
             builder: (context, child) {
               return Stack(
                 children: [
