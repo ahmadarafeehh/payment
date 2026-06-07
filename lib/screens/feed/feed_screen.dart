@@ -31,7 +31,7 @@ import 'package:Ratedly/services/analytics_service.dart';
 import 'package:Ratedly/widgets/referral_survey.dart';
 
 // --- NEW: Import the notification navigation handler ---
-import 'package:Ratedly/screens/notification_navigation_handler.dart';
+import 'package:Ratedly/services/notification_navigation_handler.dart';
 
 // -----------------------------------------------------------------------------
 // FEED ERROR LOGGER – logs only to feed_errors table
@@ -97,7 +97,8 @@ class _LightColors extends _ColorSet {
 }
 
 class FeedScreen extends StatefulWidget {
-  final bool isTabActive; // NEW – parent passes false when another tab is selected
+  final bool
+      isTabActive; // NEW – parent passes false when another tab is selected
   const FeedScreen({Key? key, this.isTabActive = true}) : super(key: key);
 
   @override
@@ -1948,7 +1949,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
 
     return Scaffold(
-      resizeToAvoidBottomInset: false,   // ← KEY CHANGE: prevent keyboard from resizing the feed
+      resizeToAvoidBottomInset:
+          false, // ← KEY CHANGE: prevent keyboard from resizing the feed
       backgroundColor: colors.backgroundColor,
       body: Stack(
         children: [
