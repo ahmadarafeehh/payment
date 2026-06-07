@@ -676,197 +676,216 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
             ),
           ),
 
-          // Bottom input bar - semi-transparent
+          // Bottom input bar – keyboard-aware (see _buildBottomInputBar)
           _buildBottomInputBar(safeUsername, safePhotoUrl),
         ],
       ),
     );
   }
 
+  // --------------------------------------------------------------------------
+  // Bottom input bar
+  //
+  // KEY FIX: wrapped in a Builder so that MediaQuery.of(innerContext) reads
+  // viewInsets from the modal's own subtree rather than from an ancestor
+  // Scaffold that may already have consumed (or not yet seen) the inset.
+  // This is the only place where keyboard height compensation must happen –
+  // every parent Scaffold has resizeToAvoidBottomInset: false.
+  // --------------------------------------------------------------------------
   Widget _buildBottomInputBar(String safeUsername, String safePhotoUrl) {
-    return Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
-      child: Container(
-        padding: const EdgeInsets.only(
-          left: 16,
-          right: 8,
-          top: 12,
-          bottom: 12,
-        ),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Colors.black.withOpacity(0.9),
-              Colors.black.withOpacity(0.6),
-              Colors.transparent,
-            ],
-            stops: const [0.0, 0.6, 1.0],
-          ),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (_containsBannedWords)
-              Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.red.withOpacity(0.8),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  'Warning: Using such words will get you banned!',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+    return Builder(
+      builder: (innerContext) {
+        // Read keyboard height from the modal's own MediaQuery context.
+        final double keyboardHeight =
+            MediaQuery.of(innerContext).viewInsets.bottom;
+
+        return Padding(
+          // ── FIX: lift the input bar by exactly the keyboard height so the
+          //    text field slides above the keyboard without pushing the rest
+          //    of the screen upward.
+          padding: EdgeInsets.only(bottom: keyboardHeight),
+          child: Container(
+            padding: const EdgeInsets.only(
+              left: 16,
+              right: 8,
+              top: 12,
+              bottom: 12,
+            ),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.black.withOpacity(0.9),
+                  Colors.black.withOpacity(0.6),
+                  Colors.transparent,
+                ],
+                stops: const [0.0, 0.6, 1.0],
               ),
-            Row(
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.black.withOpacity(0.5),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.3),
-                      width: 1,
+                if (_containsBannedWords)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withOpacity(0.8),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      'Warning: Using such words will get you banned!',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundColor: Colors.transparent,
-                    backgroundImage:
-                        (safePhotoUrl.isNotEmpty && safePhotoUrl != "default")
+                Row(
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.black.withOpacity(0.5),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.3),
+                          width: 1,
+                        ),
+                      ),
+                      child: CircleAvatar(
+                        radius: 18,
+                        backgroundColor: Colors.transparent,
+                        backgroundImage: (safePhotoUrl.isNotEmpty &&
+                                safePhotoUrl != "default")
                             ? NetworkImage(safePhotoUrl)
                             : null,
-                    child: (safePhotoUrl.isEmpty || safePhotoUrl == "default")
-                        ? Icon(Icons.account_circle,
-                            size: 36, color: Colors.white.withOpacity(0.8))
-                        : null,
-                  ),
-                ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 12, right: 8),
-                    child: ValueListenableBuilder<String?>(
-                      valueListenable: replyingToUsernameNotifier,
-                      builder: (context, replyingToUsername, _) {
-                        return TextField(
-                          focusNode: _replyFocusNode,
-                          controller: commentEditingController,
-                          style: TextStyle(
-                            color: Colors.white,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black.withOpacity(0.5),
-                                blurRadius: 2,
-                                offset: const Offset(1, 1),
+                        child: (safePhotoUrl.isEmpty ||
+                                safePhotoUrl == "default")
+                            ? Icon(Icons.account_circle,
+                                size: 36, color: Colors.white.withOpacity(0.8))
+                            : null,
+                      ),
+                    ),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 12, right: 8),
+                        child: ValueListenableBuilder<String?>(
+                          valueListenable: replyingToUsernameNotifier,
+                          builder: (context, replyingToUsername, _) {
+                            return TextField(
+                              focusNode: _replyFocusNode,
+                              controller: commentEditingController,
+                              style: TextStyle(
+                                color: Colors.white,
+                                shadows: [
+                                  Shadow(
+                                    color: Colors.black.withOpacity(0.5),
+                                    blurRadius: 2,
+                                    offset: const Offset(1, 1),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
-                          enabled: true,
-                          maxLength: 250,
-                          decoration: InputDecoration(
-                            hintText: replyingToUsername != null
-                                ? 'Replying to @$replyingToUsername'
-                                : 'Comment as $safeUsername',
-                            hintStyle:
-                                TextStyle(color: Colors.white.withOpacity(0.8)),
-                            border: InputBorder.none,
-                            counterStyle:
-                                TextStyle(color: Colors.white.withOpacity(0.6)),
-                            filled: true,
-                            fillColor: Colors.black.withOpacity(0.4),
-                            contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 12),
-                            enabledBorder: OutlineInputBorder(
+                              enabled: true,
+                              maxLength: 250,
+                              decoration: InputDecoration(
+                                hintText: replyingToUsername != null
+                                    ? 'Replying to @$replyingToUsername'
+                                    : 'Comment as $safeUsername',
+                                hintStyle: TextStyle(
+                                    color: Colors.white.withOpacity(0.8)),
+                                border: InputBorder.none,
+                                counterStyle: TextStyle(
+                                    color: Colors.white.withOpacity(0.6)),
+                                filled: true,
+                                fillColor: Colors.black.withOpacity(0.4),
+                                contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 12),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(25),
+                                  borderSide: BorderSide(
+                                    color: Colors.white.withOpacity(0.3),
+                                    width: 1,
+                                  ),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(25),
+                                  borderSide: BorderSide(
+                                    color: Colors.white.withOpacity(0.6),
+                                    width: 1.5,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                    Consumer<UserProvider>(
+                      builder: (context, userProvider, _) {
+                        final user = userProvider.user;
+                        if (user == null) {
+                          return const SizedBox.shrink();
+                        }
+                        return InkWell(
+                          onTap: _containsBannedWords
+                              ? null
+                              : () => postComment(
+                                  user.uid, safeUsername, safePhotoUrl),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 10, horizontal: 16),
+                            decoration: BoxDecoration(
+                              gradient: _containsBannedWords
+                                  ? null
+                                  : LinearGradient(
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      colors: [
+                                        Colors.white.withOpacity(0.9),
+                                        Colors.white.withOpacity(0.7),
+                                      ],
+                                    ),
+                              color: _containsBannedWords
+                                  ? Colors.grey.withOpacity(0.3)
+                                  : null,
                               borderRadius: BorderRadius.circular(25),
-                              borderSide: BorderSide(
+                              border: Border.all(
                                 color: Colors.white.withOpacity(0.3),
                                 width: 1,
                               ),
+                              boxShadow: _containsBannedWords
+                                  ? null
+                                  : [
+                                      BoxShadow(
+                                        color: Colors.black.withOpacity(0.3),
+                                        blurRadius: 4,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
                             ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(25),
-                              borderSide: BorderSide(
-                                color: Colors.white.withOpacity(0.6),
-                                width: 1.5,
+                            child: Text(
+                              'Post',
+                              style: TextStyle(
+                                color: _containsBannedWords
+                                    ? Colors.white.withOpacity(0.4)
+                                    : Colors.black,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
                               ),
                             ),
                           ),
                         );
                       },
                     ),
-                  ),
-                ),
-                Consumer<UserProvider>(
-                  builder: (context, userProvider, _) {
-                    final user = userProvider.user;
-                    if (user == null) {
-                      return const SizedBox.shrink();
-                    }
-                    return InkWell(
-                      onTap: _containsBannedWords
-                          ? null
-                          : () =>
-                              postComment(user.uid, safeUsername, safePhotoUrl),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 10, horizontal: 16),
-                        decoration: BoxDecoration(
-                          gradient: _containsBannedWords
-                              ? null
-                              : LinearGradient(
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                  colors: [
-                                    Colors.white.withOpacity(0.9),
-                                    Colors.white.withOpacity(0.7),
-                                  ],
-                                ),
-                          color: _containsBannedWords
-                              ? Colors.grey.withOpacity(0.3)
-                              : null,
-                          borderRadius: BorderRadius.circular(25),
-                          border: Border.all(
-                            color: Colors.white.withOpacity(0.3),
-                            width: 1,
-                          ),
-                          boxShadow: _containsBannedWords
-                              ? null
-                              : [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.3),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                        ),
-                        child: Text(
-                          'Post',
-                          style: TextStyle(
-                            color: _containsBannedWords
-                                ? Colors.white.withOpacity(0.4)
-                                : Colors.black,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ),
-                    );
-                  },
+                  ],
                 ),
               ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -887,6 +906,10 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
     }
 
     return Scaffold(
+      // resizeToAvoidBottomInset: false here means this modal Scaffold does NOT
+      // shrink its body for the keyboard. Instead, _buildBottomInputBar reads
+      // viewInsets.bottom directly via Builder and pads itself. This gives
+      // precise, localised keyboard avoidance without disturbing anything above.
       resizeToAvoidBottomInset: false,
       backgroundColor: Colors.transparent,
       body: GestureDetector(
@@ -895,7 +918,7 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
           FocusScope.of(context).unfocus();
           Navigator.of(context).pop();
         },
-        child: Container(
+        child: SizedBox(
           height: MediaQuery.of(context).size.height,
           child: Stack(
             children: [
@@ -916,26 +939,38 @@ class CommentsBottomSheetState extends State<CommentsBottomSheet> {
                 ),
               ),
 
-              // Comments Panel - Bottom area with transparency
+              // Comments panel
+              //
+              // ── FIX: replaced the hardcoded
+              //      height: MediaQuery.of(context).size.height * 0.7
+              //    with a maxHeight constraint. The fixed height caused the
+              //    panel to be clipped on devices with tall keyboards, and
+              //    combined with a resizing Scaffold it produced the upward
+              //    shift. Using constraints.maxHeight lets the panel breathe
+              //    while still capping it to 75 % of screen height.
               Positioned(
                 bottom: 0,
                 left: 0,
                 right: 0,
-                child: Container(
-                  height: MediaQuery.of(context).size.height * 0.7,
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.transparent,
-                        Colors.black12,
-                        Colors.black26,
-                      ],
-                      stops: [0.0, 0.2, 1.0],
-                    ),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(context).size.height * 0.75,
                   ),
-                  child: _buildCommentsContent(user),
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.transparent,
+                          Colors.black12,
+                          Colors.black26,
+                        ],
+                        stops: [0.0, 0.2, 1.0],
+                      ),
+                    ),
+                    child: _buildCommentsContent(user),
+                  ),
                 ),
               ),
             ],
