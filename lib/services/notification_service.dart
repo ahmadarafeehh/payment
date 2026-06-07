@@ -24,6 +24,8 @@ class NotificationService {
   }
 
   // ─── COLD START ──────────────────────────────────────────────────────────
+  /// Call this from main() BEFORE runApp() to capture taps on notifications
+  /// that launched the app from a terminated state.
   static Future<void> handleColdStart() async {
     try {
       final initialMessage = await firebase_messaging.FirebaseMessaging.instance
@@ -42,6 +44,28 @@ class NotificationService {
         additionalData: {'stack_trace': st.toString()},
       );
     }
+  }
+
+  // ─── WARM START (background → foreground) ────────────────────────────────
+  /// Call this from main() BEFORE runApp() so the listener is registered
+  /// immediately — before the app is fully built. This prevents the
+  /// onMessageOpenedApp event from firing into the void before init() runs.
+  ///
+  /// Previously this was registered inside init(), which caused a race
+  /// condition: iOS resumes the app and fires the event before init() has
+  /// finished registering the listener, so the tap was silently lost and
+  /// the user landed on the default feed screen instead of the target post.
+  static void registerWarmStartListener() {
+    firebase_messaging.FirebaseMessaging.onMessageOpenedApp
+        .listen((firebase_messaging.RemoteMessage message) async {
+      final data = Map<String, dynamic>.from(message.data);
+
+      // Mirror the cold-start pattern: store pending navigation immediately
+      // and prefetch data in the background. executePendingNavigation() will
+      // be called later, once the navigator is mounted and ready.
+      NotificationNavigationHandler.storePendingNavigation(data);
+      await NotificationNavigationHandler.prefetchNavigationData(data);
+    });
   }
 
   // ─── INIT ────────────────────────────────────────────────────────────────
@@ -77,8 +101,10 @@ class NotificationService {
       firebase_messaging.FirebaseMessaging.onMessage
           .listen(_handleForegroundMessage);
 
-      firebase_messaging.FirebaseMessaging.onMessageOpenedApp
-          .listen(_handleNotificationTap);
+      // ✅ REMOVED: onMessageOpenedApp listener is no longer registered here.
+      // It is now registered in main() via registerWarmStartListener() so it
+      // is guaranteed to be attached before the app renders — eliminating the
+      // race condition where the tap event fired before this line was reached.
 
       await _handleTokenRetrieval();
 
@@ -118,14 +144,6 @@ class NotificationService {
         additionalData: {'stack_trace': st.toString()},
       );
     }
-  }
-
-  // ─── NOTIFICATION TAP (background → foreground) ──────────────────────────
-  Future<void> _handleNotificationTap(
-      firebase_messaging.RemoteMessage message) async {
-    await NotificationNavigationHandler.handleNotificationData(
-      Map<String, dynamic>.from(message.data),
-    );
   }
 
   // ─── FOREGROUND MESSAGE ──────────────────────────────────────────────────
