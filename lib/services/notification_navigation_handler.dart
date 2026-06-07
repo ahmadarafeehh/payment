@@ -28,7 +28,6 @@ class _PreFetchedPostData {
 // NotificationNavigationHandler
 // ---------------------------------------------------------------------------
 class NotificationNavigationHandler {
-  // Notification types that navigate to a specific post
   static const _postLinkedTypes = {
     'post_rating',
     'comment',
@@ -37,7 +36,6 @@ class NotificationNavigationHandler {
     'reply_like',
   };
 
-  // Notification types that navigate to a user profile
   static const _profileLinkedTypes = {
     'follow',
   };
@@ -49,27 +47,21 @@ class NotificationNavigationHandler {
   static Map<String, dynamic>? _pendingData;
   static _PreFetchedPostData? _prefetchedPostData;
 
-  // ─────────── NEW: Wait for Supabase session (fixes cold‑start RLS) ───────
-  /// Waits up to 5 s for a valid Supabase session before giving up.
+  // ─────────── Wait for Supabase session (fixes cold‑start RLS) ───────────
   static Future<void> _waitForSupabaseSession() async {
     final supabase = Supabase.instance.client;
     if (supabase.auth.currentSession != null) return;
 
-    for (int i = 0; i < 50; i++) {          // 50 × 100 ms = 5 s max
+    for (int i = 0; i < 50; i++) {
       await Future.delayed(const Duration(milliseconds: 100));
       if (supabase.auth.currentSession != null) return;
     }
   }
-  // ─────────────────────────────────────────────────────────────────────────
 
-  /// Called from NotificationService.handleColdStart() — after Supabase is
-  /// ready but BEFORE _appInitState switches out of the skeleton screen.
+  // ── Cold-start pre-fetch ────────────────────────────────────────────────
   static Future<void> prefetchNavigationData(Map<String, dynamic> data) async {
     final type = data['type']?.toString();
 
-    // Profile navigation (follow): no Supabase pre-fetch needed —
-    // OtherUserProfileScreen loads its own data. The overlay is already
-    // active from storePendingNavigation(), so nothing else to do here.
     if (type != null && _profileLinkedTypes.contains(type)) return;
 
     if (type == null || !_postLinkedTypes.contains(type)) return;
@@ -77,7 +69,6 @@ class NotificationNavigationHandler {
     final postId = _extractPostId(data);
     if (postId == null || postId.isEmpty) return;
 
-    // ✅ NEW: wait for session before any Supabase query
     await _waitForSupabaseSession();
 
     try {
@@ -138,15 +129,11 @@ class NotificationNavigationHandler {
     if (data == null) return;
     _pendingData = null;
 
-    // ✅ NEW: wait for session before handling notification data
     await _waitForSupabaseSession();
-
     await handleNotificationData(data);
   }
 
-  // ---------------------------------------------------------------------------
-  // Main entry point
-  // ---------------------------------------------------------------------------
+  // ── Main entry point ────────────────────────────────────────────────────
   static Future<void> handleNotificationData(Map<String, dynamic> data) async {
     final type = data['type']?.toString();
 
@@ -155,7 +142,6 @@ class NotificationNavigationHandler {
         type != null && _profileLinkedTypes.contains(type);
     final bool willNavigate = isPostLinked || isProfileLinked;
 
-    // Activate opaque overlay synchronously — before any await.
     if (willNavigate) {
       isNavigatingToPost.value = true;
     }
@@ -197,7 +183,6 @@ class NotificationNavigationHandler {
         }
         await _navigateToPost(postId, type!, data);
       } else {
-        // isProfileLinked (follow)
         final followerUid = _extractFollowerUid(data);
         if (followerUid == null || followerUid.isEmpty) {
           await _log(
@@ -220,11 +205,8 @@ class NotificationNavigationHandler {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+  // ── Helpers ─────────────────────────────────────────────────────────────
 
-  /// Extracts postId — handles top-level, nested map, and JSON-string customData.
   static String? _extractPostId(Map<String, dynamic> data) {
     String? id = data['postId']?.toString() ?? data['post_id']?.toString();
     if (id != null && id.isNotEmpty) return id;
@@ -241,11 +223,7 @@ class NotificationNavigationHandler {
     return id;
   }
 
-  /// Extracts the follower's UID from a follow notification payload.
-  /// Handles top-level, nested map, and JSON-string customData.
   static String? _extractFollowerUid(Map<String, dynamic> data) {
-    // Try common top-level key names first
-    // ADDED 'followerId' to support your Cloud Function's customData key
     String? uid = data['followerUid']?.toString() ??
         data['follower_uid']?.toString() ??
         data['followerId']?.toString() ??
@@ -273,15 +251,12 @@ class NotificationNavigationHandler {
     return uid;
   }
 
-  // ---------------------------------------------------------------------------
-  // Navigate to post (existing logic + session wait at start)
-  // ---------------------------------------------------------------------------
+  // ── Post navigation ─────────────────────────────────────────────────────
   static Future<void> _navigateToPost(
     String postId,
     String notificationType,
     Map<String, dynamic> rawData,
   ) async {
-    // ✅ NEW: ensure session is restored before any Supabase query
     await _waitForSupabaseSession();
 
     NavigatorState? navState;
@@ -452,9 +427,7 @@ class NotificationNavigationHandler {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Navigate to profile (follow notification)
-  // ---------------------------------------------------------------------------
+  // ── Profile navigation ──────────────────────────────────────────────────
   static Future<void> _navigateToProfile(
     String followerUid,
     String notificationType,
@@ -534,5 +507,26 @@ class NotificationNavigationHandler {
         'additional_data': additionalData,
       });
     } catch (_) {}
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // NEW: Log notification send events
+  // ═════════════════════════════════════════════════════════════════════════
+  /// Call this whenever your app queues a notification (i.e. after writing
+  /// to the "Push Not" Firestore collection). It inserts a row with
+  /// event_type = 'notification_sent' into the same analytics table.
+  static Future<void> logNotificationSent({
+    required String type,
+    required String targetUserId,
+    Map<String, dynamic>? customData,
+  }) async {
+    await _log(
+      eventType: 'notification_sent',
+      notificationType: type,
+      rawData: {
+        'targetUserId': targetUserId,
+        'customData': customData,
+      },
+    );
   }
 }
