@@ -132,6 +132,14 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
         '';
 
     return Scaffold(
+      // ── FIX: Prevent the root Scaffold from shrinking its body when the
+      //    keyboard opens. Without this, every modal bottom sheet with a text
+      //    field (e.g. CommentsBottomSheet) causes the entire screen — feed,
+      //    nav bar, everything — to shift upward. Each descendant Scaffold
+      //    (FeedScreen, PostCard, CommentsBottomSheet) already sets this to
+      //    false and manually pads its own input bar via viewInsets.bottom, so
+      //    the keyboard avoidance is handled exactly where it is needed.
+      resizeToAvoidBottomInset: false,
       body: Stack(
         children: [
           SafeArea(
@@ -324,7 +332,7 @@ class _UltraCompactNotificationBadgeIcon extends StatefulWidget {
 class _UltraCompactNotificationBadgeIconState
     extends State<_UltraCompactNotificationBadgeIcon>
     with WidgetsBindingObserver {
-  int _totalUnreadCount = 0;   // in‑app badge shows only notifications
+  int _totalUnreadCount = 0; // in‑app badge shows only notifications
   bool _hasLoaded = false;
 
   StreamSubscription<List<Map<String, dynamic>>>? _notificationStream;
