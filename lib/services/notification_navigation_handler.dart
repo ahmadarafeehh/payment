@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/screens/Profile_page/other_user_profile.dart';
+import 'package:Ratedly/screens/messaging_screen.dart';
 
 final GlobalKey<NavigatorState> notificationNavigatorKey =
     GlobalKey<NavigatorState>();
@@ -25,6 +26,23 @@ class _PreFetchedPostData {
 }
 
 // ---------------------------------------------------------------------------
+// Pre-fetched data holder (message navigation)
+// ---------------------------------------------------------------------------
+class _PreFetchedMessageData {
+  final String senderUid;
+  final String senderUsername;
+  final String senderPhotoUrl;
+  final String chatId;
+
+  _PreFetchedMessageData({
+    required this.senderUid,
+    required this.senderUsername,
+    required this.senderPhotoUrl,
+    required this.chatId,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // NotificationNavigationHandler
 // ---------------------------------------------------------------------------
 class NotificationNavigationHandler {
@@ -40,12 +58,22 @@ class NotificationNavigationHandler {
     'follow',
   };
 
+  // 'message'        → navigate to MessagingScreen with the sender.
+  // 'streak_update'  → also has senderId in customData, same flow.
+  // 'streak_expiring'→ uses otherUserId in customData (extracted by _extractSenderId).
+  static const _messageLinkedTypes = {
+    'message',
+    'streak_update',
+    'streak_expiring',
+  };
+
   // ── Overlay control ──────────────────────────────────────────────────────
   static final isNavigatingToPost = ValueNotifier<bool>(false);
 
-  // ── Cold-start support ───────────────────────────────────────────────────
+  // ── Cold/warm-start support ──────────────────────────────────────────────
   static Map<String, dynamic>? _pendingData;
   static _PreFetchedPostData? _prefetchedPostData;
+  static _PreFetchedMessageData? _prefetchedMessageData;
 
   // ── Wait for Supabase session ────────────────────────────────────────────
   static Future<void> _waitForSupabaseSession() async {
@@ -62,7 +90,16 @@ class NotificationNavigationHandler {
   static Future<void> prefetchNavigationData(Map<String, dynamic> data) async {
     final type = data['type']?.toString();
 
+    // Profile notifications need no prefetch.
     if (type != null && _profileLinkedTypes.contains(type)) return;
+
+    // Message notifications: prefetch sender's user data.
+    if (type != null && _messageLinkedTypes.contains(type)) {
+      await _prefetchMessageNavigationData(data);
+      return;
+    }
+
+    // Post notifications: existing logic below.
     if (type == null || !_postLinkedTypes.contains(type)) return;
 
     final postId = _extractPostId(data);
@@ -70,7 +107,6 @@ class NotificationNavigationHandler {
 
     await _waitForSupabaseSession();
 
-    // Log that prefetch has started so we know cold-start data loading began.
     await _log(
       eventType: 'prefetch_started',
       notificationType: type,
@@ -163,7 +199,6 @@ class NotificationNavigationHandler {
         },
       );
     } catch (e, st) {
-      // Previously catch (_) swallowed errors silently — now we capture them.
       await _log(
         eventType: 'prefetch_error',
         notificationType: type,
@@ -171,6 +206,70 @@ class NotificationNavigationHandler {
         rawData: data,
         errorMessage: e.toString(),
         stackTrace: st.toString(),
+      );
+    }
+  }
+
+  // ── Message prefetch ─────────────────────────────────────────────────────
+  static Future<void> _prefetchMessageNavigationData(
+      Map<String, dynamic> data) async {
+    final type = data['type']?.toString();
+    final senderUid = _extractSenderId(data);
+    if (senderUid == null || senderUid.isEmpty) return;
+
+    await _waitForSupabaseSession();
+
+    await _log(
+      eventType: 'prefetch_started',
+      notificationType: type,
+      rawData: data,
+      additionalData: {'sender_uid': senderUid},
+    );
+
+    try {
+      final supabase = Supabase.instance.client;
+      final userRow = await supabase
+          .from('users')
+          .select('uid, username, photoUrl')
+          .eq('uid', senderUid)
+          .maybeSingle();
+
+      if (userRow == null) {
+        await _log(
+          eventType: 'prefetch_sender_not_found',
+          notificationType: type,
+          rawData: data,
+          additionalData: {'sender_uid': senderUid},
+        );
+        return;
+      }
+
+      final chatId = _extractChatId(data) ?? '';
+
+      _prefetchedMessageData = _PreFetchedMessageData(
+        senderUid: senderUid,
+        senderUsername: userRow['username']?.toString() ?? 'Unknown',
+        senderPhotoUrl: userRow['photoUrl']?.toString() ?? '',
+        chatId: chatId,
+      );
+
+      await _log(
+        eventType: 'prefetch_success',
+        notificationType: type,
+        rawData: data,
+        additionalData: {
+          'sender_uid': senderUid,
+          'chat_id': chatId,
+        },
+      );
+    } catch (e, st) {
+      await _log(
+        eventType: 'prefetch_error',
+        notificationType: type,
+        rawData: data,
+        errorMessage: e.toString(),
+        stackTrace: st.toString(),
+        additionalData: {'sender_uid': senderUid},
       );
     }
   }
@@ -209,7 +308,10 @@ class NotificationNavigationHandler {
     final bool isPostLinked = type != null && _postLinkedTypes.contains(type);
     final bool isProfileLinked =
         type != null && _profileLinkedTypes.contains(type);
-    final bool willNavigate = isPostLinked || isProfileLinked;
+    final bool isMessageLinked =
+        type != null && _messageLinkedTypes.contains(type);
+    final bool willNavigate =
+        isPostLinked || isProfileLinked || isMessageLinked;
 
     if (willNavigate) {
       isNavigatingToPost.value = true;
@@ -251,6 +353,22 @@ class NotificationNavigationHandler {
           return;
         }
         await _navigateToPost(postId, type!, data);
+      } else if (isMessageLinked) {
+        final senderUid = _extractSenderId(data);
+        if (senderUid == null || senderUid.isEmpty) {
+          await _log(
+            eventType: 'sender_uid_missing',
+            notificationType: type,
+            rawData: data,
+            additionalData: {
+              'customData_raw': data['customData'],
+              'top_level_keys': data.keys.toList(),
+            },
+          );
+          isNavigatingToPost.value = false;
+          return;
+        }
+        await _navigateToMessaging(senderUid, type!, data);
       } else {
         final followerUid = _extractFollowerUid(data);
         if (followerUid == null || followerUid.isEmpty) {
@@ -271,6 +389,7 @@ class NotificationNavigationHandler {
     } finally {
       isNavigatingToPost.value = false;
       _prefetchedPostData = null;
+      _prefetchedMessageData = null;
     }
   }
 
@@ -287,6 +406,45 @@ class NotificationNavigationHandler {
       try {
         final parsed = jsonDecode(raw) as Map<String, dynamic>;
         id = parsed['postId']?.toString() ?? parsed['post_id']?.toString();
+      } catch (_) {}
+    }
+    return id;
+  }
+
+  // Extracts the sender UID for message/streak notifications.
+  // - 'message' and 'streak_update' payloads include customData.senderId.
+  // - 'streak_expiring' payloads use customData.otherUserId instead.
+  static String? _extractSenderId(Map<String, dynamic> data) {
+    String? id = data['senderId']?.toString() ?? data['sender_id']?.toString();
+    if (id != null && id.isNotEmpty) return id;
+
+    final raw = data['customData'];
+    if (raw is Map) {
+      id = raw['senderId']?.toString() ??
+          raw['sender_id']?.toString() ??
+          raw['otherUserId']?.toString(); // streak_expiring fallback
+    } else if (raw is String && raw.isNotEmpty) {
+      try {
+        final parsed = jsonDecode(raw) as Map<String, dynamic>;
+        id = parsed['senderId']?.toString() ??
+            parsed['sender_id']?.toString() ??
+            parsed['otherUserId']?.toString();
+      } catch (_) {}
+    }
+    return id;
+  }
+
+  static String? _extractChatId(Map<String, dynamic> data) {
+    String? id = data['chatId']?.toString() ?? data['chat_id']?.toString();
+    if (id != null && id.isNotEmpty) return id;
+
+    final raw = data['customData'];
+    if (raw is Map) {
+      id = raw['chatId']?.toString() ?? raw['chat_id']?.toString();
+    } else if (raw is String && raw.isNotEmpty) {
+      try {
+        final parsed = jsonDecode(raw) as Map<String, dynamic>;
+        id = parsed['chatId']?.toString() ?? parsed['chat_id']?.toString();
       } catch (_) {}
     }
     return id;
@@ -496,14 +654,122 @@ class NotificationNavigationHandler {
     }
   }
 
+  // ── Messaging navigation ────────────────────────────────────────────────
+  static Future<void> _navigateToMessaging(
+    String senderUid,
+    String notificationType,
+    Map<String, dynamic> rawData,
+  ) async {
+    await _waitForSupabaseSession();
+
+    NavigatorState? navState;
+    int attempts = 0;
+    for (; attempts < 5; attempts++) {
+      navState = notificationNavigatorKey.currentState;
+      if (navState != null) break;
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
+    if (navState == null) {
+      await _log(
+        eventType: 'navigator_not_ready',
+        notificationType: notificationType,
+        navigatorReady: false,
+        navigatorAttempts: attempts,
+        rawData: rawData,
+        additionalData: {'sender_uid': senderUid},
+      );
+      return;
+    }
+
+    try {
+      String senderUsername;
+      String senderPhotoUrl;
+
+      // Use prefetched data when available (cold/warm start path).
+      final cached = _prefetchedMessageData;
+      if (cached != null && cached.senderUid == senderUid) {
+        senderUsername = cached.senderUsername;
+        senderPhotoUrl = cached.senderPhotoUrl;
+      } else {
+        // Foreground tap path: fetch sender data on demand.
+        final supabase = Supabase.instance.client;
+        final userRow = await supabase
+            .from('users')
+            .select('uid, username, photoUrl')
+            .eq('uid', senderUid)
+            .maybeSingle();
+
+        if (userRow == null) {
+          await _log(
+            eventType: 'message_sender_not_found',
+            notificationType: notificationType,
+            navigatorReady: true,
+            navigatorAttempts: attempts,
+            rawData: rawData,
+            additionalData: {'sender_uid': senderUid},
+          );
+          return;
+        }
+
+        senderUsername = userRow['username']?.toString() ?? 'Unknown';
+        senderPhotoUrl = userRow['photoUrl']?.toString() ?? '';
+      }
+
+      final currentNavState = notificationNavigatorKey.currentState;
+      if (currentNavState == null) {
+        await _log(
+          eventType: 'navigator_lost_after_fetch',
+          notificationType: notificationType,
+          navigatorReady: false,
+          navigatorAttempts: attempts,
+          rawData: rawData,
+          additionalData: {'sender_uid': senderUid},
+        );
+        return;
+      }
+
+      currentNavState.push(
+        MaterialPageRoute(
+          builder: (_) => MessagingScreen(
+            recipientUid: senderUid,
+            recipientUsername: senderUsername,
+            recipientPhotoUrl: senderPhotoUrl,
+          ),
+        ),
+      );
+
+      await _log(
+        eventType: 'navigation_success',
+        notificationType: notificationType,
+        navigatorReady: true,
+        navigatorAttempts: attempts,
+        rawData: rawData,
+        additionalData: {
+          'sender_uid': senderUid,
+          'used_prefetch': cached != null,
+        },
+      );
+    } catch (e, st) {
+      await _log(
+        eventType: 'error',
+        notificationType: notificationType,
+        navigatorReady: navState != null,
+        navigatorAttempts: attempts,
+        errorMessage: e.toString(),
+        stackTrace: st.toString(),
+        rawData: rawData,
+        additionalData: {'sender_uid': senderUid},
+      );
+    }
+  }
+
   // ── Profile navigation ──────────────────────────────────────────────────
   static Future<void> _navigateToProfile(
     String followerUid,
     String notificationType,
     Map<String, dynamic> rawData,
   ) async {
-    // FIX: was missing _waitForSupabaseSession — caused all follow-notification
-    // logs to fail silently under RLS if the session hadn't refreshed yet.
     await _waitForSupabaseSession();
 
     NavigatorState? navState;
@@ -556,8 +822,6 @@ class NotificationNavigationHandler {
   }
 
   // ── Public log wrapper ────────────────────────────────────────────────────
-  /// Allows external classes (e.g. NotificationService) to write to the same
-  /// log table without exposing the full private _log signature.
   static Future<void> logEvent({
     required String eventType,
     String? notificationType,
@@ -586,9 +850,6 @@ class NotificationNavigationHandler {
     Map<String, dynamic>? additionalData,
   }) async {
     try {
-      // FIX: wait for a valid session before writing. Previously this was
-      // called at tap_received time — before the session was ready — and the
-      // RLS rejection was silently swallowed, dropping the entire log row.
       await _waitForSupabaseSession();
 
       await Supabase.instance.client.from('notification_tap_logs').insert({
@@ -603,8 +864,6 @@ class NotificationNavigationHandler {
         'additional_data': additionalData,
       });
     } catch (e, st) {
-      // FIX: previously catch (_) discarded all failures invisibly.
-      // debugPrint surfaces them in the console without crashing the app.
       debugPrint(
           '[NotifLog] ⚠️ Failed to write log (event=$eventType): $e\n$st');
     }
