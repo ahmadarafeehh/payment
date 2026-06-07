@@ -2,10 +2,11 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io';               // for Platform
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;   // ← FIX 1
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -26,11 +27,7 @@ import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 import 'package:Ratedly/services/iap_service.dart';
 import 'package:Ratedly/services/analytics_service.dart';
-
-// --- NEW: Import the survey widget ---
 import 'package:Ratedly/widgets/referral_survey.dart';
-
-// --- NEW: Import the notification navigation handler ---
 import 'package:Ratedly/services/notification_navigation_handler.dart';
 
 // -----------------------------------------------------------------------------
@@ -53,6 +50,28 @@ Future<void> _logFeedError({
     // Fail silently
   }
 }
+
+// ─── AD ERROR LOGGER – logs to ads_errors table ─────────────────────────────
+Future<void> _logAdError({
+  required String errorType,
+  String? userId,
+  String? errorMessage,
+  Map<String, dynamic>? extraInfo,
+}) async {
+  try {
+    await Supabase.instance.client.from('ads_errors').insert({
+      'user_id': userId,
+      'platform': kIsWeb ? 'web' : (Platform.isAndroid ? 'android' : 'ios'),
+      'error_type': errorType,
+      'error_message': errorMessage,
+      'extra_info': extraInfo,
+    });
+  } catch (_) {
+    // Fail silently – logging must never crash the app
+  }
+}
+
+// ─── Color helpers unchanged ─────────────────────────────────────────────────
 
 class _ColorSet {
   final Color textColor;
@@ -97,8 +116,7 @@ class _LightColors extends _ColorSet {
 }
 
 class FeedScreen extends StatefulWidget {
-  final bool
-      isTabActive; // NEW – parent passes false when another tab is selected
+  final bool isTabActive;
   const FeedScreen({Key? key, this.isTabActive = true}) : super(key: key);
 
   @override
@@ -185,11 +203,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   String? _currentScreenName;
 
-  // --- NEW: Survey flag ---
   bool _surveyShown = false;
 
   // ---------------------------------------------------------------------------
-  // HELPERS
+  // HELPERS (unchanged)
   // ---------------------------------------------------------------------------
 
   _ColorSet _getColors(ThemeProvider themeProvider) {
@@ -307,7 +324,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // EDIT METADATA ENRICHMENT
+  // EDIT METADATA ENRICHMENT (unchanged)
   // ===========================================================================
 
   Future<List<Map<String, dynamic>>> _enrichPostsWithEditMetadata(
@@ -349,7 +366,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // MEDIA PRELOADING
+  // MEDIA PRELOADING (unchanged)
   // ===========================================================================
 
   Future<void> _preloadAllMediaForPost(Map<String, dynamic> post) async {
@@ -569,7 +586,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _loadedImageProviders[imageUrl];
 
   // ===========================================================================
-  // VIDEO CONTROLLER
+  // VIDEO CONTROLLER (unchanged)
   // ===========================================================================
 
   Future<void> _initializeFeedVideoController(
@@ -636,7 +653,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _feedVideoControllersInitialized[videoUrl] == true;
 
   // ===========================================================================
-  // VISIBLE / PRELOAD WINDOW
+  // VISIBLE / PRELOAD WINDOW (unchanged)
   // ===========================================================================
 
   void _updateVisiblePosts(int centerIndex) {
@@ -734,7 +751,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // VIEW RECORDING
+  // VIEW RECORDING (unchanged)
   // ===========================================================================
 
   Future<void> _scheduleViewRecording(String postId) async {
@@ -770,7 +787,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _postViewCount = 0;
       }
 
-      // --- NEW: After recording views, check if we should show the survey ---
       if (viewsToRecord.isNotEmpty) {
         unawaited(_checkAndShowSurvey());
       }
@@ -782,14 +798,13 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // SURVEY CHECK
+  // SURVEY CHECK (unchanged)
   // ===========================================================================
   Future<void> _checkAndShowSurvey() async {
     if (_surveyShown) return;
     final userId = currentUserId;
     if (userId == null || userId.isEmpty) return;
 
-    // 1. Check if the user already responded
     try {
       final resp = await _supabase
           .from('user_referral_survey')
@@ -798,14 +813,12 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           .maybeSingle();
       if (resp != null) {
         _surveyShown = true;
-        return; // already answered
+        return;
       }
     } catch (_) {
-      // fail silently – we’ll try next time
       return;
     }
 
-    // 2. Count distinct viewed posts
     try {
       final views = await _supabase
           .from('user_post_views')
@@ -815,7 +828,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
       if (distinctCount == 3 && mounted) {
         _surveyShown = true;
-        // Pause any playing video
         VideoManager.pauseAllVideos();
         setState(() => _currentPlayingPostId = null);
 
@@ -832,19 +844,17 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
             child: ReferralSurvey(
               uid: userId,
               onComplete: () {
-                Navigator.of(context).pop(); // close the sheet
+                Navigator.of(context).pop();
               },
             ),
           ),
         );
       }
-    } catch (_) {
-      // fail silently
-    }
+    } catch (_) {}
   }
 
   // ===========================================================================
-  // LIFECYCLE
+  // LIFECYCLE (unchanged except ad logging)
   // ===========================================================================
 
   @override
@@ -859,22 +869,16 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     _tryLoadCacheWithPersistedUserId();
     _loadInterstitialAd();
 
-    // ✅ screen tracking: initial tab is For You (index 1)
     _currentScreenName = 'for you';
     AnalyticsService.screenEnter('for you');
 
-    // NEW: immediately pause and clear visibility when notification navigation starts
     NotificationNavigationHandler.isNavigatingToPost
         .addListener(_onNotificationNavigation);
   }
 
-  // NEW: Notification navigation handler
   void _onNotificationNavigation() {
     if (!mounted) return;
     if (NotificationNavigationHandler.isNavigatingToPost.value) {
-      // Synchronously stop any playing audio and mark all posts as invisible.
-      // This causes the next PostCard rebuild to receive isVisible:false, so
-      // any async video-init completions will call _pauseVideo() instead of _playVideo().
       VideoManager.pauseAllVideos();
       setState(() {
         _postVisibility.updateAll((key, value) => false);
@@ -905,7 +909,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _unreadCountStream = _createUnreadCountStream();
         _loadInitialData();
       } else if (currentUserId != resolvedId) {
-        // User changed - we need to exit current screen (if any) before reload
         if (_currentScreenName != null &&
             currentUserId != null &&
             currentUserId!.isNotEmpty) {
@@ -925,7 +928,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _immediateCachedPostIds = {};
         _unreadCountStream = _createUnreadCountStream();
         _loadInitialData();
-        // After reload, the screen is For You again
         _currentScreenName = 'for you';
         AnalyticsService.screenEnter('for you');
       }
@@ -934,20 +936,17 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
-  // NEW: Handle tab-switch via isTabActive
   @override
   void didUpdateWidget(FeedScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
 
     if (oldWidget.isTabActive && !widget.isTabActive) {
-      // Feed tab became inactive — stop everything immediately.
       VideoManager.pauseAllVideos();
       setState(() {
         _postVisibility.updateAll((key, value) => false);
         _currentPlayingPostId = null;
       });
     } else if (!oldWidget.isTabActive && widget.isTabActive) {
-      // Feed tab became active again — restore the current page's playback state.
       final page =
           _selectedTab == 1 ? _currentForYouPage : _currentFollowingPage;
       final posts = _selectedTab == 1 ? _forYouPosts : _followingPosts;
@@ -958,7 +957,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // STARTUP CACHE LOADING
+  // STARTUP CACHE LOADING (unchanged)
   // ===========================================================================
 
   Future<void> _tryLoadCacheWithPersistedUserId() async {
@@ -1234,57 +1233,152 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // MODIFIED: premium check added to prevent loading ads for premium users
+  // INTERSTITIAL AD – FULLY LOGGED (with corrected API)
   // ===========================================================================
+
   void _loadInterstitialAd() async {
     final isPremium = await IAPService().isPurchased();
-    if (isPremium) return;
+
+    // ✅ Log premium status
+    _logAdError(
+      errorType: 'interstitial_pre_check',
+      userId: currentUserId,
+      errorMessage: 'Premium status: $isPremium',
+      extraInfo: {
+        'ad_unit_id': AdHelper.feedInterstitialAdUnitId,
+        'timestamp': DateTime.now().toIso8601String(),
+      },
+    );
+
+    if (isPremium) {
+      _logAdError(
+        errorType: 'interstitial_skipped_premium',
+        userId: currentUserId,
+        errorMessage: 'User is premium, interstitial not loaded.',
+      );
+      return;
+    }
+
+    // Log load attempt
+    _logAdError(
+      errorType: 'interstitial_load_attempt',
+      userId: currentUserId,
+      errorMessage:
+          'Loading interstitial for ${AdHelper.feedInterstitialAdUnitId}',
+      extraInfo: {
+        'ad_unit_id': AdHelper.feedInterstitialAdUnitId,
+        'timestamp': DateTime.now().toIso8601String(),
+      },
+    );
 
     InterstitialAd.load(
       adUnitId: AdHelper.feedInterstitialAdUnitId,
       request: const AdRequest(),
       adLoadCallback: InterstitialAdLoadCallback(
         onAdLoaded: (ad) {
+          // ✅ Log success
+          _logAdError(
+            errorType: 'interstitial_loaded',
+            userId: currentUserId,
+            errorMessage: 'Interstitial loaded successfully.',
+            extraInfo: {
+              'ad_unit_id': ad.adUnitId,                // ← FIX 2: use adUnitId
+              'timestamp': DateTime.now().toIso8601String(),
+            },
+          );
+
           _interstitialAd = ad;
           _interstitialAd!.fullScreenContentCallback =
               FullScreenContentCallback(
             onAdDismissedFullScreenContent: (ad) {
+              _logAdError(
+                errorType: 'interstitial_dismissed',
+                userId: currentUserId,
+                errorMessage: 'User dismissed interstitial.',
+              );
               ad.dispose();
               _loadInterstitialAd();
             },
-            onAdFailedToShowFullScreenContent: (ad, _) {
+            onAdFailedToShowFullScreenContent: (ad, error) {
+              // ✅ Log show failure (no responseInfo to avoid API mismatch)
+              _logAdError(
+                errorType: 'interstitial_show_failed',
+                userId: currentUserId,
+                errorMessage:
+                    'Code: ${error.code}, Message: ${error.message}, Domain: ${error.domain}',
+                extraInfo: {
+                  'ad_unit_id': AdHelper.feedInterstitialAdUnitId,
+                  'timestamp': DateTime.now().toIso8601String(),
+                },
+              );
               ad.dispose();
               _loadInterstitialAd();
             },
           );
         },
-        onAdFailedToLoad: (_) {
+        onAdFailedToLoad: (error) {
+          // ✅ Log load failure
+          _logAdError(
+            errorType: 'interstitial_load_failed',
+            userId: currentUserId,
+            errorMessage:
+                'Code: ${error.code}, Message: ${error.message}, Domain: ${error.domain}',
+            extraInfo: {
+              'ad_unit_id': AdHelper.feedInterstitialAdUnitId,
+              'timestamp': DateTime.now().toIso8601String(),
+            },
+          );
           Future.delayed(const Duration(seconds: 30), _loadInterstitialAd);
         },
       ),
     );
   }
 
-  // ===========================================================================
-  // MODIFIED: premium check added to prevent showing ads for premium users
-  // ===========================================================================
   void _showInterstitialAd() async {
     final isPremium = await IAPService().isPurchased();
     if (isPremium) return;
+
+    // Log show attempt
+    _logAdError(
+      errorType: 'interstitial_show_attempt',
+      userId: currentUserId,
+      errorMessage: _interstitialAd != null
+          ? 'Ad ready, attempting to show.'
+          : 'Ad not loaded yet (null).',
+      extraInfo: {
+        'has_ad': _interstitialAd != null,
+        'timestamp': DateTime.now().toIso8601String(),
+      },
+    );
 
     final now = DateTime.now();
     if (_lastInterstitialAdTime != null &&
         now.difference(_lastInterstitialAdTime!) <
             const Duration(minutes: 10)) {
+      _logAdError(
+        errorType: 'interstitial_show_rate_limited',
+        userId: currentUserId,
+        errorMessage: 'Skipped: less than 10 min since last show.',
+      );
       return;
     }
+
     if (_interstitialAd != null) {
       _interstitialAd!.show();
       _lastInterstitialAdTime = now;
     } else {
+      _logAdError(
+        errorType: 'interstitial_show_no_ad',
+        userId: currentUserId,
+        errorMessage: 'No interstitial loaded, reloading...',
+      );
       _loadInterstitialAd();
     }
   }
+
+  // ===========================================================================
+  // REMAINING METHODS (unchanged)
+  // ===========================================================================
 
   Future<void> _loadBlockedUsers() async {
     final userId = currentUserId;
@@ -1353,10 +1447,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _followingIds = [];
     }
   }
-
-  // ===========================================================================
-  // INITIAL DATA LOAD
-  // ===========================================================================
 
   Future<void> _loadInitialData() async {
     if (!mounted) return;
@@ -1439,10 +1529,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     return [];
   }
 
-  // ===========================================================================
-  // POST SEEN TRACKING + AUTOMATIC CACHE REFRESH
-  // ===========================================================================
-
   void _onPostSeen(String postId) {
     final userId = currentUserId;
     if (userId == null || userId.isEmpty) return;
@@ -1478,10 +1564,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     unawaited(FeedCacheService.cacheCurrentPostsNow(candidates, userId));
   }
 
-  // ===========================================================================
-  // MAIN DATA LOADER (with feed error logging)
-  // ===========================================================================
-
   Future<void> _loadData({bool loadMore = false}) async {
     if ((_selectedTab == 1 && !_hasMoreForYou && loadMore) ||
         (_selectedTab == 0 && !_hasMoreFollowing && loadMore) ||
@@ -1508,7 +1590,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       dynamic rpcError;
 
       if (_selectedTab == 0) {
-        // Following tab
         if (_followingIds.isEmpty) {
           setState(() {
             _hasMoreFollowing = false;
@@ -1540,7 +1621,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         } catch (rpcErr) {
           rpcSuccess = false;
           rpcError = rpcErr;
-          // Log RPC error
           await _logFeedError(
             operationType: 'following_feed_rpc_error',
             userId: userId,
@@ -1554,7 +1634,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _offsetFollowing += newPosts.length;
         _hasMoreFollowing = newPosts.isNotEmpty;
 
-        // If no posts and user follows someone, log empty feed
         if (!loadMore &&
             newPosts.isEmpty &&
             _followingIds.isNotEmpty &&
@@ -1569,7 +1648,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           );
         }
       } else {
-        // For You tab
         try {
           final raw = await _supabase.rpc('get_for_you_feed_test', params: {
             'current_user_id': userId,
@@ -1609,7 +1687,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
         _hasMoreForYou = newPosts.isNotEmpty;
 
-        // Log empty feed only if it's initial load (not loadMore) and there are no posts
         if (!loadMore && newPosts.isEmpty && rpcSuccess) {
           await _logFeedError(
             operationType: 'load_for_you_empty',
@@ -1722,7 +1799,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         });
       }
     } catch (e) {
-      // General load error
       await _logFeedError(
         operationType: 'load_data_general_error',
         userId: currentUserId,
@@ -1743,14 +1819,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ===========================================================================
-  // TAB SWITCHING (with screen time tracking)
-  // ===========================================================================
-
   void _switchTab(int index) {
     if (_selectedTab == index) return;
 
-    // ✅ Exit the current screen if user is logged in
     if (_currentScreenName != null &&
         currentUserId != null &&
         currentUserId!.isNotEmpty) {
@@ -1788,7 +1859,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _currentScreenName = newScreenName;
     });
 
-    // ✅ Enter the new screen
     if (currentUserId != null && currentUserId!.isNotEmpty) {
       AnalyticsService.screenEnter(newScreenName);
     }
@@ -1820,17 +1890,11 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ===========================================================================
-  // DISPOSE
-  // ===========================================================================
-
   @override
   void dispose() {
-    // NEW – must be first to avoid listener firing on a disposed widget
     NotificationNavigationHandler.isNavigatingToPost
         .removeListener(_onNotificationNavigation);
 
-    // ✅ Exit the current screen if user is logged in
     if (_currentScreenName != null &&
         currentUserId != null &&
         currentUserId!.isNotEmpty) {
@@ -1875,7 +1939,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // HELPERS
+  // HELPERS (unchanged)
   // ===========================================================================
 
   bool _shouldPostPlayVideo(String postId) =>
@@ -1933,10 +1997,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     });
   }
 
-  // ===========================================================================
-  // BUILD
-  // ===========================================================================
-
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
@@ -1949,8 +2009,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
 
     return Scaffold(
-      resizeToAvoidBottomInset:
-          false, // ← KEY CHANGE: prevent keyboard from resizing the feed
+      resizeToAvoidBottomInset: false,
       backgroundColor: colors.backgroundColor,
       body: Stack(
         children: [
@@ -2170,8 +2229,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           return Container(
             width: double.infinity,
             height: double.infinity,
-            // ── FIX: use the skeleton color as the page background so there
-            //    is never a black flash while PostCard is loading its data.
             color: colors.skeletonColor,
             child: PostCard(
               snap: post,
@@ -2182,8 +2239,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               isVideoPreloaded: _isVideoPreloadedAndReady(post),
               preloadedImageProvider: _getPreloadedImageProvider(postUrl),
               isImagePreloaded: _isImagePreloadedAndReady(post),
-              // Pass the skeleton color so PostCard uses it for its own
-              // Scaffold background and image placeholder instead of black.
               skeletonColor: colors.skeletonColor,
             ),
           );
