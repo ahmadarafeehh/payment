@@ -21,8 +21,7 @@ import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import 'package:Ratedly/services/analytics_service.dart';
 
-typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
-    int currentCount);
+typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(int currentCount);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Global video manager – ensures only one video plays at a time
@@ -683,16 +682,15 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
+  // ── FIXED: do NOT pause the video when the voter list opens ─────────────
   void _openRatingsPanel() {
-    _pauseVideo(); // ← pause using manager
+    // No _pauseVideo() call – video keeps playing behind the sheet
     RatingListScreen.show(
       context,
       postId: _postId,
-      isVideo: _isVideo,
-      videoController: _videoController,
-      onClose: () {
-        if (widget.isActive) _playVideo();
-      },
+      isVideo: false,          // tell the sheet it's NOT a video so it won't try to pause/resume
+      videoController: null,   // don't pass the controller at all
+      onClose: null,           // no need to restart anything
     );
   }
 
@@ -1226,7 +1224,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   void _showComments(BuildContext context) {
-    _pauseVideo(); // ← pause via manager
+    _pauseVideo(); // ← comments still pause the video (different UX)
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
