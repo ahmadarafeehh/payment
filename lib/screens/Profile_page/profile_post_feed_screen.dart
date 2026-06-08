@@ -258,6 +258,7 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     final itemCount = _posts.length + (_hasMore || _loadingMore ? 1 : 0);
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,   // ← prevents feed from shifting on keyboard
       backgroundColor: bgColor,
       appBar: AppBar(
         backgroundColor: bgColor,
