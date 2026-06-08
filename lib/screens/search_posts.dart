@@ -902,21 +902,15 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
+  // ── UPDATED: do NOT pause the video when the voter list opens ──────────
   void _openRatingsPanel() {
-    _pauseVideo(); // ← pause via manager
-    debugPrint('[SearchFeed] Opening ratings panel, video paused');
-
+    // No pause – video keeps playing behind the transparent sheet
     RatingListScreen.show(
       context,
       postId: _postId,
-      isVideo: _isVideo,
-      videoController: _videoController,
-      onClose: () {
-        debugPrint('[SearchFeed] Ratings panel closed');
-        if (widget.isActive) {
-          _playVideo(); // ← resume via manager
-        }
-      },
+      isVideo: false,          // tell the sheet it's NOT a video so it won't try to pause/resume
+      videoController: null,   // don't pass the controller at all
+      onClose: null,           // no need to resume anything
     );
   }
 
@@ -1083,8 +1077,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
                 },
               ),
               const Spacer(),
+              // ── FIXED: removed owner-only guard, always tappable ──────
               GestureDetector(
-                onTap: isOwner ? () => _openRatingsPanel() : null,
+                onTap: _openRatingsPanel,
                 child: Container(
                   decoration: BoxDecoration(
                       color: cardColor, borderRadius: BorderRadius.circular(4)),
@@ -1388,7 +1383,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   void _showComments(BuildContext context) {
-    _pauseVideo(); // ← pause via manager
+    _pauseVideo(); // ← comments still pause the video (different UX)
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
