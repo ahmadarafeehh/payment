@@ -100,7 +100,7 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
       if (currentUserUid != null) {
         // Mark only notifications as read – messages are untouched
         await NotificationService.markNotificationsAsRead(currentUserUid);
-        // Immediately remove the app icon badge (it will be recalculated below)
+        // Immediately remove the app icon badge (it will be recalculated later)
         FlutterAppBadger.removeBadge();
       }
     }
@@ -133,12 +133,7 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
 
     return Scaffold(
       // ── FIX: Prevent the root Scaffold from shrinking its body when the
-      //    keyboard opens. Without this, every modal bottom sheet with a text
-      //    field (e.g. CommentsBottomSheet) causes the entire screen — feed,
-      //    nav bar, everything — to shift upward. Each descendant Scaffold
-      //    (FeedScreen, PostCard, CommentsBottomSheet) already sets this to
-      //    false and manually pads its own input bar via viewInsets.bottom, so
-      //    the keyboard avoidance is handled exactly where it is needed.
+      //    keyboard opens.
       resizeToAvoidBottomInset: false,
       body: Stack(
         children: [
@@ -429,6 +424,12 @@ class _UltraCompactNotificationBadgeIconState
   void didUpdateWidget(_UltraCompactNotificationBadgeIcon oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.currentUserId != widget.currentUserId) {
+      _loadCounts();
+    }
+    // 👇 This is the fix: when the user taps the notification tab,
+    // the badge counts are reloaded immediately.
+    if (widget.currentPage == widget.pageIndex &&
+        oldWidget.currentPage != widget.pageIndex) {
       _loadCounts();
     }
   }
