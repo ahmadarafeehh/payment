@@ -270,7 +270,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     try {
       final data = await VideoThumbnail.thumbnailData(
         video: videoUrl,
-        imageFormat: ImageFormat.JPEG,
+
         // 200 px is plenty for a 3-column grid; keeps memory tight.
         maxWidth: 200,
         quality: 60,
