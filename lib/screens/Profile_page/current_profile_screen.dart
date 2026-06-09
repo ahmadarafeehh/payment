@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/services/notification_service.dart';
@@ -14,6 +15,7 @@ import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:provider/provider.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 import 'package:flutter/gestures.dart';
 import 'package:Ratedly/screens/Profile_page/gallery_detail_screen.dart';
 import 'package:country_flags/country_flags.dart';
@@ -163,14 +165,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   List<dynamic> _galleries = [];
   int _selectedTabIndex = 0;
 
-  final Map<String, VideoPlayerController> _videoControllers = {};
-  final Map<String, bool> _videoControllersInitialized = {};
-
-  Timer? _videoInitDebounce;
-
+  // ── Profile-picture video only – no more per-grid-item controllers ──────
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = false;
+
+  // ── Video thumbnail cache: url → raw JPEG bytes (null = failed) ──────────
+  final Map<String, Uint8List?> _thumbnailCache = {};
 
   List<dynamic> _displayedPosts = [];
   int _postsOffset = 0;
@@ -256,11 +257,42 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     return er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix);
   }
 
+  // ==========================================================================
+  // VIDEO THUMBNAIL HELPER
+  // Fetches the first-frame JPEG for a network video URL and caches the result.
+  // Returns null on failure so callers can fall back to the icon-only state.
+  // ==========================================================================
+  Future<Uint8List?> _getVideoThumbnail(String videoUrl) async {
+    // Return from cache (including null entries – avoids re-fetching failed URLs).
+    if (_thumbnailCache.containsKey(videoUrl)) {
+      return _thumbnailCache[videoUrl];
+    }
+    try {
+      final data = await VideoThumbnail.thumbnailData(
+        video: videoUrl,
+        imageFormat: ImageFormat.JPEG,
+        // 200 px is plenty for a 3-column grid; keeps memory tight.
+        maxWidth: 200,
+        quality: 60,
+      );
+      _thumbnailCache[videoUrl] = data;
+      return data;
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'getVideoThumbnail',
+        error: e,
+        stack: stack,
+        additionalData: {'videoUrl': videoUrl},
+      );
+      _thumbnailCache[videoUrl] = null;
+      return null;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     AnalyticsService.screenEnter('current_profile');
-
     WidgetsBinding.instance.addObserver(this);
     _scrollController = ScrollController();
     _scrollController.addListener(_scrollListener);
@@ -273,16 +305,9 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       screenName: 'profile',
       uid: widget.uid,
     );
-
-    _videoInitDebounce?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_scrollListener);
     _scrollController.dispose();
-    for (final c in _videoControllers.values) {
-      c.dispose();
-    }
-    _videoControllers.clear();
-    _videoControllersInitialized.clear();
     _profileVideoController?.dispose();
     _profileVideoController = null;
     _noPostNudgeTimer?.cancel();
@@ -300,16 +325,14 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
+  // ========== PROFILE VIDEO ==========
+
   void _muteProfileVideo() {
     if (_profileVideoController != null && _isProfileVideoInitialized) {
       try {
         _profileVideoController!.setVolume(0.0);
       } catch (e, stack) {
-        _logProfileError(
-          operation: 'muteProfileVideo',
-          error: e,
-          stack: stack,
-        );
+        _logProfileError(operation: 'muteProfileVideo', error: e, stack: stack);
       }
     }
   }
@@ -320,10 +343,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
       } catch (e, stack) {
         _logProfileError(
-          operation: 'unmuteProfileVideo',
-          error: e,
-          stack: stack,
-        );
+            operation: 'unmuteProfileVideo', error: e, stack: stack);
       }
     }
   }
@@ -335,23 +355,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
       } catch (e, stack) {
         _logProfileError(
-          operation: 'toggleProfileVideoMute',
-          error: e,
-          stack: stack,
-        );
+            operation: 'toggleProfileVideoMute', error: e, stack: stack);
       }
-    }
-  }
-
-  void _pauseAllGridVideos() {
-    for (final c in _videoControllers.values) {
-      if (c.value.isPlaying) c.pause();
-    }
-  }
-
-  void _resumeAllGridVideos() {
-    for (final c in _videoControllers.values) {
-      if (c.value.isInitialized && !c.value.isPlaying) c.play();
     }
   }
 
@@ -367,7 +372,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
-  // ========== PROFILE VIDEO ==========
   Future<void> _initializeProfileVideo(String videoUrl) async {
     if (_profileVideoController != null) {
       await _profileVideoController!.dispose();
@@ -477,65 +481,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ========== POST VIDEOS ==========
-
-  Future<void> _initializeVideoController(String videoUrl) async {
-    if (_videoControllers.containsKey(videoUrl) ||
-        _videoControllersInitialized[videoUrl] == true) return;
-    try {
-      final controller = VideoPlayerController.networkUrl(
-        Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-      );
-      _videoControllers[videoUrl] = controller;
-      _videoControllersInitialized[videoUrl] = false;
-
-      controller.initialize().then((_) {
-        if (!mounted || !_videoControllers.containsKey(videoUrl)) return;
-        _videoControllersInitialized[videoUrl] = true;
-        _configureVideoLoop(controller);
-        controller.setVolume(0.0);
-
-        _videoInitDebounce?.cancel();
-        _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
-          if (mounted) setState(() {});
-        });
-      }).catchError((e, stack) {
-        _logProfileError(
-          operation: 'initializeVideoController',
-          error: e,
-          stack: stack,
-          additionalData: {'videoUrl': videoUrl},
-        );
-      });
-    } catch (e, stack) {
-      await _logProfileError(
-        operation: 'initializeVideoController',
-        error: e,
-        stack: stack,
-        additionalData: {'videoUrl': videoUrl},
-      );
-      _videoControllers.remove(videoUrl)?.dispose();
-      _videoControllersInitialized.remove(videoUrl);
-    }
-  }
-
-  void _configureVideoLoop(VideoPlayerController controller) {
-    final duration = controller.value.duration;
-    final end = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
-    controller.addListener(() {
-      if (controller.value.isInitialized && controller.value.isPlaying) {
-        if (controller.value.position >= end) controller.seekTo(Duration.zero);
-      }
-    });
-    controller.play();
-  }
-
-  VideoPlayerController? _getVideoController(String url) =>
-      _videoControllers[url];
-
-  bool _isVideoControllerInitialized(String url) =>
-      _videoControllersInitialized[url] == true;
+  // ========== EDIT OVERLAY (used for image thumbnails only) ==========
 
   Widget _buildEditOverlayLayer(
       VideoEditResult editResult, BoxConstraints constraints) {
@@ -577,98 +523,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         }),
       ],
     );
-  }
-
-  Widget _buildPostVideoPlayer(
-      String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
-
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.cardColor,
-          child: Center(
-              child: CircularProgressIndicator(color: colors.textColor)));
-    }
-
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: controller.value.size.width,
-                  height: controller.value.size.height,
-                  child: VideoPlayer(controller),
-                ),
-              ),
-            ),
-          ),
-        ),
-        if (editResult != null)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: LayoutBuilder(
-                builder: (context, constraints) =>
-                    _buildEditOverlayLayer(editResult, constraints),
-              ),
-            ),
-          ),
-      ]),
-    );
-  }
-
-  Widget _buildGalleryVideoPlayer(
-      String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
-
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.cardColor,
-          child: Center(
-              child: CircularProgressIndicator(color: colors.textColor)));
-    }
-
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: controller.value.size.width,
-                  height: controller.value.size.height,
-                  child: VideoPlayer(controller),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  void _preInitializeVideoControllers(List<dynamic> posts) {
-    for (final p in posts) {
-      final url = p['postUrl'] ?? '';
-      if (_isVideoFile(url)) _initializeVideoController(url);
-    }
   }
 
   // ========== DATA FETCHING ==========
@@ -770,14 +624,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             return <dynamic>[];
           });
 
+      // Only initialise the profile-picture video (one controller max).
+      // Grid thumbnails are rendered as static images / play-icon placeholders.
       final photoUrl = userResponse['photoUrl'] ?? '';
       if (_isVideoFile(photoUrl)) _initializeProfileVideo(photoUrl);
-
-      _preInitializeVideoControllers(initialPosts);
-      for (final g in galleriesResponse) {
-        final url = g['posts'] != null ? g['posts']['postUrl'] ?? '' : '';
-        if (_isVideoFile(url)) _initializeVideoController(url);
-      }
 
       final processedData = await Future.wait([
         _processUserList(followersResponse, 'follower_id'),
@@ -861,7 +711,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(_postsOffset, _postsOffset + _subsequentPostsLimit - 1);
 
-      _preInitializeVideoControllers(newPosts);
       if (newPosts.isNotEmpty && mounted) {
         setState(() {
           _displayedPosts.addAll(newPosts);
@@ -894,8 +743,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .eq('uid', widget.uid)
           .order('datePublished', ascending: false)
           .range(currentCount, currentCount + _subsequentPostsLimit - 1);
-
-      _preInitializeVideoControllers(newPosts);
 
       return List<Map<String, dynamic>>.from(newPosts);
     } catch (e, stack) {
@@ -976,6 +823,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   // ========== BUILD ==========
+
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
@@ -1014,35 +862,200 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           ? _buildErrorWidget(colors)
           : isLoading
               ? _buildProfileSkeleton(colors)
-              : SingleChildScrollView(
-                  controller: _scrollController,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(children: [
-                      _buildProfileHeader(colors),
-                      const SizedBox(height: 20),
-                      Column(children: [
-                        _buildBioSection(colors),
-                        const SizedBox(height: 16),
-                        Column(children: [
-                          _buildTabButtons(colors),
-                          _selectedTabIndex == 0
-                              ? _buildPostsGrid(colors)
-                              : _buildGalleriesGrid(colors),
-                        ]),
-                      ]),
-                      if (_selectedTabIndex == 0 && _isLoadingMore)
-                        Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: CircularProgressIndicator(
-                              color: colors.textColor),
-                        ),
-                      const SizedBox(height: 20),
-                    ]),
-                  ),
-                ),
+              : _buildScrollableBody(colors),
     );
   }
+
+  Widget _buildScrollableBody(_ColorSet colors) {
+    return CustomScrollView(
+      controller: _scrollController,
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            child: Column(children: [
+              _buildProfileHeader(colors),
+              const SizedBox(height: 20),
+              _buildBioSection(colors),
+              const SizedBox(height: 16),
+              _buildTabButtons(colors),
+            ]),
+          ),
+        ),
+        ..._buildTabSliverContent(colors),
+        const SliverToBoxAdapter(child: SizedBox(height: 20)),
+      ],
+    );
+  }
+
+  List<Widget> _buildTabSliverContent(_ColorSet colors) {
+    return _selectedTabIndex == 0
+        ? _buildPostsSliverContent(colors)
+        : _buildGalleriesSliverContent(colors);
+  }
+
+  List<Widget> _buildPostsSliverContent(_ColorSet colors) {
+    if (_displayedPosts.isEmpty && !_isLoadingMore) {
+      return [SliverToBoxAdapter(child: _buildEmptyPostsWidget(colors))];
+    }
+
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+        sliver: SliverGrid(
+          delegate: SliverChildBuilderDelegate(
+            (context, index) {
+              if (index == 0) return _buildAddPostButton(colors);
+              final postIndex = index - 1;
+              if (postIndex >= _displayedPosts.length) {
+                return const SizedBox.shrink();
+              }
+              return _buildPostItem(
+                  _displayedPosts[postIndex], colors, postIndex);
+            },
+            childCount: _displayedPosts.length + 1,
+          ),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            crossAxisSpacing: 2,
+            mainAxisSpacing: 2,
+            childAspectRatio: 0.8,
+          ),
+        ),
+      ),
+      if (_isLoadingMore)
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Center(
+                child: CircularProgressIndicator(color: colors.textColor)),
+          ),
+        ),
+    ];
+  }
+
+  List<Widget> _buildGalleriesSliverContent(_ColorSet colors) {
+    if (_galleries.isEmpty) {
+      return [SliverToBoxAdapter(child: _buildEmptyGalleriesWidget(colors))];
+    }
+
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.all(16),
+        sliver: SliverGrid(
+          delegate: SliverChildBuilderDelegate(
+            (context, index) {
+              if (index == 0) return _buildAddGalleryButton(colors);
+              final i = index - 1;
+              if (i >= _galleries.length) return const SizedBox.shrink();
+              return _buildGalleryItem(_galleries[i], colors);
+            },
+            childCount: _galleries.length + 1,
+          ),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            childAspectRatio: 1,
+          ),
+        ),
+      ),
+    ];
+  }
+
+  // ========== EMPTY STATE WIDGETS ==========
+
+  Widget _buildEmptyPostsWidget(_ColorSet colors) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Upload your first post',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: colors.textColor,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Go viral The world is waiting for you!',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: colors.textColor.withOpacity(0.6),
+              fontSize: 15,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 28),
+          ElevatedButton(
+            onPressed: () {
+              _muteProfileVideo();
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => CustomCameraScreen(
+                    onPostUploaded: () async => getData(),
+                  ),
+                  settings: const RouteSettings(name: 'cameraFromProfile'),
+                ),
+              ).then((_) {
+                Future.delayed(const Duration(milliseconds: 300), () {
+                  if (mounted) _unmuteProfileVideo();
+                });
+              });
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF3797EF),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              elevation: 0,
+            ),
+            child: const Text(
+              'Upload',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyGalleriesWidget(_ColorSet colors) {
+    return Padding(
+      padding: const EdgeInsets.all(40.0),
+      child: Column(children: [
+        Icon(Icons.collections,
+            size: 64, color: colors.textColor.withOpacity(0.5)),
+        const SizedBox(height: 16),
+        Text('No Galleries Yet',
+            style: TextStyle(
+                color: colors.textColor,
+                fontSize: 18,
+                fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Text('Create your first gallery to organize your posts',
+            style: TextStyle(color: colors.textColor.withOpacity(0.7)),
+            textAlign: TextAlign.center),
+        const SizedBox(height: 16),
+        ElevatedButton(
+          onPressed: _createNewGallery,
+          style: ElevatedButton.styleFrom(
+              backgroundColor: colors.cardColor,
+              foregroundColor: colors.textColor),
+          child: const Text('Create Gallery'),
+        ),
+      ]),
+    );
+  }
+
+  // ========== PROFILE HEADER / BIO / METRICS ==========
 
   Widget _buildErrorWidget(_ColorSet colors) {
     return Center(
@@ -1076,7 +1089,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         height: 80,
         child: Center(
           child: Transform.translate(
-            offset: const Offset(0, -12),   // moves profile picture up by 12px
+            offset: const Offset(0, -12),
             child: _buildProfilePicture(colors),
           ),
         ),
@@ -1242,90 +1255,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildPostsGrid(_ColorSet colors) {
-    if (_displayedPosts.isEmpty && !_isLoadingMore) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'Upload your first post',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: colors.textColor,
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'Go viral The world is waiting for you!',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: colors.textColor.withOpacity(0.6),
-                fontSize: 15,
-                height: 1.4,
-              ),
-            ),
-            const SizedBox(height: 28),
-            ElevatedButton(
-              onPressed: () {
-                _muteProfileVideo();
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => CustomCameraScreen(
-                      onPostUploaded: () async => getData(),
-                    ),
-                    settings: const RouteSettings(
-                        name: 'cameraFromProfile'), // <-- ADDED
-                  ),
-                ).then((_) {
-                  Future.delayed(const Duration(milliseconds: 300), () {
-                    if (mounted) _unmuteProfileVideo();
-                  });
-                });
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3797EF),
-                foregroundColor: Colors.white,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 48, vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                elevation: 0,
-              ),
-              child: const Text(
-                'Upload',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: _displayedPosts.length + 1,
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
-          crossAxisSpacing: 2,
-          mainAxisSpacing: 2,
-          childAspectRatio: 0.8),
-      itemBuilder: (context, index) {
-        if (index == 0) return _buildAddPostButton(colors);
-        final postIndex = index - 1;
-        if (postIndex < 0 || postIndex >= _displayedPosts.length) {
-          return Container();
-        }
-        return _buildPostItem(_displayedPosts[postIndex], colors, postIndex);
-      },
-    );
-  }
+  // ========== GRID ITEM BUILDERS ==========
 
   Widget _buildAddPostButton(_ColorSet colors) {
     return GestureDetector(
@@ -1337,8 +1267,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             builder: (_) => CustomCameraScreen(
               onPostUploaded: () async => getData(),
             ),
-            settings:
-                const RouteSettings(name: 'cameraFromProfile'), // <-- ADDED
+            settings: const RouteSettings(name: 'cameraFromProfile'),
           ),
         ).then((_) {
           Future.delayed(const Duration(milliseconds: 300), () {
@@ -1372,9 +1301,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
     return GestureDetector(
       onTap: () {
-        _pauseAllGridVideos();
         _muteProfileVideo();
-
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -1389,10 +1316,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           ),
         ).then((_) {
           Future.delayed(const Duration(milliseconds: 300), () {
-            if (mounted) {
-              _resumeAllGridVideos();
-              _unmuteProfileVideo();
-            }
+            if (mounted) _unmuteProfileVideo();
           });
         });
       },
@@ -1404,12 +1328,51 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         child: Stack(
           fit: StackFit.expand,
           children: [
+            // Video posts show a real first-frame thumbnail (with play icon
+            // overlay). Falls back to the card colour + icon if extraction
+            // fails. Image posts continue to render as before.
             isVideo
-                ? _buildPostVideoPlayer(postUrl, colors, editResult)
+                ? _buildPostVideoThumbnail(postUrl, colors)
                 : _buildPostImage(post, colors),
           ],
         ),
       ),
+    );
+  }
+
+  /// Renders the first-frame thumbnail for a video post in the grid.
+  /// Uses a [FutureBuilder] so the heavy extraction happens off the UI thread
+  /// and results are cached in [_thumbnailCache] to survive rebuilds.
+  Widget _buildPostVideoThumbnail(String videoUrl, _ColorSet colors) {
+    return FutureBuilder<Uint8List?>(
+      future: _getVideoThumbnail(videoUrl),
+      builder: (context, snapshot) {
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Thumbnail layer: show actual frame when ready, card colour
+              // while loading or on error.
+              if (snapshot.connectionState == ConnectionState.done &&
+                  snapshot.data != null)
+                Image.memory(snapshot.data!, fit: BoxFit.cover)
+              else
+                Container(color: colors.cardColor),
+
+              // Play-icon overlay – always visible so the cell is
+              // recognisable as a video even while the thumbnail loads.
+              const Center(
+                child: Icon(
+                  Icons.play_circle_outline,
+                  color: Colors.white70,
+                  size: 32,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -1470,52 +1433,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildGalleriesGrid(_ColorSet colors) {
-    if (_galleries.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.all(40.0),
-        child: Column(children: [
-          Icon(Icons.collections,
-              size: 64, color: colors.textColor.withOpacity(0.5)),
-          const SizedBox(height: 16),
-          Text('No Galleries Yet',
-              style: TextStyle(
-                  color: colors.textColor,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text('Create your first gallery to organize your posts',
-              style: TextStyle(color: colors.textColor.withOpacity(0.7)),
-              textAlign: TextAlign.center),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _createNewGallery,
-            style: ElevatedButton.styleFrom(
-                backgroundColor: colors.cardColor,
-                foregroundColor: colors.textColor),
-            child: const Text('Create Gallery'),
-          ),
-        ]),
-      );
-    }
-
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: _galleries.length + 1,
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 2,
-          crossAxisSpacing: 8,
-          mainAxisSpacing: 8,
-          childAspectRatio: 1),
-      itemBuilder: (context, index) {
-        if (index == 0) return _buildAddGalleryButton(colors);
-        final i = index - 1;
-        if (i < 0 || i >= _galleries.length) return Container();
-        return _buildGalleryItem(_galleries[i], colors);
-      },
-    );
-  }
+  // ========== GALLERY BUILDERS ==========
 
   Widget _buildAddGalleryButton(_ColorSet colors) {
     return GestureDetector(
@@ -1550,7 +1468,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     final isVideoCover = _isVideoFile(coverImageUrl);
 
     VideoEditResult? coverEditResult;
-    if (coverPost != null) {
+    if (coverPost != null && !isVideoCover) {
       final coverMeta = _extractEditMetadata(coverPost['video_edit_metadata']);
       if (coverMeta != null) {
         try {
@@ -1593,8 +1511,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: isVideoCover
-                  ? _buildGalleryVideoPlayer(
-                      coverImageUrl, colors, coverEditResult)
+                  // Real first-frame thumbnail for video gallery covers.
+                  ? _buildGalleryVideoThumbnail(coverImageUrl, colors)
                   : _buildGalleryCoverImage(
                       coverImageUrl, colors, coverEditResult),
             )
@@ -1646,6 +1564,35 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
+  /// Renders the first-frame thumbnail for a video gallery cover.
+  /// Shares the same [_thumbnailCache] and [_getVideoThumbnail] helper used
+  /// by post-grid thumbnails, so the same URL is never fetched twice.
+  Widget _buildGalleryVideoThumbnail(String videoUrl, _ColorSet colors) {
+    return FutureBuilder<Uint8List?>(
+      future: _getVideoThumbnail(videoUrl),
+      builder: (context, snapshot) {
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            if (snapshot.connectionState == ConnectionState.done &&
+                snapshot.data != null)
+              Image.memory(snapshot.data!, fit: BoxFit.cover)
+            else
+              Container(color: colors.cardColor),
+
+            const Center(
+              child: Icon(
+                Icons.play_circle_outline,
+                color: Colors.white70,
+                size: 48,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Widget _buildGalleryCoverImage(
       String url, _ColorSet colors, VideoEditResult? editResult) {
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -1683,6 +1630,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       ),
     );
   }
+
+  // ========== GALLERY MANAGEMENT ==========
 
   void _createNewGallery() {
     final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
@@ -1745,7 +1694,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
-  // ========== SKELETONS ==========
+  // ========== LOADING SKELETON ==========
+
   Widget _buildProfileSkeleton(_ColorSet colors) {
     return SingleChildScrollView(
       controller: _scrollController,
@@ -1873,7 +1823,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 }
 
 // =============================================================================
-// SCALED DRAWING PAINTER
+// SCALED DRAWING PAINTER (unchanged)
 // =============================================================================
 class _ScaledDrawingPainter extends CustomPainter {
   final List<DrawStroke> strokes;
