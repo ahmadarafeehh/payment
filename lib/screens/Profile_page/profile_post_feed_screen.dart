@@ -238,7 +238,11 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     Navigator.pop(context);
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // FIX: Pause all videos BEFORE navigating to profile from app bar
+  // ───────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
+    VideoManager.pauseAllVideos(); // ✅ Pause any playing video
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -633,9 +637,11 @@ class _FeedPostPageState extends State<_FeedPostPage>
     }
   }
 
-  // ✅ Color matrix & edit overlays are now handled by shared utilities
-
+  // ───────────────────────────────────────────────────────────────────────────
+  // FIX: Pause this post's video BEFORE navigating to profile
+  // ───────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
+    _pauseVideo(); // ✅ Pause only the current post's video
     Navigator.push(
       context,
       MaterialPageRoute(
