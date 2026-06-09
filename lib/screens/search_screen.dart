@@ -1,7 +1,8 @@
+// lib/screens/search_screen.dart (or wherever it lives)
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data'; // NEW: for thumbnail bytes
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
@@ -9,92 +10,11 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:get_thumbnail_video/video_thumbnail.dart'; // NEW: thumbnail extraction
+import 'package:get_thumbnail_video/video_thumbnail.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/search_posts.dart';
-import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
-
-// ─────────────────────────────────────────────────────────────────────────────
-// COLOUR SETS (used only by SearchScreen)
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _SearchColorSet {
-  final Color textColor;
-  final Color backgroundColor;
-  final Color cardColor;
-  final Color iconColor;
-  final Color dividerColor;
-  final Color progressIndicatorColor;
-  final Color errorColor;
-  final Color gridBackgroundColor;
-  final Color gridItemBackgroundColor;
-  final Color appBarBackgroundColor;
-  final Color hintTextColor;
-  final Color borderColor;
-  final Color focusedBorderColor;
-  final Color skeletonColor;
-  final Color avatarBackgroundColor;
-
-  _SearchColorSet({
-    required this.textColor,
-    required this.backgroundColor,
-    required this.cardColor,
-    required this.iconColor,
-    required this.dividerColor,
-    required this.progressIndicatorColor,
-    required this.errorColor,
-    required this.gridBackgroundColor,
-    required this.gridItemBackgroundColor,
-    required this.appBarBackgroundColor,
-    required this.hintTextColor,
-    required this.borderColor,
-    required this.focusedBorderColor,
-    required this.skeletonColor,
-    required this.avatarBackgroundColor,
-  });
-}
-
-class _SearchDarkColors extends _SearchColorSet {
-  _SearchDarkColors()
-      : super(
-          textColor: const Color(0xFFd9d9d9),
-          backgroundColor: const Color(0xFF121212),
-          cardColor: const Color(0xFF121212),
-          iconColor: const Color(0xFFd9d9d9),
-          dividerColor: const Color(0xFF333333),
-          progressIndicatorColor: const Color(0xFFd9d9d9),
-          errorColor: Colors.red,
-          gridBackgroundColor: const Color(0xFF121212),
-          gridItemBackgroundColor: const Color(0xFF333333),
-          appBarBackgroundColor: const Color(0xFF121212),
-          hintTextColor: const Color(0xFF666666),
-          borderColor: const Color(0xFF333333),
-          focusedBorderColor: const Color(0xFFd9d9d9),
-          skeletonColor: const Color(0xFF333333).withOpacity(0.6),
-          avatarBackgroundColor: const Color(0xFF333333),
-        );
-}
-
-class _SearchLightColors extends _SearchColorSet {
-  _SearchLightColors()
-      : super(
-          textColor: Colors.black,
-          backgroundColor: Colors.grey[100]!,
-          cardColor: Colors.white,
-          iconColor: Colors.grey[700]!,
-          dividerColor: Colors.grey[300]!,
-          progressIndicatorColor: Colors.grey[700]!,
-          errorColor: Colors.red,
-          gridBackgroundColor: Colors.grey[100]!,
-          gridItemBackgroundColor: Colors.grey[300]!,
-          appBarBackgroundColor: Colors.grey[100]!,
-          hintTextColor: Colors.grey[600]!,
-          borderColor: Colors.grey[400]!,
-          focusedBorderColor: Colors.black,
-          skeletonColor: Colors.grey[300]!.withOpacity(0.6),
-          avatarBackgroundColor: Colors.grey[300]!,
-        );
-}
+import 'package:Ratedly/services/analytics_service.dart';
+import 'package:Ratedly/utils/colors.dart'; // ✅ shared colours
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SearchScreen  (the main search tab)
@@ -114,7 +34,7 @@ class _SearchScreenState extends State<SearchScreen>
   bool isShowUsers = false;
   bool _isSearchFocused = false;
   String? currentUserId;
-  String? _currentUserIdForTracking; // ✅ screen tracking
+  String? _currentUserIdForTracking;
 
   List<Map<String, dynamic>> _searchResults = [];
   bool _isSearching = false;
@@ -144,18 +64,17 @@ class _SearchScreenState extends State<SearchScreen>
 
   final Map<String, Map<String, dynamic>> _userDataCache = {};
 
-  // ── Thumbnail cache and stable futures ────────────────────────────
   final Map<String, Uint8List?> _thumbnailCache = {};
   final Map<String, Future<Uint8List?>> _thumbnailFutures = {};
 
-  _SearchColorSet _getColors(ThemeProvider themeProvider) {
+  // ── Unified colour provider (replaces old private classes) ─────────
+  AppColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
-        ? _SearchDarkColors()
-        : _SearchLightColors();
+        ? AppColorSet.dark()
+        : AppColorSet.light();
   }
 
-  // ── Helpers that still live here because they touch grid‑specific logic ──
-
+  // ── Helpers for edit metadata (could be shared later) ──────────────
   Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
     if (raw == null) return null;
     if (raw is Map<String, dynamic>) return raw;
@@ -463,7 +382,9 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  Widget _buildVideoPlayer(String videoUrl, _SearchColorSet colors,
+  // ── Widget builders (now using AppColorSet) ───────────────────────
+
+  Widget _buildVideoPlayer(String videoUrl, AppColorSet colors,
       [VideoEditResult? editResult]) {
     if (!_videoControllers.containsKey(videoUrl)) {
       _initializeVideoController(videoUrl);
@@ -520,7 +441,7 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildAvatarVideoPlayer(String videoUrl, _SearchColorSet colors) {
+  Widget _buildAvatarVideoPlayer(String videoUrl, AppColorSet colors) {
     final controller = _getAvatarVideoController(videoUrl);
     final isInitialized = _isAvatarVideoControllerInitialized(videoUrl);
     if (!isInitialized || controller == null) {
@@ -548,7 +469,7 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildPostImage(String imageUrl, _SearchColorSet colors,
+  Widget _buildPostImage(String imageUrl, AppColorSet colors,
       [VideoEditResult? editResult]) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
@@ -601,8 +522,7 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  // ── NEW: Video thumbnail widget for grid items ──────────────────────
-  Widget _buildVideoThumbnail(String videoUrl, _SearchColorSet colors,
+  Widget _buildVideoThumbnail(String videoUrl, AppColorSet colors,
       [VideoEditResult? editResult]) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
@@ -664,7 +584,7 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildUserAvatar(String? photoUrl, _SearchColorSet colors) {
+  Widget _buildUserAvatar(String? photoUrl, AppColorSet colors) {
     final url = photoUrl?.toString() ?? '';
     final isDefault = url.isEmpty || url == 'default';
     final isVideo = !isDefault && _isVideoFile(url);
@@ -778,7 +698,6 @@ class _SearchScreenState extends State<SearchScreen>
         if (!mounted) return;
         _precacheImages(newPosts);
 
-        // Use selective preloading instead of forcing all videos
         _preloadPostMedia(newPosts);
 
         setState(() {
@@ -1026,7 +945,7 @@ class _SearchScreenState extends State<SearchScreen>
 
   // ── Skeleton loaders ──
 
-  Widget _buildPostsGridSkeleton(_SearchColorSet colors) {
+  Widget _buildPostsGridSkeleton(AppColorSet colors) {
     return GridView.builder(
       padding: const EdgeInsets.all(8.0),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -1040,13 +959,13 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildPostSkeleton(_SearchColorSet colors) => Container(
+  Widget _buildPostSkeleton(AppColorSet colors) => Container(
         decoration: BoxDecoration(
             color: colors.skeletonColor,
             borderRadius: BorderRadius.circular(8)),
       );
 
-  Widget _buildUserSkeleton(_SearchColorSet colors) {
+  Widget _buildUserSkeleton(AppColorSet colors) {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 8),
       leading: CircleAvatar(backgroundColor: colors.skeletonColor, radius: 20),
@@ -1068,7 +987,7 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildUserSearchSkeleton(_SearchColorSet colors) {
+  Widget _buildUserSearchSkeleton(AppColorSet colors) {
     return ListView.builder(
       padding: const EdgeInsets.only(top: 8),
       itemCount: 5,
@@ -1169,13 +1088,13 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildEnhancedSkeletonLoading(_SearchColorSet colors) {
+  Widget _buildEnhancedSkeletonLoading(AppColorSet colors) {
     return Column(children: [
       Expanded(child: _buildPostsGridSkeleton(colors)),
     ]);
   }
 
-  Widget _buildUserSearch(_SearchColorSet colors) {
+  Widget _buildUserSearch(AppColorSet colors) {
     if (_isSearching) return _buildUserSearchSkeleton(colors);
 
     if (_searchResults.isEmpty) {
@@ -1222,7 +1141,7 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildPostsGrid(_SearchColorSet colors) {
+  Widget _buildPostsGrid(AppColorSet colors) {
     if (_hasLoadError) {
       return Center(
         child: Column(
@@ -1306,12 +1225,11 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildPostItem(Map<String, dynamic> post, String postUrl, int index,
-      _SearchColorSet colors) {
+      AppColorSet colors) {
     final isVideo = _isVideoFile(postUrl);
     final postId = post['postId']?.toString() ?? '';
     final editResult = _parseEditResult(post);
 
-    // Ensure proper media loading
     if (isVideo) {
       if (_shouldShowVideoLoop(postId)) {
         if (!_videoControllers.containsKey(postUrl)) {
