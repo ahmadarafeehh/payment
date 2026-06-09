@@ -10,7 +10,7 @@ import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/providers/user_provider.dart';
-import 'package:Ratedly/screens/Search/search_posts.dart';
+import 'package:Ratedly/screens/search_posts.dart';
 import 'package:Ratedly/services/analytics_service.dart';
 
 import 'package:Ratedly/utils/colors.dart'; // shared colours
