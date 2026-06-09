@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data'; // NEW: for thumbnail bytes
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
@@ -8,6 +9,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
+import 'package:get_thumbnail_video/video_thumbnail.dart'; // NEW: thumbnail extraction
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/search_posts.dart';
 import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
@@ -142,6 +144,10 @@ class _SearchScreenState extends State<SearchScreen>
 
   final Map<String, Map<String, dynamic>> _userDataCache = {};
 
+  // ── Thumbnail cache and stable futures ────────────────────────────
+  final Map<String, Uint8List?> _thumbnailCache = {};
+  final Map<String, Future<Uint8List?>> _thumbnailFutures = {};
+
   _SearchColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
         ? _SearchDarkColors()
@@ -195,7 +201,6 @@ class _SearchScreenState extends State<SearchScreen>
           Positioned.fill(
             child: CustomPaint(
               painter: ScaledDrawingPainter(
-                // <-- CHANGED from _ScaledDrawingPainter
                 strokes: editResult.strokes,
                 scaleX: scaleX,
                 scaleY: scaleY,
@@ -239,13 +244,40 @@ class _SearchScreenState extends State<SearchScreen>
     } catch (_) {}
   }
 
+  // ── Deterministic loop / thumbnail decision ────────────────────────
+  bool _shouldShowVideoLoop(String postId) {
+    if (postId.isEmpty) return false;
+    final hash = postId.hashCode;
+    return (hash % 100).abs() < 20; // 20% chance
+  }
+
+  // ── Thumbnail extraction (cached) ──────────────────────────────────
+  Future<Uint8List?> _getVideoThumbnail(String videoUrl) async {
+    if (_thumbnailCache.containsKey(videoUrl)) {
+      return _thumbnailCache[videoUrl];
+    }
+    try {
+      final data = await VideoThumbnail.thumbnailData(
+        video: videoUrl,
+        maxWidth: 200,
+        quality: 60,
+      );
+      _thumbnailCache[videoUrl] = data;
+      return data;
+    } catch (_) {
+      _thumbnailCache[videoUrl] = null;
+      return null;
+    }
+  }
+
+  Future<Uint8List?> _getThumbnailFuture(String videoUrl) => _thumbnailFutures
+      .putIfAbsent(videoUrl, () => _getVideoThumbnail(videoUrl));
+
   // ── Lifecycle ──
   @override
   void initState() {
     super.initState();
-    // ✅ screen tracking: enter search screen
     AnalyticsService.screenEnter('search');
-
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(() {
       final position = _scrollController.position;
@@ -266,13 +298,13 @@ class _SearchScreenState extends State<SearchScreen>
 
     if (userProvider.firebaseUid != null && currentUserId == null) {
       currentUserId = userProvider.firebaseUid;
-      _currentUserIdForTracking = currentUserId; // ✅ store for exit
+      _currentUserIdForTracking = currentUserId;
       if (!_isLoading) _initData();
     } else if (userProvider.firebaseUid == null &&
         userProvider.supabaseUid != null &&
         currentUserId == null) {
       currentUserId = userProvider.supabaseUid;
-      _currentUserIdForTracking = currentUserId; // ✅ store for exit
+      _currentUserIdForTracking = currentUserId;
       if (!_isLoading) _initData();
     }
 
@@ -298,14 +330,12 @@ class _SearchScreenState extends State<SearchScreen>
 
   @override
   void dispose() {
-    // ✅ screen tracking: exit search screen
     if (_currentUserIdForTracking != null) {
       AnalyticsService.screenExit(
         screenName: 'search',
         uid: _currentUserIdForTracking!,
       );
     }
-
     _debounceTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     searchController.dispose();
@@ -323,7 +353,7 @@ class _SearchScreenState extends State<SearchScreen>
     super.dispose();
   }
 
-  // ── Video helpers for the grid ──
+  // ── Video helpers for the grid (only used for loops) ──────────────
 
   Future<void> _initializeVideoController(String videoUrl) async {
     if (_videoControllers.containsKey(videoUrl) ||
@@ -417,6 +447,20 @@ class _SearchScreenState extends State<SearchScreen>
         l.endsWith('.3gp') ||
         l.contains('/video/') ||
         l.contains('video=true');
+  }
+
+  // ── Preload media selectively: only loop videos get a controller ──
+  void _preloadPostMedia(List<Map<String, dynamic>> posts) {
+    for (final post in posts) {
+      final url = post['postUrl']?.toString() ?? '';
+      if (!_isVideoFile(url)) continue;
+      final postId = post['postId']?.toString() ?? '';
+      if (_shouldShowVideoLoop(postId)) {
+        _initializeVideoController(url);
+      } else {
+        _getThumbnailFuture(url); // fire-and-forget
+      }
+    }
   }
 
   Widget _buildVideoPlayer(String videoUrl, _SearchColorSet colors,
@@ -557,6 +601,69 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
+  // ── NEW: Video thumbnail widget for grid items ──────────────────────
+  Widget _buildVideoThumbnail(String videoUrl, _SearchColorSet colors,
+      [VideoEditResult? editResult]) {
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return AspectRatio(
+      aspectRatio: 0.75,
+      child: FutureBuilder<Uint8List?>(
+        future: _getThumbnailFuture(videoUrl),
+        builder: (context, snapshot) {
+          final haveImage = snapshot.connectionState == ConnectionState.done &&
+              snapshot.data != null;
+
+          Widget imageLayer = haveImage
+              ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+              : Container(color: colors.gridItemBackgroundColor);
+
+          imageLayer = ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: imageLayer,
+            ),
+          );
+
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Stack(fit: StackFit.expand, children: [
+              Positioned.fill(child: imageLayer),
+              if (editResult != null)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) =>
+                          _buildEditOverlayLayer(editResult, constraints),
+                    ),
+                  ),
+                ),
+              // Play icon top‑right
+              Positioned(
+                top: 4,
+                right: 4,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.55),
+                    shape: BoxShape.circle,
+                  ),
+                  padding: const EdgeInsets.all(2),
+                  child: const Icon(
+                    Icons.play_arrow,
+                    color: Colors.white,
+                    size: 14,
+                  ),
+                ),
+              ),
+            ]),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildUserAvatar(String? photoUrl, _SearchColorSet colors) {
     final url = photoUrl?.toString() ?? '';
     final isDefault = url.isEmpty || url == 'default';
@@ -668,13 +775,11 @@ class _SearchScreenState extends State<SearchScreen>
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
         await _enrichPostsWithUserData(newPosts);
-        if (!mounted) return; // ✅ FIX: guard after await
+        if (!mounted) return;
         _precacheImages(newPosts);
 
-        for (final post in newPosts) {
-          final url = post['postUrl']?.toString() ?? '';
-          if (_isVideoFile(url)) _initializeVideoController(url);
-        }
+        // Use selective preloading instead of forcing all videos
+        _preloadPostMedia(newPosts);
 
         setState(() {
           _allPosts = newPosts;
@@ -725,13 +830,10 @@ class _SearchScreenState extends State<SearchScreen>
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
         await _enrichPostsWithUserData(newPosts);
-        if (!mounted) return; // ✅ FIX: guard after await
+        if (!mounted) return;
         _precacheImages(newPosts);
 
-        for (final post in newPosts) {
-          final url = post['postUrl']?.toString() ?? '';
-          if (_isVideoFile(url)) _initializeVideoController(url);
-        }
+        _preloadPostMedia(newPosts);
 
         setState(() {
           _allPosts.addAll(newPosts);
@@ -788,13 +890,11 @@ class _SearchScreenState extends State<SearchScreen>
         final newPosts =
             response.map<Map<String, dynamic>>(_normalisePost).toList();
         await _enrichPostsWithUserData(newPosts);
-        if (!mounted) return []; // ✅ FIX: guard after await (return empty list)
+        if (!mounted) return [];
         _precacheImages(newPosts);
 
-        for (final post in newPosts) {
-          final url = post['postUrl']?.toString() ?? '';
-          if (_isVideoFile(url)) _initializeVideoController(url);
-        }
+        _preloadPostMedia(newPosts);
+
         if (mounted) {
           setState(() {
             _allPosts.addAll(newPosts);
@@ -1208,9 +1308,21 @@ class _SearchScreenState extends State<SearchScreen>
   Widget _buildPostItem(Map<String, dynamic> post, String postUrl, int index,
       _SearchColorSet colors) {
     final isVideo = _isVideoFile(postUrl);
-    if (isVideo) _initializeVideoController(postUrl);
-
+    final postId = post['postId']?.toString() ?? '';
     final editResult = _parseEditResult(post);
+
+    // Ensure proper media loading
+    if (isVideo) {
+      if (_shouldShowVideoLoop(postId)) {
+        if (!_videoControllers.containsKey(postUrl)) {
+          _initializeVideoController(postUrl);
+        }
+      } else {
+        if (!_thumbnailFutures.containsKey(postUrl)) {
+          _getThumbnailFuture(postUrl);
+        }
+      }
+    }
 
     return InkWell(
       onTap: () async {
@@ -1242,7 +1354,9 @@ class _SearchScreenState extends State<SearchScreen>
         child: Stack(children: [
           if (postUrl.isNotEmpty)
             isVideo
-                ? _buildVideoPlayer(postUrl, colors, editResult)
+                ? (_shouldShowVideoLoop(postId)
+                    ? _buildVideoPlayer(postUrl, colors, editResult)
+                    : _buildVideoThumbnail(postUrl, colors, editResult))
                 : _buildPostImage(postUrl, colors, editResult)
           else
             Container(
