@@ -23,40 +23,7 @@ import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/services/analytics_service.dart';
-
-class _ColorSet {
-  final Color textColor;
-  final Color backgroundColor;
-  final Color cardColor;
-  final Color iconColor;
-
-  _ColorSet({
-    required this.textColor,
-    required this.backgroundColor,
-    required this.cardColor,
-    required this.iconColor,
-  });
-}
-
-class _DarkColors extends _ColorSet {
-  _DarkColors()
-      : super(
-          textColor: const Color(0xFFd9d9d9),
-          backgroundColor: const Color(0xFF121212),
-          cardColor: const Color(0xFF333333),
-          iconColor: const Color(0xFFd9d9d9),
-        );
-}
-
-class _LightColors extends _ColorSet {
-  _LightColors()
-      : super(
-          textColor: Colors.black,
-          backgroundColor: Colors.grey[100]!,
-          cardColor: Colors.white,
-          iconColor: Colors.grey[700]!,
-        );
-}
+import 'package:Ratedly/utils/colors.dart'; // ✅ shared colours
 
 class CountryFlagWidget extends StatelessWidget {
   final String countryCode;
@@ -189,10 +156,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   late ScrollController _scrollController;
 
-  _ColorSet _getColors(ThemeProvider themeProvider) {
+  // ✅ unified colour getter
+  AppColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
-        ? _DarkColors()
-        : _LightColors();
+        ? AppColorSet.dark()
+        : AppColorSet.light();
   }
 
   // ==========================================================================
@@ -513,7 +481,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
-  Widget _buildProfileVideoPlayer(_ColorSet colors) {
+  Widget _buildProfileVideoPlayer(AppColorSet colors) {
     if (_profileVideoController == null || !_isProfileVideoInitialized) {
       return Container(
         decoration:
@@ -558,7 +526,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     ]);
   }
 
-  Widget _buildProfilePicture(_ColorSet colors) {
+  Widget _buildProfilePicture(AppColorSet colors) {
     final photoUrl = userData['photoUrl']?.toString() ?? '';
     final isDefault = photoUrl.isEmpty || photoUrl == 'default';
     final isVideo = !isDefault && _isVideoFile(photoUrl);
@@ -921,8 +889,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     });
   }
 
-  Widget _buildUsernameWithFlag(
-      String username, bool isVerified, String? countryCode, _ColorSet colors) {
+  Widget _buildUsernameWithFlag(String username, bool isVerified,
+      String? countryCode, AppColorSet colors) {
     final bool hasFlag = countryCode != null &&
         countryCode.isNotEmpty &&
         countryCode.length == 2;
@@ -985,7 +953,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildScrollableBody(_ColorSet colors) {
+  Widget _buildScrollableBody(AppColorSet colors) {
     return CustomScrollView(
       controller: _scrollController,
       slivers: [
@@ -1007,13 +975,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  List<Widget> _buildTabSliverContent(_ColorSet colors) {
+  List<Widget> _buildTabSliverContent(AppColorSet colors) {
     return _selectedTabIndex == 0
         ? _buildPostsSliverContent(colors)
         : _buildGalleriesSliverContent(colors);
   }
 
-  List<Widget> _buildPostsSliverContent(_ColorSet colors) {
+  List<Widget> _buildPostsSliverContent(AppColorSet colors) {
     if (_displayedPosts.isEmpty && !_isLoadingMore) {
       return [SliverToBoxAdapter(child: _buildEmptyPostsWidget(colors))];
     }
@@ -1053,7 +1021,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     ];
   }
 
-  List<Widget> _buildGalleriesSliverContent(_ColorSet colors) {
+  List<Widget> _buildGalleriesSliverContent(AppColorSet colors) {
     if (_galleries.isEmpty) {
       return [SliverToBoxAdapter(child: _buildEmptyGalleriesWidget(colors))];
     }
@@ -1084,7 +1052,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ========== EMPTY STATE WIDGETS ==========
 
-  Widget _buildEmptyPostsWidget(_ColorSet colors) {
+  Widget _buildEmptyPostsWidget(AppColorSet colors) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 32),
       child: Column(
@@ -1146,7 +1114,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildEmptyGalleriesWidget(_ColorSet colors) {
+  Widget _buildEmptyGalleriesWidget(AppColorSet colors) {
     return Padding(
       padding: const EdgeInsets.all(40.0),
       child: Column(children: [
@@ -1176,7 +1144,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ========== PROFILE HEADER / BIO / METRICS ==========
 
-  Widget _buildErrorWidget(_ColorSet colors) {
+  Widget _buildErrorWidget(AppColorSet colors) {
     return Center(
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         Icon(Icons.error_outline, color: colors.textColor, size: 64),
@@ -1202,7 +1170,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildProfileHeader(_ColorSet colors) {
+  Widget _buildProfileHeader(AppColorSet colors) {
     return Column(children: [
       SizedBox(
         height: 80,
@@ -1234,7 +1202,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   Widget _buildInteractiveMetric(
-      int value, String label, List<dynamic> userList, _ColorSet colors) {
+      int value, String label, List<dynamic> userList, AppColorSet colors) {
     return GestureDetector(
       onTap: () {
         _muteProfileVideo();
@@ -1253,7 +1221,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildEditProfileButton(_ColorSet colors) {
+  Widget _buildEditProfileButton(AppColorSet colors) {
     return ElevatedButton(
       onPressed: () async {
         _muteProfileVideo();
@@ -1290,7 +1258,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     ]);
   }
 
-  Widget _buildBioSection(_ColorSet colors) {
+  Widget _buildBioSection(AppColorSet colors) {
     final String bio = userData['bio'] ?? '';
     return Align(
       alignment: Alignment.centerLeft,
@@ -1312,7 +1280,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildTabButtons(_ColorSet colors) {
+  Widget _buildTabButtons(AppColorSet colors) {
     return Container(
       decoration: BoxDecoration(
           border:
@@ -1376,7 +1344,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ========== GRID ITEM BUILDERS (now with loop/thumbnail decision) ==========
 
-  Widget _buildAddPostButton(_ColorSet colors) {
+  Widget _buildAddPostButton(AppColorSet colors) {
     return GestureDetector(
       onTap: () {
         _pauseAllVideos();
@@ -1409,7 +1377,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   Widget _buildPostItem(
-      Map<String, dynamic> post, _ColorSet colors, int postIndex) {
+      Map<String, dynamic> post, AppColorSet colors, int postIndex) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
     final editResult = _parseEditResult(post);
@@ -1470,7 +1438,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ── Looping video player for grid ──────────────────────────────────
   Widget _buildPostVideoPlayer(
-      String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
 
@@ -1518,7 +1486,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ── Updated thumbnail widget (now includes edit overlays) ──────────
   Widget _buildPostVideoThumbnail(
-      String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
@@ -1575,7 +1543,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildPostImage(Map<String, dynamic> post, _ColorSet colors) {
+  Widget _buildPostImage(Map<String, dynamic> post, AppColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final editResult = _parseEditResult(post);
     final List<double> matrix = _buildColorMatrix(editResult);
@@ -1634,7 +1602,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ========== GALLERY BUILDERS (now with loop/thumbnail decision) ==========
 
-  Widget _buildAddGalleryButton(_ColorSet colors) {
+  Widget _buildAddGalleryButton(AppColorSet colors) {
     return GestureDetector(
       onTap: _createNewGallery,
       child: Container(
@@ -1655,7 +1623,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildGalleryItem(Map<String, dynamic> gallery, _ColorSet colors) {
+  Widget _buildGalleryItem(Map<String, dynamic> gallery, AppColorSet colors) {
     final postCount =
         gallery['gallery_posts'] != null && gallery['gallery_posts'].isNotEmpty
             ? gallery['gallery_posts'][0]['count'] ?? 0
@@ -1773,7 +1741,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ── Gallery looping video player ────────────────────────────────────
   Widget _buildGalleryVideoPlayer(
-      String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
 
@@ -1821,7 +1789,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ── Updated gallery thumbnail (edit overlays included) ──────────────
   Widget _buildGalleryVideoThumbnail(
-      String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
@@ -1879,7 +1847,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   Widget _buildGalleryCoverImage(
-      String url, _ColorSet colors, VideoEditResult? editResult) {
+      String url, AppColorSet colors, VideoEditResult? editResult) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
@@ -1981,7 +1949,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   // ========== LOADING SKELETON ==========
 
-  Widget _buildProfileSkeleton(_ColorSet colors) {
+  Widget _buildProfileSkeleton(AppColorSet colors) {
     return SingleChildScrollView(
       controller: _scrollController,
       child: Padding(
@@ -2000,7 +1968,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildProfileHeaderSkeleton(_ColorSet colors) {
+  Widget _buildProfileHeaderSkeleton(AppColorSet colors) {
     return Column(children: [
       SizedBox(
         height: 80,
@@ -2034,7 +2002,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     ]);
   }
 
-  Widget _buildMetricSkeleton(_ColorSet colors) {
+  Widget _buildMetricSkeleton(AppColorSet colors) {
     return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
       Container(
           height: 16,
@@ -2052,7 +2020,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     ]);
   }
 
-  Widget _buildBioSectionSkeleton(_ColorSet colors) {
+  Widget _buildBioSectionSkeleton(AppColorSet colors) {
     return Align(
       alignment: Alignment.centerLeft,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -2087,7 +2055,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  Widget _buildPostsGridSkeleton(_ColorSet colors) {
+  Widget _buildPostsGridSkeleton(AppColorSet colors) {
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
