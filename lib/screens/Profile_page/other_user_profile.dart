@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
@@ -13,17 +14,22 @@ import 'package:Ratedly/resources/block_firestore_methods.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:get_thumbnail_video/video_thumbnail.dart';
 import 'package:flutter/gestures.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:country_flags/country_flags.dart';
 import 'package:Ratedly/screens/Profile_page/gallery_post_view_screen.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
+import 'package:Ratedly/services/analytics_service.dart';
+
+// 🔁 Required for VideoEditResult, DrawStroke, DrawingPainter, etc.
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
-import 'package:Ratedly/services/analytics_service.dart';
-import 'package:Ratedly/utils/colors.dart'; // ✅ shared colours
+
+import 'package:Ratedly/utils/colors.dart'; // shared colours
+import 'package:Ratedly/utils/video_utils.dart'; // shared video helpers + service
+
+// (rest of the file unchanged – the imports above fix the missing types)
 
 // -----------------------------------------------------------------------------
 // Reusable widgets
@@ -134,18 +140,16 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   bool _isMutualFollow = false;
   bool _isTestUser = false;
 
-  // Video controllers – only for videos that will loop
-  final Map<String, VideoPlayerController> _videoControllers = {};
-  final Map<String, bool> _videoControllersInitialized = {};
-  Timer? _videoInitDebounce;
+  // ── Shared media service (replaces all thumbnail caches & loop controllers) ──
+  late final VideoMediaService _mediaService = VideoMediaService()
+    ..onRebuild = () {
+      if (mounted) setState(() {});
+    };
 
+  // ── Profile-picture video (separate) ─────────────────────────────────
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = false;
-
-  // ── Video thumbnail cache & stable futures ─────────────────────
-  final Map<String, Uint8List?> _thumbnailCache = {};
-  final Map<String, Future<Uint8List?>> _thumbnailFutures = {};
 
   List<dynamic> _galleries = [];
   int _selectedTabIndex = 0;
@@ -198,7 +202,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     } catch (_) {}
   }
 
-  // ✅ unified colour getter
   AppColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
         ? AppColorSet.dark()
@@ -206,494 +209,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // --------------------------------------------------------------
-  // Video helpers
-  // --------------------------------------------------------------
-  bool _isVideoFile(String url) {
-    if (url.isEmpty) return false;
-    final l = url.toLowerCase();
-    return l.endsWith('.mp4') ||
-        l.endsWith('.mov') ||
-        l.endsWith('.avi') ||
-        l.endsWith('.wmv') ||
-        l.endsWith('.flv') ||
-        l.endsWith('.mkv') ||
-        l.endsWith('.webm') ||
-        l.endsWith('.m4v') ||
-        l.endsWith('.3gp') ||
-        l.contains('/video/') ||
-        l.contains('video=true');
-  }
-
-  Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
-    if (raw == null) return null;
-    if (raw is Map<String, dynamic>) return raw;
-    if (raw is Map) return Map<String, dynamic>.from(raw);
-    return null;
-  }
-
-  VideoEditResult? _parseEditResult(Map<String, dynamic> post) {
-    final meta = _extractEditMetadata(post['video_edit_metadata']);
-    if (meta == null) return null;
-    try {
-      return VideoEditResult.fromJson(meta, File(''));
-    } catch (e, stack) {
-      _logProfileError(
-        operation: 'parseEditResult',
-        error: e,
-        stack: stack,
-        additionalData: {'postId': post['postId']},
-      );
-      return null;
-    }
-  }
-
-  List<double> _buildColorMatrix(VideoEditResult? er) {
-    if (er == null) {
-      return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
-    }
-    return er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix);
-  }
-
-  // ── Deterministic decision: 20% chance of looping preview ──────
-  bool _shouldShowVideoLoop(String postId) {
-    if (postId.isEmpty) return false;
-    final hash = postId.hashCode;
-    return (hash % 100).abs() < 20;
-  }
-
-  // ── Thumbnail extraction & caching ─────────────────────────────
-  Future<Uint8List?> _getVideoThumbnail(String videoUrl) async {
-    if (_thumbnailCache.containsKey(videoUrl)) {
-      return _thumbnailCache[videoUrl];
-    }
-    try {
-      final data = await VideoThumbnail.thumbnailData(
-        video: videoUrl,
-        maxWidth: 200,
-        quality: 60,
-      );
-      _thumbnailCache[videoUrl] = data;
-      return data;
-    } catch (e, stack) {
-      await _logProfileError(
-        operation: 'getVideoThumbnail',
-        error: e,
-        stack: stack,
-        additionalData: {'videoUrl': videoUrl},
-      );
-      _thumbnailCache[videoUrl] = null;
-      return null;
-    }
-  }
-
-  Future<Uint8List?> _getThumbnailFuture(String videoUrl) => _thumbnailFutures
-      .putIfAbsent(videoUrl, () => _getVideoThumbnail(videoUrl));
-
-  // ── Pre-initialize controllers only for videos that will loop ──
-  void _preInitializeVideoControllers(List<dynamic> posts) {
-    for (final p in posts) {
-      final url = p['postUrl'] ?? '';
-      final postId = p['postId']?.toString() ?? '';
-      if (!_isVideoFile(url)) continue;
-      if (_shouldShowVideoLoop(postId)) {
-        _initializeVideoController(url);
-      } else {
-        // Fire thumbnail fetch in background
-        _getThumbnailFuture(url);
-      }
-    }
-  }
-
-  Future<void> _initializeVideoController(String videoUrl) async {
-    if (_videoControllers.containsKey(videoUrl) ||
-        _videoControllersInitialized[videoUrl] == true) return;
-    try {
-      final controller = VideoPlayerController.networkUrl(
-        Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-      );
-      _videoControllers[videoUrl] = controller;
-      _videoControllersInitialized[videoUrl] = false;
-
-      controller.initialize().then((_) {
-        if (!mounted || !_videoControllers.containsKey(videoUrl)) return;
-        _videoControllersInitialized[videoUrl] = true;
-        _configureVideoLoop(controller);
-        controller.setVolume(0.0);
-
-        _videoInitDebounce?.cancel();
-        _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
-          if (mounted) setState(() {});
-        });
-      }).catchError((e, stack) {
-        _logProfileError(
-          operation: 'initializeVideoController_then',
-          error: e,
-          stack: stack,
-          additionalData: {'videoUrl': videoUrl},
-        );
-        _videoControllers.remove(videoUrl)?.dispose();
-        _videoControllersInitialized.remove(videoUrl);
-      });
-    } catch (e, stack) {
-      _logProfileError(
-        operation: 'initializeVideoController',
-        error: e,
-        stack: stack,
-        additionalData: {'videoUrl': videoUrl},
-      );
-      _videoControllers.remove(videoUrl)?.dispose();
-      _videoControllersInitialized.remove(videoUrl);
-    }
-  }
-
-  void _configureVideoLoop(VideoPlayerController controller) {
-    final duration = controller.value.duration;
-    final end = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
-    controller.addListener(() {
-      if (controller.value.isInitialized && controller.value.isPlaying) {
-        if (controller.value.position >= end) controller.seekTo(Duration.zero);
-      }
-    });
-    controller.play();
-  }
-
-  VideoPlayerController? _getVideoController(String url) =>
-      _videoControllers[url];
-
-  bool _isVideoControllerInitialized(String url) =>
-      _videoControllersInitialized[url] == true;
-
-  Widget _buildEditOverlayLayer(
-      VideoEditResult editResult, BoxConstraints constraints) {
-    if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    final double previewW = constraints.maxWidth;
-    final double previewH = constraints.maxHeight;
-    final double screenW = MediaQuery.of(context).size.width;
-    final double screenH = MediaQuery.of(context).size.height;
-    final double scaleX = previewW / screenW;
-    final double scaleY = previewH / screenH;
-    final double fontScale = math.min(scaleX, scaleY);
-
-    return Stack(
-      clipBehavior: Clip.hardEdge,
-      children: [
-        if (editResult.strokes.isNotEmpty)
-          Positioned.fill(
-            child: CustomPaint(
-              painter: _ScaledDrawingPainter(
-                strokes: editResult.strokes,
-                scaleX: scaleX,
-                scaleY: scaleY,
-              ),
-            ),
-          ),
-        ...editResult.overlays.map((o) {
-          final scaledOverlay = o.copyWith(fontSize: o.fontSize * fontScale);
-          return Positioned(
-            left: (o.position.dx * previewW).clamp(0.0, previewW - 10),
-            top: (o.position.dy * previewH).clamp(0.0, previewH - 10),
-            child: Stack(clipBehavior: Clip.none, children: [
-              Text(o.text, style: overlayShadowStyle(scaledOverlay)),
-              Text(o.text, style: overlayTextStyle(scaledOverlay)),
-            ]),
-          );
-        }),
-      ],
-    );
-  }
-
-  Widget _buildPostVideoPlayer(
-      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
-
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.avatarBackgroundColor,
-          child: Center(
-              child: CircularProgressIndicator(
-                  color: colors.progressIndicatorColor)));
-    }
-
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: controller.value.size.width,
-                  height: controller.value.size.height,
-                  child: VideoPlayer(controller),
-                ),
-              ),
-            ),
-          ),
-        ),
-        if (editResult != null)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: LayoutBuilder(
-                builder: (context, constraints) =>
-                    _buildEditOverlayLayer(editResult, constraints),
-              ),
-            ),
-          ),
-      ]),
-    );
-  }
-
-  Widget _buildPostVideoThumbnail(
-      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return FutureBuilder<Uint8List?>(
-      future: _getThumbnailFuture(videoUrl),
-      builder: (context, snapshot) {
-        final haveImage = snapshot.connectionState == ConnectionState.done &&
-            snapshot.data != null;
-
-        Widget imageLayer = haveImage
-            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
-            : Container(color: colors.avatarBackgroundColor);
-
-        imageLayer = ColorFiltered(
-          colorFilter: ColorFilter.matrix(matrix),
-          child: Transform.rotate(
-            angle: quarters * math.pi / 2,
-            child: imageLayer,
-          ),
-        );
-
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: Stack(fit: StackFit.expand, children: [
-            Positioned.fill(child: imageLayer),
-            if (editResult != null)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) =>
-                        _buildEditOverlayLayer(editResult, constraints),
-                  ),
-                ),
-              ),
-            Positioned(
-              top: 4,
-              right: 4,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.55),
-                  shape: BoxShape.circle,
-                ),
-                padding: const EdgeInsets.all(2),
-                child: const Icon(
-                  Icons.play_arrow,
-                  color: Colors.white,
-                  size: 14,
-                ),
-              ),
-            ),
-          ]),
-        );
-      },
-    );
-  }
-
-  Widget _buildPostImage(
-      String imageUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    Widget baseImage = ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: editResult == null
-          ? Image.network(
-              imageUrl,
-              fit: BoxFit.cover,
-              width: double.infinity,
-              height: double.infinity,
-              errorBuilder: (_, __, ___) => Container(
-                color: colors.avatarBackgroundColor,
-                child:
-                    Icon(Icons.broken_image, color: colors.iconColor, size: 20),
-              ),
-            )
-          : ColorFiltered(
-              colorFilter: ColorFilter.matrix(matrix),
-              child: Transform.rotate(
-                angle: quarters * math.pi / 2,
-                child: Image.network(
-                  imageUrl,
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  height: double.infinity,
-                  errorBuilder: (_, __, ___) => Container(
-                    color: colors.avatarBackgroundColor,
-                    child: Icon(Icons.broken_image,
-                        color: colors.iconColor, size: 20),
-                  ),
-                ),
-              ),
-            ),
-    );
-
-    if (editResult == null) return baseImage;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(child: baseImage),
-        Positioned.fill(
-          child: IgnorePointer(
-            child: LayoutBuilder(
-              builder: (context, constraints) =>
-                  _buildEditOverlayLayer(editResult, constraints),
-            ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildGalleryVideoPlayer(
-      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
-
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.avatarBackgroundColor,
-          child: Center(
-              child: CircularProgressIndicator(
-                  color: colors.progressIndicatorColor)));
-    }
-
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: controller.value.size.width,
-                  height: controller.value.size.height,
-                  child: VideoPlayer(controller),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildGalleryVideoThumbnail(
-      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return FutureBuilder<Uint8List?>(
-      future: _getThumbnailFuture(videoUrl),
-      builder: (context, snapshot) {
-        final haveImage = snapshot.connectionState == ConnectionState.done &&
-            snapshot.data != null;
-
-        Widget imageLayer = haveImage
-            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
-            : Container(color: colors.avatarBackgroundColor);
-
-        imageLayer = ColorFiltered(
-          colorFilter: ColorFilter.matrix(matrix),
-          child: Transform.rotate(
-            angle: quarters * math.pi / 2,
-            child: imageLayer,
-          ),
-        );
-
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Stack(fit: StackFit.expand, children: [
-            Positioned.fill(child: imageLayer),
-            Positioned(
-              top: 6,
-              right: 6,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.55),
-                  shape: BoxShape.circle,
-                ),
-                padding: const EdgeInsets.all(3),
-                child: const Icon(
-                  Icons.play_arrow,
-                  color: Colors.white,
-                  size: 18,
-                ),
-              ),
-            ),
-          ]),
-        );
-      },
-    );
-  }
-
-  Widget _buildGalleryCoverImage(
-      String url, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    if (editResult == null) {
-      return Image.network(
-        url,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => Container(
-          decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              color: colors.avatarBackgroundColor.withOpacity(0.5)),
-          child: Icon(Icons.collections, size: 40, color: colors.errorColor),
-        ),
-      );
-    }
-
-    return ColorFiltered(
-      colorFilter: ColorFilter.matrix(matrix),
-      child: Transform.rotate(
-        angle: quarters * math.pi / 2,
-        child: Image.network(
-          url,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                color: colors.avatarBackgroundColor.withOpacity(0.5)),
-            child: Icon(Icons.collections, size: 40, color: colors.errorColor),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // --------------------------------------------------------------
-  // Profile video
+  // Profile video (unchanged)
   // --------------------------------------------------------------
   Future<void> _initializeProfileVideo(String videoUrl) async {
     if (_profileVideoController != null) {
@@ -781,7 +297,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   Widget _buildProfilePicture(AppColorSet colors) {
     final photoUrl = userData['photoUrl']?.toString() ?? '';
     final isDefault = photoUrl.isEmpty || photoUrl == 'default';
-    final isVideo = !isDefault && _isVideoFile(photoUrl);
+    final isVideo = !isDefault && isVideoFile(photoUrl);
 
     if (isDefault) {
       return CircleAvatar(
@@ -796,18 +312,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       radius: 45,
       backgroundImage: NetworkImage(photoUrl),
     );
-  }
-
-  void _pauseAllVideos() {
-    for (final c in _videoControllers.values) {
-      if (c.value.isPlaying) c.pause();
-    }
-  }
-
-  void _resumeAllVideos() {
-    for (final c in _videoControllers.values) {
-      if (c.value.isInitialized && !c.value.isPlaying) c.play();
-    }
   }
 
   void _muteProfileVideo() {
@@ -878,7 +382,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
-      _pauseAllVideos();
+      _mediaService.pauseAll();
       _muteProfileVideo();
     } else if (state == AppLifecycleState.resumed) {
       _unmuteProfileVideo();
@@ -958,7 +462,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       if (mounted) {
         setState(() => userData = userResponse);
         final photoUrl = userResponse['photoUrl'] ?? '';
-        if (_isVideoFile(photoUrl)) _initializeProfileVideo(photoUrl);
+        if (isVideoFile(photoUrl)) _initializeProfileVideo(photoUrl);
       }
     } catch (e, stack) {
       await _logProfileError(
@@ -978,15 +482,16 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             posts!cover_post_id(postUrl, video_edit_metadata)
           ''').eq('uid', widget.uid).order('created_at', ascending: false);
 
+      // Preload media for gallery covers
       for (final g in galleriesResponse) {
         final url = g['posts'] != null ? g['posts']['postUrl'] ?? '' : '';
-        if (_isVideoFile(url)) {
+        if (isVideoFile(url)) {
           final postId =
               g['posts'] != null ? g['posts']['postId']?.toString() ?? '' : '';
-          if (_shouldShowVideoLoop(postId)) {
-            _initializeVideoController(url);
+          if (shouldShowVideoLoop(postId)) {
+            _mediaService.initializeController(url);
           } else {
-            _getThumbnailFuture(url);
+            _mediaService.getThumbnailFuture(url);
           }
         }
       }
@@ -1022,7 +527,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(0, postsLimit - 1);
 
-      _preInitializeVideoControllers(initialPosts);
+      _mediaService.preloadMedia(List<Map<String, dynamic>>.from(initialPosts));
 
       if (mounted) {
         setState(() {
@@ -1218,7 +723,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(_postsOffset, _postsOffset + _subsequentPostsLimit - 1);
 
-      _preInitializeVideoControllers(newPosts);
+      _mediaService.preloadMedia(List<Map<String, dynamic>>.from(newPosts));
 
       if (newPosts.isNotEmpty && mounted) {
         setState(() {
@@ -1253,7 +758,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(currentCount, currentCount + _subsequentPostsLimit - 1);
 
-      _preInitializeVideoControllers(newPosts);
+      _mediaService.preloadMedia(List<Map<String, dynamic>>.from(newPosts));
       return List<Map<String, dynamic>>.from(newPosts);
     } catch (e, stack) {
       await _logProfileError(
@@ -1369,7 +874,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       if (mounted) showSnackBar(context, "Please sign in to message users");
       return;
     }
-    _pauseAllVideos();
+    _mediaService.pauseAll();
     _muteProfileVideo();
     if (mounted) {
       Navigator.push(
@@ -1384,7 +889,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       ).then((_) {
         Future.delayed(const Duration(milliseconds: 300), () {
           if (mounted) {
-            _resumeAllVideos();
+            _mediaService.resumeAll();
             _unmuteProfileVideo();
           }
         });
@@ -1952,11 +1457,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── GRID ITEM BUILDERS (modified for video thumbnail/loop decision) ──
+  // ── GRID ITEM BUILDERS (now using shared functions) ──────────
+
   Widget _buildOtherPostItem(Map<String, dynamic> post, AppColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
-    final isVideo = _isVideoFile(postUrl);
-    final editResult = _parseEditResult(post);
+    final isVideo = isVideoFile(postUrl);
+    final editResult = parseEditResult(post);
     final postId = post['postId']?.toString() ?? '';
 
     if (_isBlocked) {
@@ -1984,7 +1490,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
     return GestureDetector(
       onTap: () {
-        _pauseAllVideos();
+        _mediaService.pauseAll();
         _muteProfileVideo();
         Navigator.push(
           context,
@@ -2001,7 +1507,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         ).then((_) {
           Future.delayed(const Duration(milliseconds: 300), () {
             if (mounted) {
-              _resumeAllVideos();
+              _mediaService.resumeAll();
               _unmuteProfileVideo();
             }
           });
@@ -2016,7 +1522,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           fit: StackFit.expand,
           children: [
             if (isVideo)
-              _shouldShowVideoLoop(postId)
+              shouldShowVideoLoop(postId)
                   ? _buildPostVideoPlayer(postUrl, colors, editResult)
                   : _buildPostVideoThumbnail(postUrl, colors, editResult)
             else
@@ -2027,6 +1533,179 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
+  Widget _buildPostVideoPlayer(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
+    final controller = _mediaService.getController(videoUrl);
+    final isInitialized = _mediaService.isControllerInitialized(videoUrl);
+
+    if (!isInitialized || controller == null) {
+      return Container(
+          color: colors.avatarBackgroundColor,
+          child: Center(
+              child: CircularProgressIndicator(
+                  color: colors.progressIndicatorColor)));
+    }
+
+    final List<double> matrix = buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(
+          child: ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: controller.value.size.width,
+                  height: controller.value.size.height,
+                  child: VideoPlayer(controller),
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (editResult != null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: LayoutBuilder(
+                builder: (context, constraints) => buildEditOverlayLayer(
+                  editResult: editResult,
+                  constraints: constraints,
+                  screenSize: MediaQuery.of(context).size,
+                ),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  Widget _buildPostVideoThumbnail(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return FutureBuilder<Uint8List?>(
+      future: _mediaService.getThumbnailFuture(videoUrl),
+      builder: (context, snapshot) {
+        final haveImage = snapshot.connectionState == ConnectionState.done &&
+            snapshot.data != null;
+
+        Widget imageLayer = haveImage
+            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+            : Container(color: colors.avatarBackgroundColor);
+
+        imageLayer = ColorFiltered(
+          colorFilter: ColorFilter.matrix(matrix),
+          child: Transform.rotate(
+            angle: quarters * math.pi / 2,
+            child: imageLayer,
+          ),
+        );
+
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Stack(fit: StackFit.expand, children: [
+            Positioned.fill(child: imageLayer),
+            if (editResult != null)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) => buildEditOverlayLayer(
+                      editResult: editResult,
+                      constraints: constraints,
+                      screenSize: MediaQuery.of(context).size,
+                    ),
+                  ),
+                ),
+              ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.55),
+                  shape: BoxShape.circle,
+                ),
+                padding: const EdgeInsets.all(2),
+                child: const Icon(
+                  Icons.play_arrow,
+                  color: Colors.white,
+                  size: 14,
+                ),
+              ),
+            ),
+          ]),
+        );
+      },
+    );
+  }
+
+  Widget _buildPostImage(
+      String imageUrl, AppColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    Widget baseImage = ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: editResult == null
+          ? Image.network(
+              imageUrl,
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+              errorBuilder: (_, __, ___) => Container(
+                color: colors.avatarBackgroundColor,
+                child:
+                    Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+              ),
+            )
+          : ColorFiltered(
+              colorFilter: ColorFilter.matrix(matrix),
+              child: Transform.rotate(
+                angle: quarters * math.pi / 2,
+                child: Image.network(
+                  imageUrl,
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                  errorBuilder: (_, __, ___) => Container(
+                    color: colors.avatarBackgroundColor,
+                    child: Icon(Icons.broken_image,
+                        color: colors.iconColor, size: 20),
+                  ),
+                ),
+              ),
+            ),
+    );
+
+    if (editResult == null) return baseImage;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(child: baseImage),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: LayoutBuilder(
+              builder: (context, constraints) => buildEditOverlayLayer(
+                editResult: editResult,
+                constraints: constraints,
+                screenSize: MediaQuery.of(context).size,
+              ),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  // ── Gallery builders (adapted) ─────────────────────────────────
+
   Widget _buildGalleryItem(Map<String, dynamic> gallery, AppColorSet colors) {
     final postCount =
         gallery['gallery_posts'] != null && gallery['gallery_posts'].isNotEmpty
@@ -2036,12 +1715,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         ? gallery['posts'] as Map<String, dynamic>
         : null;
     final coverImageUrl = coverPost != null ? coverPost['postUrl'] ?? '' : '';
-    final isVideoCover = _isVideoFile(coverImageUrl);
+    final isVideoCover = isVideoFile(coverImageUrl);
     final coverPostId = coverPost?['postId']?.toString() ?? '';
 
     VideoEditResult? coverEditResult;
     if (coverPost != null) {
-      final coverMeta = _extractEditMetadata(coverPost['video_edit_metadata']);
+      final coverMeta = extractEditMetadata(coverPost['video_edit_metadata']);
       if (coverMeta != null) {
         try {
           coverEditResult = VideoEditResult.fromJson(coverMeta, File(''));
@@ -2058,7 +1737,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
     return GestureDetector(
       onTap: () async {
-        _pauseAllVideos();
+        _mediaService.pauseAll();
         _muteProfileVideo();
         try {
           final galleryPostsResponse =
@@ -2094,7 +1773,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             ).then((_) {
               Future.delayed(const Duration(milliseconds: 300), () {
                 if (mounted) {
-                  _resumeAllVideos();
+                  _mediaService.resumeAll();
                   _unmuteProfileVideo();
                 }
               });
@@ -2121,7 +1800,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: isVideoCover
-                  ? (_shouldShowVideoLoop(coverPostId)
+                  ? (shouldShowVideoLoop(coverPostId)
                       ? _buildGalleryVideoPlayer(
                           coverImageUrl, colors, coverEditResult)
                       : _buildGalleryVideoThumbnail(
@@ -2173,6 +1852,130 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             ),
           ),
         ]),
+      ),
+    );
+  }
+
+  Widget _buildGalleryVideoPlayer(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
+    final controller = _mediaService.getController(videoUrl);
+    final isInitialized = _mediaService.isControllerInitialized(videoUrl);
+
+    if (!isInitialized || controller == null) {
+      return Container(
+          color: colors.avatarBackgroundColor,
+          child: Center(
+              child: CircularProgressIndicator(
+                  color: colors.progressIndicatorColor)));
+    }
+
+    final List<double> matrix = buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(
+          child: ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: controller.value.size.width,
+                  height: controller.value.size.height,
+                  child: VideoPlayer(controller),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildGalleryVideoThumbnail(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return FutureBuilder<Uint8List?>(
+      future: _mediaService.getThumbnailFuture(videoUrl),
+      builder: (context, snapshot) {
+        final haveImage = snapshot.connectionState == ConnectionState.done &&
+            snapshot.data != null;
+
+        Widget imageLayer = haveImage
+            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+            : Container(color: colors.avatarBackgroundColor);
+
+        imageLayer = ColorFiltered(
+          colorFilter: ColorFilter.matrix(matrix),
+          child: Transform.rotate(
+            angle: quarters * math.pi / 2,
+            child: imageLayer,
+          ),
+        );
+
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Stack(fit: StackFit.expand, children: [
+            Positioned.fill(child: imageLayer),
+            Positioned(
+              top: 6,
+              right: 6,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.55),
+                  shape: BoxShape.circle,
+                ),
+                padding: const EdgeInsets.all(3),
+                child: const Icon(
+                  Icons.play_arrow,
+                  color: Colors.white,
+                  size: 18,
+                ),
+              ),
+            ),
+          ]),
+        );
+      },
+    );
+  }
+
+  Widget _buildGalleryCoverImage(
+      String url, AppColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    if (editResult == null) {
+      return Image.network(
+        url,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Container(
+          decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              color: colors.avatarBackgroundColor.withOpacity(0.5)),
+          child: Icon(Icons.collections, size: 40, color: colors.errorColor),
+        ),
+      );
+    }
+
+    return ColorFiltered(
+      colorFilter: ColorFilter.matrix(matrix),
+      child: Transform.rotate(
+        angle: quarters * math.pi / 2,
+        child: Image.network(
+          url,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                color: colors.avatarBackgroundColor.withOpacity(0.5)),
+            child: Icon(Icons.collections, size: 40, color: colors.errorColor),
+          ),
+        ),
       ),
     );
   }
@@ -2363,46 +2166,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         uid: _currentUserIdForTracking!,
       );
     }
-    _videoInitDebounce?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_scrollListener);
     _scrollController.dispose();
-    for (final c in _videoControllers.values) {
-      c.pause();
-      c.dispose();
-    }
-    _videoControllers.clear();
-    _videoControllersInitialized.clear();
     _profileVideoController?.dispose();
     _profileVideoController = null;
+    _mediaService.dispose();
     super.dispose();
   }
-}
-
-// -----------------------------------------------------------------------------
-// Scaled Drawing Painter
-// -----------------------------------------------------------------------------
-class _ScaledDrawingPainter extends CustomPainter {
-  final List<DrawStroke> strokes;
-  final double scaleX;
-  final double scaleY;
-
-  const _ScaledDrawingPainter({
-    required this.strokes,
-    required this.scaleX,
-    required this.scaleY,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.save();
-    canvas.scale(scaleX, scaleY);
-    DrawingPainter(strokes: strokes, currentStroke: null)
-        .paint(canvas, Size(size.width / scaleX, size.height / scaleY));
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(_ScaledDrawingPainter old) =>
-      old.strokes != strokes || old.scaleX != scaleX || old.scaleY != scaleY;
 }
