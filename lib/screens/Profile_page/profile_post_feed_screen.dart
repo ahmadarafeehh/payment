@@ -1,3 +1,4 @@
+// lib/screens/Profile_page/profile_post_feed_screen.dart
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -15,13 +16,16 @@ import 'package:Ratedly/resources/supabase_posts_methods.dart';
 import 'package:Ratedly/resources/reactions_methods.dart';
 import 'package:Ratedly/utils/utils.dart';
 import 'package:video_player/video_player.dart';
-import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
-import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import 'package:Ratedly/services/analytics_service.dart';
 
-typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(int currentCount);
+// ✅ Shared utilities
+import 'package:Ratedly/utils/colors.dart';
+import 'package:Ratedly/utils/video_utils.dart';
+
+typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
+    int currentCount);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Global video manager – ensures only one video plays at a time
@@ -123,9 +127,7 @@ Future<void> _logReactionError({
       'stack_trace': error is Error ? error.stackTrace?.toString() : null,
       'additional_data': additionalData,
     });
-  } catch (_) {
-    // Fail silently – error logging must not crash the app
-  }
+  } catch (_) {}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,7 +206,6 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
     final page = rawPage.round();
 
     if (page != _currentIndex) {
-      // ✅ FIX: stop all videos immediately before changing the active page
       VideoManager.pauseAllVideos();
       setState(() => _currentIndex = page);
     }
@@ -250,25 +251,26 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
-    final isDark = themeProvider.themeMode == ThemeMode.dark;
-    final bgColor = isDark ? const Color(0xFF121212) : Colors.white;
-    final textColor = isDark ? const Color(0xFFd9d9d9) : Colors.black;
+    final colors = themeProvider.themeMode == ThemeMode.dark
+        ? AppColorSet.dark()
+        : AppColorSet.light();
 
     final itemCount = _posts.length + (_hasMore || _loadingMore ? 1 : 0);
 
     return Scaffold(
-      resizeToAvoidBottomInset: false,   // ← prevents feed from shifting on keyboard
-      backgroundColor: bgColor,
+      resizeToAvoidBottomInset: false,
+      backgroundColor: colors.backgroundColor,
       appBar: AppBar(
-        backgroundColor: bgColor,
+        backgroundColor: colors.appBarBackgroundColor,
         elevation: 0,
-        iconTheme: IconThemeData(color: textColor),
+        iconTheme: IconThemeData(color: colors.iconColor),
         title: GestureDetector(
           onTap: _goToProfile,
           child: VerifiedUsernameWidget(
             username: widget.userData['username']?.toString() ?? '',
             uid: widget.userData['uid']?.toString() ?? '',
-            style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+            style:
+                TextStyle(color: colors.textColor, fontWeight: FontWeight.bold),
           ),
         ),
         centerTitle: true,
@@ -282,7 +284,7 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
-                child: CircularProgressIndicator(color: textColor),
+                child: CircularProgressIndicator(color: colors.textColor),
               ),
             );
           }
@@ -329,7 +331,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
 
   final SupabaseClient _supabase = Supabase.instance.client;
   final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
-  final VideoManager _videoManager = VideoManager(); // ← SINGLETON
+  final VideoManager _videoManager = VideoManager();
 
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
@@ -349,22 +351,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
   String get _postUrl => widget.post['postUrl']?.toString() ?? '';
   String get _postId => widget.post['postId']?.toString() ?? '';
 
-  bool get _isVideo {
-    final u = _postUrl.toLowerCase();
-    return u.endsWith('.mp4') ||
-        u.endsWith('.mov') ||
-        u.endsWith('.avi') ||
-        u.endsWith('.wmv') ||
-        u.endsWith('.flv') ||
-        u.endsWith('.mkv') ||
-        u.endsWith('.webm') ||
-        u.endsWith('.m4v') ||
-        u.endsWith('.3gp') ||
-        u.contains('/video/') ||
-        u.contains('video=true');
-  }
+  // ✅ Use shared helper
+  bool get _isVideo => isVideoFile(_postUrl);
 
-  // ------ NEW getter to check if THIS video is playing ------
   bool get _isVideoPlaying =>
       _videoController != null &&
       _videoManager.isCurrentlyPlaying(_videoController!);
@@ -372,8 +361,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this); // ← lifecycle observer
-    _parseEditMetadata();
+    WidgetsBinding.instance.addObserver(this);
+    // ✅ parse edit metadata using shared helper
+    _editResult = parseEditResult(widget.post);
     _fetchAllData();
     if (widget.isActive) _onBecomeActive();
   }
@@ -395,7 +385,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     super.dispose();
   }
 
-  // ----- APP LIFECYCLE: pause when app goes to background -----
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
@@ -404,7 +393,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     }
   }
 
-  // ----- VIDEO LIFE CYCLE -----
   void _onBecomeActive() {
     if (_isVideo) {
       if (_isVideoInitialized) {
@@ -419,7 +407,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     _pauseVideo();
   }
 
-  // ----- PLAY / PAUSE using VideoManager -----
   void _playVideo() {
     if (_videoController != null &&
         _isVideoInitialized &&
@@ -456,7 +443,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     });
   }
 
-  // ----- CLEANUP -----
   void _disposeVideoController() {
     if (_videoController != null) {
       _videoController!.removeListener(_videoListener);
@@ -471,10 +457,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
     _isVideoLoading = false;
   }
 
-  // ----- LISTENER (keeps UI in sync with manager) -----
   void _videoListener() {
     if (!mounted) return;
-    // If video ended, loop it and keep playing if still active
     if (_videoController != null &&
         _videoController!.value.position == _videoController!.value.duration &&
         _videoController!.value.duration != Duration.zero) {
@@ -483,7 +467,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
         _videoController!.play();
       }
     }
-    // Sync the actual play state with the manager
     if (_videoController != null && _isVideoInitialized) {
       final actuallyPlaying = _videoController!.value.isPlaying;
       final shouldBePlaying =
@@ -498,7 +481,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     }
   }
 
-  // ----- INIT VIDEO (unchanged except for listener & playback call) -----
   Future<void> _initVideo() async {
     if (_isVideoLoading || _isVideoInitialized || _postUrl.isEmpty) return;
 
@@ -511,9 +493,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
       );
 
       await controller.initialize();
-
       controller.setLooping(true);
-      controller.addListener(_videoListener); // ← attach listener
+      controller.addListener(_videoListener);
 
       if (mounted) {
         setState(() {
@@ -522,7 +503,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
           _isVideoLoading = false;
         });
         if (widget.isActive) {
-          _playVideo(); // ← use manager
+          _playVideo();
         }
       } else {
         controller.dispose();
@@ -530,18 +511,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
     } catch (e) {
       if (mounted) setState(() => _isVideoLoading = false);
     }
-  }
-
-  // ----- RATINGS & DATA (unchanged) -----
-  void _parseEditMetadata() {
-    final raw = widget.post['video_edit_metadata'];
-    if (raw == null) return;
-    try {
-      final map = raw is Map<String, dynamic>
-          ? raw
-          : Map<String, dynamic>.from(raw as Map);
-      _editResult = VideoEditResult.fromJson(map, File(''));
-    } catch (e) {}
   }
 
   Future<void> _fetchAllData() async {
@@ -664,13 +633,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
     }
   }
 
-  List<double> _buildColorMatrix() {
-    if (_editResult == null) {
-      return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
-    }
-    return _editResult!.adjustments
-        .combinedMatrix(kFilters[_editResult!.filterIndex].matrix);
-  }
+  // ✅ Color matrix & edit overlays are now handled by shared utilities
 
   void _goToProfile() {
     Navigator.push(
@@ -682,24 +645,21 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
-  // ── FIXED: do NOT pause the video when the voter list opens ─────────────
   void _openRatingsPanel() {
-    // No _pauseVideo() call – video keeps playing behind the sheet
     RatingListScreen.show(
       context,
       postId: _postId,
-      isVideo: false,          // tell the sheet it's NOT a video so it won't try to pause/resume
-      videoController: null,   // don't pass the controller at all
-      onClose: null,           // no need to restart anything
+      isVideo: false,
+      videoController: null,
+      onClose: null,
     );
   }
 
   Future<void> _deletePost(BuildContext context) async {
     final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
-    final isDark = themeProvider.themeMode == ThemeMode.dark;
-    final bgColor = isDark ? const Color(0xFF121212) : Colors.white;
-    final textColor = isDark ? const Color(0xFFd9d9d9) : Colors.black;
-    final progressColor = isDark ? Colors.white70 : Colors.grey[700]!;
+    final colors = themeProvider.themeMode == ThemeMode.dark
+        ? AppColorSet.dark()
+        : AppColorSet.light();
 
     showDialog(
       context: context,
@@ -708,17 +668,17 @@ class _FeedPostPageState extends State<_FeedPostPage>
         return WillPopScope(
           onWillPop: () async => false,
           child: Dialog(
-            backgroundColor: bgColor,
+            backgroundColor: colors.backgroundColor,
             child: Padding(
               padding: const EdgeInsets.all(20.0),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  CircularProgressIndicator(color: progressColor),
+                  CircularProgressIndicator(color: colors.textColor),
                   const SizedBox(height: 16),
                   Text(
                     'Deleting post...',
-                    style: TextStyle(color: textColor, fontSize: 16),
+                    style: TextStyle(color: colors.textColor, fontSize: 16),
                   ),
                 ],
               ),
@@ -739,11 +699,16 @@ class _FeedPostPageState extends State<_FeedPostPage>
     }
   }
 
-  void _showOptionsMenu(BuildContext context, Color bgColor, Color textColor) {
+  void _showOptionsMenu(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
+    final colors = themeProvider.themeMode == ThemeMode.dark
+        ? AppColorSet.dark()
+        : AppColorSet.light();
+
     showDialog(
       context: context,
       builder: (_) => Dialog(
-        backgroundColor: bgColor,
+        backgroundColor: colors.backgroundColor,
         child: ListView(
           padding: const EdgeInsets.symmetric(vertical: 8),
           shrinkWrap: true,
@@ -766,7 +731,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
                 padding:
                     const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
                 child: Text('Cancel',
-                    style: TextStyle(color: textColor, fontSize: 15)),
+                    style: TextStyle(color: colors.textColor, fontSize: 15)),
               ),
             ),
           ],
@@ -780,11 +745,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
     super.build(context);
 
     final themeProvider = Provider.of<ThemeProvider>(context);
-    final isDark = themeProvider.themeMode == ThemeMode.dark;
-    final bgColor = isDark ? const Color(0xFF121212) : Colors.white;
-    final textColor = isDark ? const Color(0xFFd9d9d9) : Colors.black;
-    final cardColor = isDark ? const Color(0xFF333333) : Colors.grey[200]!;
-    final iconColor = textColor;
+    final colors = themeProvider.themeMode == ThemeMode.dark
+        ? AppColorSet.dark()
+        : AppColorSet.light();
 
     final user = Provider.of<UserProvider>(context).user;
     final isOwner = user != null &&
@@ -799,7 +762,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
 
     final photoUrl = widget.userData['photoUrl']?.toString() ?? '';
     final uid = widget.userData['uid']?.toString() ?? '';
-    final matrix = _buildColorMatrix();
+
+    // ✅ Use shared helper
+    final matrix = buildColorMatrix(_editResult);
     final quarters = _editResult?.rotationQuarters ?? 0;
     final description = widget.post['description']?.toString() ?? '';
 
@@ -812,8 +777,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
             children: [
               GestureDetector(
                 onTap: _goToProfile,
-                child: _buildAvatar(
-                    photoUrl, uid, user?.uid ?? '', cardColor, textColor),
+                child: _buildAvatar(photoUrl, uid, user?.uid ?? '', colors),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -826,21 +790,22 @@ class _FeedPostPageState extends State<_FeedPostPage>
                         username: widget.userData['username']?.toString() ?? '',
                         uid: uid,
                         style: TextStyle(
-                            fontWeight: FontWeight.bold, color: textColor),
+                            fontWeight: FontWeight.bold,
+                            color: colors.textColor),
                       ),
                     ),
                     if (timeStr.isNotEmpty)
                       Text(timeStr,
                           style: TextStyle(
-                              color: textColor.withOpacity(0.6), fontSize: 12)),
+                              color: colors.textColor.withOpacity(0.6),
+                              fontSize: 12)),
                   ],
                 ),
               ),
               if (isOwner && widget.onPostDeleted != null)
                 IconButton(
-                  icon: Icon(Icons.more_vert, color: iconColor),
-                  onPressed: () =>
-                      _showOptionsMenu(context, bgColor, textColor),
+                  icon: Icon(Icons.more_vert, color: colors.iconColor),
+                  onPressed: () => _showOptionsMenu(context),
                 ),
             ],
           ),
@@ -848,7 +813,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {
-              return _buildMedia(matrix, quarters, cardColor, textColor,
+              return _buildMedia(matrix, quarters, colors,
                   maxHeight: constraints.maxHeight);
             },
           ),
@@ -858,7 +823,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Text(
               description,
-              style: TextStyle(color: textColor, fontSize: 15),
+              style: TextStyle(color: colors.textColor, fontSize: 15),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
@@ -888,7 +853,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
                 children: [
                   IconButton(
                     icon: Icon(Icons.comment_outlined,
-                        color: iconColor, size: 28),
+                        color: colors.iconColor, size: 28),
                     onPressed: () => _showComments(context),
                   ),
                   if (_commentCount > 0)
@@ -900,12 +865,12 @@ class _FeedPostPageState extends State<_FeedPostPage>
                         constraints:
                             const BoxConstraints(minWidth: 20, minHeight: 20),
                         decoration: BoxDecoration(
-                            color: cardColor, shape: BoxShape.circle),
+                            color: colors.cardColor, shape: BoxShape.circle),
                         child: Center(
                           child: Text(
                             _commentCount.toString(),
                             style: TextStyle(
-                                color: textColor,
+                                color: colors.textColor,
                                 fontSize: 10,
                                 fontWeight: FontWeight.bold),
                           ),
@@ -915,7 +880,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
                 ],
               ),
               IconButton(
-                icon: Icon(Icons.send, color: iconColor),
+                icon: Icon(Icons.send, color: colors.iconColor),
                 onPressed: () {
                   if (user != null) {
                     showDialog(
@@ -931,7 +896,8 @@ class _FeedPostPageState extends State<_FeedPostPage>
                 onTap: _openRatingsPanel,
                 child: Container(
                   decoration: BoxDecoration(
-                      color: cardColor, borderRadius: BorderRadius.circular(4)),
+                      color: colors.cardColor,
+                      borderRadius: BorderRadius.circular(4)),
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   child: Text(
@@ -941,7 +907,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
                             '${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
                     style: TextStyle(
                         fontSize: 13,
-                        color: textColor,
+                        color: colors.textColor,
                         fontWeight: FontWeight.w500),
                   ),
                 ),
@@ -955,32 +921,28 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
-  Widget _buildAvatar(String photoUrl, String uid, String currentUserId,
-      Color cardColor, Color textColor) {
+  Widget _buildAvatar(
+      String photoUrl, String uid, String currentUserId, AppColorSet colors) {
     final isDefault = photoUrl.isEmpty || photoUrl == 'default';
     return CircleAvatar(
       radius: 20,
-      backgroundColor: cardColor,
+      backgroundColor: colors.cardColor,
       backgroundImage: !isDefault ? NetworkImage(photoUrl) : null,
       child: isDefault
-          ? Icon(Icons.account_circle, size: 40, color: textColor)
+          ? Icon(Icons.account_circle, size: 40, color: colors.textColor)
           : null,
     );
   }
 
-  Widget _buildMedia(
-      List<double> matrix, int quarters, Color cardColor, Color textColor,
+  Widget _buildMedia(List<double> matrix, int quarters, AppColorSet colors,
       {double? maxHeight}) {
     if (_isVideo)
-      return _buildVideoPlayer(matrix, quarters, cardColor, textColor,
-          maxHeight: maxHeight);
-    return _buildImage(matrix, quarters, cardColor, textColor,
-        maxHeight: maxHeight);
+      return _buildVideoPlayer(matrix, quarters, colors, maxHeight: maxHeight);
+    return _buildImage(matrix, quarters, colors, maxHeight: maxHeight);
   }
 
-  // ── UPDATED VIDEO PLAYER WITH TAP‑TO‑PAUSE AND PLAY OVERLAY ──────────
   Widget _buildVideoPlayer(
-      List<double> matrix, int quarters, Color cardColor, Color textColor,
+      List<double> matrix, int quarters, AppColorSet colors,
       {double? maxHeight}) {
     final double videoAspect = (_isVideoInitialized && _videoController != null)
         ? _videoController!.value.aspectRatio
@@ -1003,7 +965,6 @@ class _FeedPostPageState extends State<_FeedPostPage>
             child: Container(
               color: Colors.black,
               child: GestureDetector(
-                // Tapping the video toggles play/pause
                 onTap: _togglePlayback,
                 child: Stack(
                   fit: StackFit.expand,
@@ -1026,52 +987,30 @@ class _FeedPostPageState extends State<_FeedPostPage>
                         ),
                       )
                     else if (_isVideoLoading)
-                      Center(child: CircularProgressIndicator(color: textColor))
+                      Center(
+                          child: CircularProgressIndicator(
+                              color: colors.textColor))
                     else
                       Center(
-                          child:
-                              Icon(Icons.videocam, color: textColor, size: 48)),
+                          child: Icon(Icons.videocam,
+                              color: colors.textColor, size: 48)),
 
-                    // Video edit strokes
-                    if (_editResult != null && _editResult!.strokes.isNotEmpty)
-                      Positioned.fill(
-                        child: IgnorePointer(
-                          child: CustomPaint(
-                            painter: DrawingPainter(
-                                strokes: _editResult!.strokes,
-                                currentStroke: null),
-                          ),
-                        ),
-                      ),
-                    // Video edit overlays
-                    if (_editResult != null && _editResult!.overlays.isNotEmpty)
+                    // ✅ Edit overlays (strokes + text) using shared function
+                    if (_editResult != null)
                       Positioned.fill(
                         child: IgnorePointer(
                           child: LayoutBuilder(
-                            builder: (_, overlayConstraints) => Stack(
-                              children: _editResult!.overlays.map((o) {
-                                return Positioned(
-                                  left: (o.position.dx *
-                                          overlayConstraints.maxWidth)
-                                      .clamp(0.0,
-                                          overlayConstraints.maxWidth - 10),
-                                  top: (o.position.dy *
-                                          overlayConstraints.maxHeight)
-                                      .clamp(0.0,
-                                          overlayConstraints.maxHeight - 10),
-                                  child:
-                                      Stack(clipBehavior: Clip.none, children: [
-                                    Text(o.text, style: overlayShadowStyle(o)),
-                                    Text(o.text, style: overlayTextStyle(o)),
-                                  ]),
-                                );
-                              }).toList(),
+                            builder: (context, overlayConstraints) =>
+                                buildEditOverlayLayer(
+                              editResult: _editResult!,
+                              constraints: overlayConstraints,
+                              screenSize: MediaQuery.of(context).size,
                             ),
                           ),
                         ),
                       ),
 
-                    // 🎬 PLAY BUTTON OVERLAY (shown when paused)
+                    // Play overlay
                     if (_isVideoInitialized && !_isVideoPlaying)
                       Center(
                         child: Container(
@@ -1081,15 +1020,12 @@ class _FeedPostPageState extends State<_FeedPostPage>
                             color: Colors.black54,
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(
-                            Icons.play_arrow,
-                            size: 40,
-                            color: Colors.white,
-                          ),
+                          child: const Icon(Icons.play_arrow,
+                              size: 40, color: Colors.white),
                         ),
                       ),
 
-                    // 🔊 Mute button
+                    // Mute button
                     if (_isVideoInitialized)
                       Positioned(
                         bottom: 16,
@@ -1119,8 +1055,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
-  Widget _buildImage(
-      List<double> matrix, int quarters, Color cardColor, Color textColor,
+  Widget _buildImage(List<double> matrix, int quarters, AppColorSet colors,
       {double? maxHeight}) {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1157,9 +1092,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
                                 height: width,
                                 fit: BoxFit.cover,
                                 errorBuilder: (_, __, ___) => Container(
-                                  color: cardColor,
+                                  color: colors.cardColor,
                                   child: Icon(Icons.broken_image,
-                                      color: textColor, size: 48),
+                                      color: colors.textColor, size: 48),
                                 ),
                               ),
                             )
@@ -1169,48 +1104,24 @@ class _FeedPostPageState extends State<_FeedPostPage>
                               height: width,
                               fit: BoxFit.cover,
                               errorBuilder: (_, __, ___) => Container(
-                                color: cardColor,
+                                color: colors.cardColor,
                                 child: Icon(Icons.broken_image,
-                                    color: textColor, size: 48),
+                                    color: colors.textColor, size: 48),
                               ),
                             ),
                     ),
                   ),
                 ),
-                if (_editResult != null &&
-                    (_editResult!.strokes.isNotEmpty ||
-                        _editResult!.overlays.isNotEmpty))
+                // ✅ Edit overlays for images using shared function
+                if (_editResult != null)
                   Positioned.fill(
                     child: IgnorePointer(
                       child: LayoutBuilder(
-                        builder: (_, overlayConstraints) => Stack(
-                          children: [
-                            if (_editResult!.strokes.isNotEmpty)
-                              Positioned.fill(
-                                child: CustomPaint(
-                                  painter: DrawingPainter(
-                                      strokes: _editResult!.strokes,
-                                      currentStroke: null),
-                                ),
-                              ),
-                            ..._editResult!.overlays.map((o) {
-                              return Positioned(
-                                left: (o.position.dx *
-                                        overlayConstraints.maxWidth)
-                                    .clamp(
-                                        0.0, overlayConstraints.maxWidth - 10),
-                                top: (o.position.dy *
-                                        overlayConstraints.maxHeight)
-                                    .clamp(
-                                        0.0, overlayConstraints.maxHeight - 10),
-                                child:
-                                    Stack(clipBehavior: Clip.none, children: [
-                                  Text(o.text, style: overlayShadowStyle(o)),
-                                  Text(o.text, style: overlayTextStyle(o)),
-                                ]),
-                              );
-                            }),
-                          ],
+                        builder: (context, overlayConstraints) =>
+                            buildEditOverlayLayer(
+                          editResult: _editResult!,
+                          constraints: overlayConstraints,
+                          screenSize: MediaQuery.of(context).size,
                         ),
                       ),
                     ),
@@ -1224,7 +1135,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
   }
 
   void _showComments(BuildContext context) {
-    _pauseVideo(); // ← comments still pause the video (different UX)
+    _pauseVideo();
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
