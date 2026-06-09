@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data'; // NEW: for thumbnail bytes
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
@@ -13,7 +13,7 @@ import 'package:Ratedly/resources/block_firestore_methods.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:get_thumbnail_video/video_thumbnail.dart'; // NEW: thumbnail extraction
+import 'package:get_thumbnail_video/video_thumbnail.dart';
 import 'package:flutter/gestures.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:country_flags/country_flags.dart';
@@ -23,87 +23,7 @@ import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/services/analytics_service.dart';
-
-// -----------------------------------------------------------------------------
-// Color definitions
-// -----------------------------------------------------------------------------
-class _OtherProfileColorSet {
-  final Color backgroundColor;
-  final Color textColor;
-  final Color iconColor;
-  final Color appBarBackgroundColor;
-  final Color appBarIconColor;
-  final Color progressIndicatorColor;
-  final Color avatarBackgroundColor;
-  final Color buttonBackgroundColor;
-  final Color buttonTextColor;
-  final Color dividerColor;
-  final Color dialogBackgroundColor;
-  final Color dialogTextColor;
-  final Color errorTextColor;
-  final Color radioActiveColor;
-  final Color skeletonColor;
-
-  _OtherProfileColorSet({
-    required this.backgroundColor,
-    required this.textColor,
-    required this.iconColor,
-    required this.appBarBackgroundColor,
-    required this.appBarIconColor,
-    required this.progressIndicatorColor,
-    required this.avatarBackgroundColor,
-    required this.buttonBackgroundColor,
-    required this.buttonTextColor,
-    required this.dividerColor,
-    required this.dialogBackgroundColor,
-    required this.dialogTextColor,
-    required this.errorTextColor,
-    required this.radioActiveColor,
-    required this.skeletonColor,
-  });
-}
-
-class _OtherProfileDarkColors extends _OtherProfileColorSet {
-  _OtherProfileDarkColors()
-      : super(
-          backgroundColor: const Color(0xFF121212),
-          textColor: const Color(0xFFd9d9d9),
-          iconColor: const Color(0xFFd9d9d9),
-          appBarBackgroundColor: const Color(0xFF121212),
-          appBarIconColor: const Color(0xFFd9d9d9),
-          progressIndicatorColor: const Color(0xFFd9d9d9),
-          avatarBackgroundColor: const Color(0xFF333333),
-          buttonBackgroundColor: const Color(0xFF333333),
-          buttonTextColor: const Color(0xFFd9d9d9),
-          dividerColor: const Color(0xFF333333),
-          dialogBackgroundColor: const Color(0xFF121212),
-          dialogTextColor: const Color(0xFFd9d9d9),
-          errorTextColor: Colors.grey,
-          radioActiveColor: const Color(0xFFd9d9d9),
-          skeletonColor: const Color(0xFF333333),
-        );
-}
-
-class _OtherProfileLightColors extends _OtherProfileColorSet {
-  _OtherProfileLightColors()
-      : super(
-          backgroundColor: Colors.white,
-          textColor: Colors.black,
-          iconColor: Colors.black,
-          appBarBackgroundColor: Colors.white,
-          appBarIconColor: Colors.black,
-          progressIndicatorColor: Colors.grey,
-          avatarBackgroundColor: Colors.grey,
-          buttonBackgroundColor: Colors.grey,
-          buttonTextColor: Colors.black,
-          dividerColor: Colors.grey,
-          dialogBackgroundColor: Colors.white,
-          dialogTextColor: Colors.black,
-          errorTextColor: Colors.grey,
-          radioActiveColor: Colors.black,
-          skeletonColor: Colors.grey,
-        );
-}
+import 'package:Ratedly/utils/colors.dart'; // ✅ shared colours
 
 // -----------------------------------------------------------------------------
 // Reusable widgets
@@ -278,10 +198,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     } catch (_) {}
   }
 
-  _OtherProfileColorSet _getColors(ThemeProvider themeProvider) {
+  // ✅ unified colour getter
+  AppColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
-        ? _OtherProfileDarkColors()
-        : _OtherProfileLightColors();
+        ? AppColorSet.dark()
+        : AppColorSet.light();
   }
 
   // --------------------------------------------------------------
@@ -337,7 +258,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   bool _shouldShowVideoLoop(String postId) {
     if (postId.isEmpty) return false;
     final hash = postId.hashCode;
-    return (hash % 100).abs() < 20; // 20%
+    return (hash % 100).abs() < 20;
   }
 
   // ── Thumbnail extraction & caching ─────────────────────────────
@@ -443,9 +364,98 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
-  // ── NEW: Thumbnail widget for grid posts ───────────────────────
-  Widget _buildPostVideoThumbnail(String videoUrl, _OtherProfileColorSet colors,
-      VideoEditResult? editResult) {
+  Widget _buildEditOverlayLayer(
+      VideoEditResult editResult, BoxConstraints constraints) {
+    if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final double previewW = constraints.maxWidth;
+    final double previewH = constraints.maxHeight;
+    final double screenW = MediaQuery.of(context).size.width;
+    final double screenH = MediaQuery.of(context).size.height;
+    final double scaleX = previewW / screenW;
+    final double scaleY = previewH / screenH;
+    final double fontScale = math.min(scaleX, scaleY);
+
+    return Stack(
+      clipBehavior: Clip.hardEdge,
+      children: [
+        if (editResult.strokes.isNotEmpty)
+          Positioned.fill(
+            child: CustomPaint(
+              painter: _ScaledDrawingPainter(
+                strokes: editResult.strokes,
+                scaleX: scaleX,
+                scaleY: scaleY,
+              ),
+            ),
+          ),
+        ...editResult.overlays.map((o) {
+          final scaledOverlay = o.copyWith(fontSize: o.fontSize * fontScale);
+          return Positioned(
+            left: (o.position.dx * previewW).clamp(0.0, previewW - 10),
+            top: (o.position.dy * previewH).clamp(0.0, previewH - 10),
+            child: Stack(clipBehavior: Clip.none, children: [
+              Text(o.text, style: overlayShadowStyle(scaledOverlay)),
+              Text(o.text, style: overlayTextStyle(scaledOverlay)),
+            ]),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _buildPostVideoPlayer(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
+    final controller = _getVideoController(videoUrl);
+    final isInitialized = _isVideoControllerInitialized(videoUrl);
+
+    if (!isInitialized || controller == null) {
+      return Container(
+          color: colors.avatarBackgroundColor,
+          child: Center(
+              child: CircularProgressIndicator(
+                  color: colors.progressIndicatorColor)));
+    }
+
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(
+          child: ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: controller.value.size.width,
+                  height: controller.value.size.height,
+                  child: VideoPlayer(controller),
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (editResult != null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: LayoutBuilder(
+                builder: (context, constraints) =>
+                    _buildEditOverlayLayer(editResult, constraints),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  Widget _buildPostVideoThumbnail(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
@@ -502,148 +512,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── NEW: Thumbnail widget for gallery covers ───────────────────
-  Widget _buildGalleryVideoThumbnail(String videoUrl,
-      _OtherProfileColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return FutureBuilder<Uint8List?>(
-      future: _getThumbnailFuture(videoUrl),
-      builder: (context, snapshot) {
-        final haveImage = snapshot.connectionState == ConnectionState.done &&
-            snapshot.data != null;
-
-        Widget imageLayer = haveImage
-            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
-            : Container(color: colors.avatarBackgroundColor);
-
-        imageLayer = ColorFiltered(
-          colorFilter: ColorFilter.matrix(matrix),
-          child: Transform.rotate(
-            angle: quarters * math.pi / 2,
-            child: imageLayer,
-          ),
-        );
-
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Stack(fit: StackFit.expand, children: [
-            Positioned.fill(child: imageLayer),
-            Positioned(
-              top: 6,
-              right: 6,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.55),
-                  shape: BoxShape.circle,
-                ),
-                padding: const EdgeInsets.all(3),
-                child: const Icon(
-                  Icons.play_arrow,
-                  color: Colors.white,
-                  size: 18,
-                ),
-              ),
-            ),
-          ]),
-        );
-      },
-    );
-  }
-
-  Widget _buildEditOverlayLayer(
-      VideoEditResult editResult, BoxConstraints constraints) {
-    if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    final double previewW = constraints.maxWidth;
-    final double previewH = constraints.maxHeight;
-    final double screenW = MediaQuery.of(context).size.width;
-    final double screenH = MediaQuery.of(context).size.height;
-    final double scaleX = previewW / screenW;
-    final double scaleY = previewH / screenH;
-    final double fontScale = math.min(scaleX, scaleY);
-
-    return Stack(
-      clipBehavior: Clip.hardEdge,
-      children: [
-        if (editResult.strokes.isNotEmpty)
-          Positioned.fill(
-            child: CustomPaint(
-              painter: _ScaledDrawingPainter(
-                strokes: editResult.strokes,
-                scaleX: scaleX,
-                scaleY: scaleY,
-              ),
-            ),
-          ),
-        ...editResult.overlays.map((o) {
-          final scaledOverlay = o.copyWith(fontSize: o.fontSize * fontScale);
-          return Positioned(
-            left: (o.position.dx * previewW).clamp(0.0, previewW - 10),
-            top: (o.position.dy * previewH).clamp(0.0, previewH - 10),
-            child: Stack(clipBehavior: Clip.none, children: [
-              Text(o.text, style: overlayShadowStyle(scaledOverlay)),
-              Text(o.text, style: overlayTextStyle(scaledOverlay)),
-            ]),
-          );
-        }),
-      ],
-    );
-  }
-
-  Widget _buildPostVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
-      VideoEditResult? editResult) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
-
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.avatarBackgroundColor,
-          child: Center(
-              child: CircularProgressIndicator(
-                  color: colors.progressIndicatorColor)));
-    }
-
-    final List<double> matrix = _buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: controller.value.size.width,
-                  height: controller.value.size.height,
-                  child: VideoPlayer(controller),
-                ),
-              ),
-            ),
-          ),
-        ),
-        if (editResult != null)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: LayoutBuilder(
-                builder: (context, constraints) =>
-                    _buildEditOverlayLayer(editResult, constraints),
-              ),
-            ),
-          ),
-      ]),
-    );
-  }
-
-  Widget _buildPostImage(String imageUrl, _OtherProfileColorSet colors,
-      VideoEditResult? editResult) {
+  Widget _buildPostImage(
+      String imageUrl, AppColorSet colors, VideoEditResult? editResult) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
@@ -698,8 +568,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildGalleryVideoPlayer(String videoUrl, _OtherProfileColorSet colors,
-      VideoEditResult? editResult) {
+  Widget _buildGalleryVideoPlayer(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
 
@@ -737,8 +607,57 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
+  Widget _buildGalleryVideoThumbnail(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return FutureBuilder<Uint8List?>(
+      future: _getThumbnailFuture(videoUrl),
+      builder: (context, snapshot) {
+        final haveImage = snapshot.connectionState == ConnectionState.done &&
+            snapshot.data != null;
+
+        Widget imageLayer = haveImage
+            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+            : Container(color: colors.avatarBackgroundColor);
+
+        imageLayer = ColorFiltered(
+          colorFilter: ColorFilter.matrix(matrix),
+          child: Transform.rotate(
+            angle: quarters * math.pi / 2,
+            child: imageLayer,
+          ),
+        );
+
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Stack(fit: StackFit.expand, children: [
+            Positioned.fill(child: imageLayer),
+            Positioned(
+              top: 6,
+              right: 6,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.55),
+                  shape: BoxShape.circle,
+                ),
+                padding: const EdgeInsets.all(3),
+                child: const Icon(
+                  Icons.play_arrow,
+                  color: Colors.white,
+                  size: 18,
+                ),
+              ),
+            ),
+          ]),
+        );
+      },
+    );
+  }
+
   Widget _buildGalleryCoverImage(
-      String url, _OtherProfileColorSet colors, VideoEditResult? editResult) {
+      String url, AppColorSet colors, VideoEditResult? editResult) {
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
@@ -750,8 +669,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               color: colors.avatarBackgroundColor.withOpacity(0.5)),
-          child:
-              Icon(Icons.collections, size: 40, color: colors.errorTextColor),
+          child: Icon(Icons.collections, size: 40, color: colors.errorColor),
         ),
       );
     }
@@ -767,8 +685,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(8),
                 color: colors.avatarBackgroundColor.withOpacity(0.5)),
-            child:
-                Icon(Icons.collections, size: 40, color: colors.errorTextColor),
+            child: Icon(Icons.collections, size: 40, color: colors.errorColor),
           ),
         ),
       ),
@@ -813,7 +730,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  Widget _buildProfileVideoPlayer(_OtherProfileColorSet colors) {
+  Widget _buildProfileVideoPlayer(AppColorSet colors) {
     if (_profileVideoController == null || !_isProfileVideoInitialized) {
       return Container(
         decoration: BoxDecoration(
@@ -861,7 +778,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildProfilePicture(_OtherProfileColorSet colors) {
+  Widget _buildProfilePicture(AppColorSet colors) {
     final photoUrl = userData['photoUrl']?.toString() ?? '';
     final isDefault = photoUrl.isEmpty || photoUrl == 'default';
     final isVideo = !isDefault && _isVideoFile(photoUrl);
@@ -1475,7 +1392,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     }
   }
 
-  void _showProfileReportDialog(_OtherProfileColorSet colors) {
+  void _showProfileReportDialog(AppColorSet colors) {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
         userProvider.firebaseUid ?? userProvider.supabaseUid;
@@ -1561,7 +1478,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   // --------------------------------------------------------------
   // UI Builders
   // --------------------------------------------------------------
-  Widget _buildOtherProfileSkeleton(_OtherProfileColorSet colors) {
+  Widget _buildOtherProfileSkeleton(AppColorSet colors) {
     return SingleChildScrollView(
       controller: _scrollController,
       child: Padding(
@@ -1581,7 +1498,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildOtherProfileHeaderSkeleton(_OtherProfileColorSet colors) {
+  Widget _buildOtherProfileHeaderSkeleton(AppColorSet colors) {
     return Column(children: [
       Container(
           width: 90,
@@ -1616,7 +1533,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     ]);
   }
 
-  Widget _buildOtherMetricSkeleton(_OtherProfileColorSet colors) {
+  Widget _buildOtherMetricSkeleton(AppColorSet colors) {
     return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
       Container(
           height: 16,
@@ -1634,7 +1551,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     ]);
   }
 
-  Widget _buildOtherBioSectionSkeleton(_OtherProfileColorSet colors) {
+  Widget _buildOtherBioSectionSkeleton(AppColorSet colors) {
     return Align(
       alignment: Alignment.centerLeft,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1669,7 +1586,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildTabButtonsSkeleton(_OtherProfileColorSet colors) {
+  Widget _buildTabButtonsSkeleton(AppColorSet colors) {
     return Row(children: [
       Expanded(
           child: Container(
@@ -1687,7 +1604,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     ]);
   }
 
-  Widget _buildOtherPostsGridSkeleton(_OtherProfileColorSet colors) {
+  Widget _buildOtherPostsGridSkeleton(AppColorSet colors) {
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
@@ -1706,7 +1623,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildAppBarTitleSkeleton(_OtherProfileColorSet colors) {
+  Widget _buildAppBarTitleSkeleton(AppColorSet colors) {
     return Container(
         height: 16,
         width: 120,
@@ -1715,7 +1632,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             borderRadius: BorderRadius.circular(4)));
   }
 
-  Widget _buildTabButtons(_OtherProfileColorSet colors) {
+  Widget _buildTabButtons(AppColorSet colors) {
     return Row(children: [
       Expanded(
         child: GestureDetector(
@@ -1782,7 +1699,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     ]);
   }
 
-  Widget _buildOtherProfileHeader(_OtherProfileColorSet colors) {
+  Widget _buildOtherProfileHeader(AppColorSet colors) {
     return Column(children: [
       Transform.translate(
         offset: const Offset(0, -12),
@@ -1810,7 +1727,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     ]);
   }
 
-  Widget _buildOtherInteractionButtons(_OtherProfileColorSet colors) {
+  Widget _buildOtherInteractionButtons(AppColorSet colors) {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
         userProvider.firebaseUid ?? userProvider.supabaseUid;
@@ -1844,8 +1761,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     ]);
   }
 
-  Widget _buildFollowButton(
-      bool isPrivateAccount, _OtherProfileColorSet colors) {
+  Widget _buildFollowButton(bool isPrivateAccount, AppColorSet colors) {
     final isPending = hasPendingRequest && isPrivateAccount;
     final bool isTest = _isTestUser;
 
@@ -1876,8 +1792,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildOtherMetric(
-      int value, String label, _OtherProfileColorSet colors) {
+  Widget _buildOtherMetric(int value, String label, AppColorSet colors) {
     return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
       Text(value.toString(),
           style: TextStyle(
@@ -1893,7 +1808,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     ]);
   }
 
-  Widget _buildOtherBioSection(_OtherProfileColorSet colors) {
+  Widget _buildOtherBioSection(AppColorSet colors) {
     final String bio = userData['bio'] ?? '';
     return Align(
       alignment: Alignment.centerLeft,
@@ -1917,9 +1832,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildPrivateAccountMessage(_OtherProfileColorSet colors) {
+  Widget _buildPrivateAccountMessage(AppColorSet colors) {
     return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      Icon(Icons.lock, size: 60, color: colors.errorTextColor),
+      Icon(Icons.lock, size: 60, color: colors.errorColor),
       const SizedBox(height: 20),
       Text('This Account is Private',
           style: TextStyle(
@@ -1932,7 +1847,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     ]);
   }
 
-  Widget _buildOtherPostsGrid(_OtherProfileColorSet colors) {
+  Widget _buildOtherPostsGrid(AppColorSet colors) {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
         userProvider.firebaseUid ?? userProvider.supabaseUid;
@@ -1951,7 +1866,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
                 const Icon(Icons.block, size: 50, color: Colors.red),
                 const SizedBox(height: 10),
                 Text('Posts unavailable due to blocking',
-                    style: TextStyle(color: colors.errorTextColor)),
+                    style: TextStyle(color: colors.errorColor)),
               ])));
     }
     if (shouldHidePosts) {
@@ -1962,8 +1877,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           height: 200,
           child: Center(
               child: Text('This user has no posts.',
-                  style:
-                      TextStyle(fontSize: 16, color: colors.errorTextColor))));
+                  style: TextStyle(fontSize: 16, color: colors.errorColor))));
     }
 
     return GridView.builder(
@@ -1980,7 +1894,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildOtherGalleriesGrid(_OtherProfileColorSet colors) {
+  Widget _buildOtherGalleriesGrid(AppColorSet colors) {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
         userProvider.firebaseUid ?? userProvider.supabaseUid;
@@ -2000,7 +1914,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
                 const Icon(Icons.block, size: 50, color: Colors.red),
                 const SizedBox(height: 10),
                 Text('Galleries unavailable due to blocking',
-                    style: TextStyle(color: colors.errorTextColor)),
+                    style: TextStyle(color: colors.errorColor)),
               ])));
     }
     if (shouldHideGalleries) {
@@ -2010,7 +1924,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       return Padding(
           padding: const EdgeInsets.all(40.0),
           child: Column(children: [
-            Icon(Icons.collections, size: 64, color: colors.errorTextColor),
+            Icon(Icons.collections, size: 64, color: colors.errorColor),
             const SizedBox(height: 16),
             Text('No Galleries Yet',
                 style: TextStyle(
@@ -2039,8 +1953,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   }
 
   // ── GRID ITEM BUILDERS (modified for video thumbnail/loop decision) ──
-  Widget _buildOtherPostItem(
-      Map<String, dynamic> post, _OtherProfileColorSet colors) {
+  Widget _buildOtherPostItem(Map<String, dynamic> post, AppColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
     final editResult = _parseEditResult(post);
@@ -2114,8 +2027,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildGalleryItem(
-      Map<String, dynamic> gallery, _OtherProfileColorSet colors) {
+  Widget _buildGalleryItem(Map<String, dynamic> gallery, AppColorSet colors) {
     final postCount =
         gallery['gallery_posts'] != null && gallery['gallery_posts'].isNotEmpty
             ? gallery['gallery_posts'][0]['count'] ?? 0
@@ -2222,8 +2134,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
               decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(8),
                   color: colors.avatarBackgroundColor.withOpacity(0.5)),
-              child: Icon(Icons.collections,
-                  size: 40, color: colors.errorTextColor),
+              child:
+                  Icon(Icons.collections, size: 40, color: colors.errorColor),
             ),
           Container(
             decoration: BoxDecoration(
@@ -2284,7 +2196,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         appBar: AppBar(
           backgroundColor: colors.appBarBackgroundColor,
           elevation: 0,
-          leading: BackButton(color: colors.appBarIconColor),
+          leading: BackButton(color: colors.iconColor),
           title: _buildAppBarTitleSkeleton(colors),
           centerTitle: true,
         ),
@@ -2295,7 +2207,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
     return Scaffold(
       appBar: AppBar(
-        iconTheme: IconThemeData(color: colors.appBarIconColor),
+        iconTheme: IconThemeData(color: colors.iconColor),
         backgroundColor: colors.appBarBackgroundColor,
         elevation: 0,
         title: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -2307,11 +2219,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           ),
         ]),
         centerTitle: true,
-        leading: BackButton(color: colors.appBarIconColor),
+        leading: BackButton(color: colors.iconColor),
         actions: [
           if (isAuthenticated)
             PopupMenuButton<String>(
-              icon: Icon(Icons.more_vert, color: colors.appBarIconColor),
+              icon: Icon(Icons.more_vert, color: colors.iconColor),
               color: colors.appBarBackgroundColor,
               onSelected: (value) async {
                 if (value == 'block') {
