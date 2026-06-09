@@ -559,7 +559,11 @@ class _FeedPostPageState extends State<_FeedPostPage>
     }
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // FIX: Pause video BEFORE navigating to profile so audio doesn't leak
+  // ───────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
+    _pauseVideo(); // ✅ Pause any playing video before navigating
     Navigator.push(
       context,
       MaterialPageRoute(
