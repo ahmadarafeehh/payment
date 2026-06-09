@@ -1,8 +1,8 @@
 // lib/screens/Profile_page/current_profile_screen.dart
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/services/notification_service.dart';
@@ -15,16 +15,17 @@ import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:provider/provider.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:get_thumbnail_video/video_thumbnail.dart';
 import 'package:flutter/gestures.dart';
 import 'package:Ratedly/screens/Profile_page/gallery_detail_screen.dart';
 import 'package:country_flags/country_flags.dart';
-import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
-import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/services/analytics_service.dart';
-import 'package:Ratedly/utils/colors.dart'; // ✅ shared colours
+import 'package:Ratedly/utils/colors.dart'; // shared colours
+import 'package:Ratedly/utils/video_utils.dart'; // shared video helpers + service
 
+// -----------------------------------------------------------------------------
+// Reusable widgets (same as before)
+// -----------------------------------------------------------------------------
 class CountryFlagWidget extends StatelessWidget {
   final String countryCode;
   final double width;
@@ -102,6 +103,9 @@ class _ExpandableBioTextState extends State<ExpandableBioText> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Main CurrentUserProfileScreen
+// -----------------------------------------------------------------------------
 class CurrentUserProfileScreen extends StatefulWidget {
   final String uid;
   const CurrentUserProfileScreen({Key? key, required this.uid})
@@ -132,19 +136,16 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   List<dynamic> _galleries = [];
   int _selectedTabIndex = 0;
 
-  // ── Profile-picture video only – no more per-grid-item controllers ──────
+  // ── Profile-picture video (separate) ─────────────────────────────────
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = false;
 
-  // ── Video controller maps for looping videos ──────────────────────────
-  final Map<String, VideoPlayerController> _videoControllers = {};
-  final Map<String, bool> _videoControllersInitialized = {};
-  Timer? _videoInitDebounce;
-
-  // ── Thumbnail caches (same as before) ─────────────────────────────────
-  final Map<String, Uint8List?> _thumbnailCache = {};
-  final Map<String, Future<Uint8List?>> _thumbnailFutures = {};
+  // ── Shared media service (replaces all thumbnail caches & loop controllers) ──
+  late final VideoMediaService _mediaService = VideoMediaService()
+    ..onRebuild = () {
+      if (mounted) setState(() {});
+    };
 
   List<dynamic> _displayedPosts = [];
   int _postsOffset = 0;
@@ -156,7 +157,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   late ScrollController _scrollController;
 
-  // ✅ unified colour getter
+  // ── Unified colour getter ───────────────────────────────────────────
   AppColorSet _getColors(ThemeProvider themeProvider) {
     return themeProvider.themeMode == ThemeMode.dark
         ? AppColorSet.dark()
@@ -183,266 +184,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     } catch (_) {}
   }
 
-  bool _isVideoFile(String url) {
-    if (url.isEmpty || url == 'default') return false;
-    final l = url.toLowerCase();
-    return l.endsWith('.mp4') ||
-        l.endsWith('.mov') ||
-        l.endsWith('.avi') ||
-        l.endsWith('.wmv') ||
-        l.endsWith('.flv') ||
-        l.endsWith('.mkv') ||
-        l.endsWith('.webm') ||
-        l.endsWith('.m4v') ||
-        l.endsWith('.3gp') ||
-        l.contains('/video/') ||
-        l.contains('video=true');
-  }
-
-  Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
-    if (raw == null) return null;
-    if (raw is Map<String, dynamic>) return raw;
-    if (raw is Map) return Map<String, dynamic>.from(raw);
-    return null;
-  }
-
-  VideoEditResult? _parseEditResult(Map<String, dynamic> post) {
-    final meta = _extractEditMetadata(post['video_edit_metadata']);
-    if (meta == null) return null;
-    try {
-      return VideoEditResult.fromJson(meta, File(''));
-    } catch (e, stack) {
-      _logProfileError(
-        operation: 'parseEditResult',
-        error: e,
-        stack: stack,
-        additionalData: {'postId': post['postId']},
-      );
-      return null;
-    }
-  }
-
-  List<double> _buildColorMatrix(VideoEditResult? er) {
-    if (er == null) {
-      return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
-    }
-    return er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix);
-  }
-
-  // ── Deterministic loop decision (20% chance) ─────────────────────────
-  bool _shouldShowVideoLoop(String postId) {
-    if (postId.isEmpty) return false;
-    final hash = postId.hashCode;
-    return (hash % 100).abs() < 20;
-  }
-
-  // ── Video thumbnail extraction (same as before) ─────────────────────
-  Future<Uint8List?> _getVideoThumbnail(String videoUrl) async {
-    if (_thumbnailCache.containsKey(videoUrl)) {
-      return _thumbnailCache[videoUrl];
-    }
-    try {
-      final data = await VideoThumbnail.thumbnailData(
-        video: videoUrl,
-        maxWidth: 200,
-        quality: 60,
-      );
-      _thumbnailCache[videoUrl] = data;
-      return data;
-    } catch (e, stack) {
-      await _logProfileError(
-        operation: 'getVideoThumbnail',
-        error: e,
-        stack: stack,
-        additionalData: {'videoUrl': videoUrl},
-      );
-      _thumbnailCache[videoUrl] = null;
-      return null;
-    }
-  }
-
-  Future<Uint8List?> _getThumbnailFuture(String videoUrl) => _thumbnailFutures
-      .putIfAbsent(videoUrl, () => _getVideoThumbnail(videoUrl));
-
-  // ── Video controller initialization (for looping videos) ────────────
-  Future<void> _initializeVideoController(String videoUrl) async {
-    if (_videoControllers.containsKey(videoUrl) ||
-        _videoControllersInitialized[videoUrl] == true) return;
-    try {
-      final controller = VideoPlayerController.networkUrl(
-        Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-      );
-      _videoControllers[videoUrl] = controller;
-      _videoControllersInitialized[videoUrl] = false;
-
-      controller.initialize().then((_) {
-        if (!mounted || !_videoControllers.containsKey(videoUrl)) return;
-        _videoControllersInitialized[videoUrl] = true;
-        _configureVideoLoop(controller);
-        controller.setVolume(0.0);
-
-        _videoInitDebounce?.cancel();
-        _videoInitDebounce = Timer(const Duration(milliseconds: 80), () {
-          if (mounted) setState(() {});
-        });
-      }).catchError((e, stack) {
-        _logProfileError(
-          operation: 'initializeVideoController_then',
-          error: e,
-          stack: stack,
-          additionalData: {'videoUrl': videoUrl},
-        );
-        _videoControllers.remove(videoUrl)?.dispose();
-        _videoControllersInitialized.remove(videoUrl);
-      });
-    } catch (e, stack) {
-      _logProfileError(
-        operation: 'initializeVideoController',
-        error: e,
-        stack: stack,
-        additionalData: {'videoUrl': videoUrl},
-      );
-      _videoControllers.remove(videoUrl)?.dispose();
-      _videoControllersInitialized.remove(videoUrl);
-    }
-  }
-
-  void _configureVideoLoop(VideoPlayerController controller) {
-    final duration = controller.value.duration;
-    final end = duration.inSeconds > 0 ? const Duration(seconds: 1) : duration;
-    controller.addListener(() {
-      if (controller.value.isInitialized && controller.value.isPlaying) {
-        if (controller.value.position >= end) controller.seekTo(Duration.zero);
-      }
-    });
-    controller.play();
-  }
-
-  VideoPlayerController? _getVideoController(String url) =>
-      _videoControllers[url];
-
-  bool _isVideoControllerInitialized(String url) =>
-      _videoControllersInitialized[url] == true;
-
-  // ── Pre‑initialization: only loop‑designated videos get a controller ─
-  void _preInitializeVideoControllers(List<dynamic> posts) {
-    for (final p in posts) {
-      final url = p['postUrl'] ?? '';
-      final postId = p['postId']?.toString() ?? '';
-      if (!_isVideoFile(url)) continue;
-      if (_shouldShowVideoLoop(postId)) {
-        _initializeVideoController(url);
-      } else {
-        // background thumbnail fetch
-        _getThumbnailFuture(url);
-      }
-    }
-  }
-
-  // Pause/resume helpers
-  void _pauseAllVideos() {
-    for (final c in _videoControllers.values) {
-      if (c.value.isPlaying) c.pause();
-    }
-  }
-
-  void _resumeAllVideos() {
-    for (final c in _videoControllers.values) {
-      if (c.value.isInitialized && !c.value.isPlaying) c.play();
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    AnalyticsService.screenEnter('current_profile');
-    WidgetsBinding.instance.addObserver(this);
-    _scrollController = ScrollController();
-    _scrollController.addListener(_scrollListener);
-    getData();
-  }
-
-  @override
-  void dispose() {
-    AnalyticsService.screenExit(
-      screenName: 'profile',
-      uid: widget.uid,
-    );
-    WidgetsBinding.instance.removeObserver(this);
-    _scrollController.removeListener(_scrollListener);
-    _scrollController.dispose();
-    _profileVideoController?.dispose();
-    _profileVideoController = null;
-    _noPostNudgeTimer?.cancel();
-    _thumbnailFutures.clear();
-    // Dispose all looping controllers
-    for (final c in _videoControllers.values) {
-      c.dispose();
-    }
-    _videoControllers.clear();
-    _videoControllersInitialized.clear();
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      _pauseAllVideos();
-      _muteProfileVideo();
-    } else if (state == AppLifecycleState.resumed) {
-      _unmuteProfileVideo();
-    }
-  }
-
-  // ========== PROFILE VIDEO ==========
-
-  void _muteProfileVideo() {
-    if (_profileVideoController != null && _isProfileVideoInitialized) {
-      try {
-        _profileVideoController!.setVolume(0.0);
-      } catch (e, stack) {
-        _logProfileError(operation: 'muteProfileVideo', error: e, stack: stack);
-      }
-    }
-  }
-
-  void _unmuteProfileVideo() {
-    if (_profileVideoController != null && _isProfileVideoInitialized) {
-      try {
-        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
-      } catch (e, stack) {
-        _logProfileError(
-            operation: 'unmuteProfileVideo', error: e, stack: stack);
-      }
-    }
-  }
-
-  void _toggleProfileVideoMute() {
-    if (_profileVideoController != null && _isProfileVideoInitialized) {
-      setState(() => _isProfileVideoMuted = !_isProfileVideoMuted);
-      try {
-        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
-      } catch (e, stack) {
-        _logProfileError(
-            operation: 'toggleProfileVideoMute', error: e, stack: stack);
-      }
-    }
-  }
-
-  void _scrollListener() {
-    if (_scrollController.position.pixels >=
-            _scrollController.position.maxScrollExtent - 50 &&
-        !_isLoadingMore &&
-        _hasMorePosts &&
-        _selectedTabIndex == 0) {
-      Future.delayed(const Duration(milliseconds: 15), () {
-        if (mounted) _loadMorePosts();
-      });
-    }
-  }
+  // ========== PROFILE VIDEO (unchanged) =================================
 
   Future<void> _initializeProfileVideo(String videoUrl) async {
     if (_profileVideoController != null) {
@@ -529,7 +271,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   Widget _buildProfilePicture(AppColorSet colors) {
     final photoUrl = userData['photoUrl']?.toString() ?? '';
     final isDefault = photoUrl.isEmpty || photoUrl == 'default';
-    final isVideo = !isDefault && _isVideoFile(photoUrl);
+    final isVideo = !isDefault && isVideoFile(photoUrl); // ← shared
 
     if (isDefault) {
       return CircleAvatar(
@@ -553,53 +295,89 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ========== EDIT OVERLAY (used for image thumbnails and video players) ==========
-
-  Widget _buildEditOverlayLayer(
-      VideoEditResult editResult, BoxConstraints constraints) {
-    if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
-      return const SizedBox.shrink();
+  void _muteProfileVideo() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      try {
+        _profileVideoController!.setVolume(0.0);
+      } catch (e, stack) {
+        _logProfileError(operation: 'muteProfileVideo', error: e, stack: stack);
+      }
     }
-
-    final double previewW = constraints.maxWidth;
-    final double previewH = constraints.maxHeight;
-    final double screenW = MediaQuery.of(context).size.width;
-    final double screenH = MediaQuery.of(context).size.height;
-    final double scaleX = previewW / screenW;
-    final double scaleY = previewH / screenH;
-    final double fontScale = math.min(scaleX, scaleY);
-
-    return Stack(
-      clipBehavior: Clip.hardEdge,
-      children: [
-        if (editResult.strokes.isNotEmpty)
-          Positioned.fill(
-            child: CustomPaint(
-              painter: _ScaledDrawingPainter(
-                strokes: editResult.strokes,
-                scaleX: scaleX,
-                scaleY: scaleY,
-              ),
-            ),
-          ),
-        ...editResult.overlays.map((o) {
-          final scaledOverlay = o.copyWith(fontSize: o.fontSize * fontScale);
-          return Positioned(
-            left: (o.position.dx * previewW).clamp(0.0, previewW - 10),
-            top: (o.position.dy * previewH).clamp(0.0, previewH - 10),
-            child: Stack(clipBehavior: Clip.none, children: [
-              Text(o.text, style: overlayShadowStyle(scaledOverlay)),
-              Text(o.text, style: overlayTextStyle(scaledOverlay)),
-            ]),
-          );
-        }),
-      ],
-    );
   }
 
-  // ==========================================================================
-  // DATA FETCHING (updated to use _preInitializeVideoControllers)
-  // ==========================================================================
+  void _unmuteProfileVideo() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      try {
+        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
+      } catch (e, stack) {
+        _logProfileError(
+            operation: 'unmuteProfileVideo', error: e, stack: stack);
+      }
+    }
+  }
+
+  void _toggleProfileVideoMute() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      setState(() => _isProfileVideoMuted = !_isProfileVideoMuted);
+      try {
+        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
+      } catch (e, stack) {
+        _logProfileError(
+            operation: 'toggleProfileVideoMute', error: e, stack: stack);
+      }
+    }
+  }
+
+  // ========== LIFECYCLE =================================================
+
+  @override
+  void initState() {
+    super.initState();
+    AnalyticsService.screenEnter('current_profile');
+    WidgetsBinding.instance.addObserver(this);
+    _scrollController = ScrollController();
+    _scrollController.addListener(_scrollListener);
+    getData();
+  }
+
+  @override
+  void dispose() {
+    AnalyticsService.screenExit(screenName: 'profile', uid: widget.uid);
+    WidgetsBinding.instance.removeObserver(this);
+    _scrollController.removeListener(_scrollListener);
+    _scrollController.dispose();
+    _profileVideoController?.dispose();
+    _profileVideoController = null;
+    _noPostNudgeTimer?.cancel();
+    _mediaService.dispose(); // ← disposes all loop controllers & thumbnails
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _mediaService.pauseAll(); // ← pauses loop controllers
+      _muteProfileVideo();
+    } else if (state == AppLifecycleState.resumed) {
+      _unmuteProfileVideo();
+    }
+  }
+
+  void _scrollListener() {
+    if (_scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent - 50 &&
+        !_isLoadingMore &&
+        _hasMorePosts &&
+        _selectedTabIndex == 0) {
+      Future.delayed(const Duration(milliseconds: 15), () {
+        if (mounted) _loadMorePosts();
+      });
+    }
+  }
+
+  // ========== DATA FETCHING =============================================
 
   Future<void> getData() async {
     if (!mounted) return;
@@ -709,10 +487,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       final bool isTestUser = userResponse['test'] == true;
 
       final photoUrl = userResponse['photoUrl'] ?? '';
-      if (_isVideoFile(photoUrl)) _initializeProfileVideo(photoUrl);
+      if (isVideoFile(photoUrl)) _initializeProfileVideo(photoUrl);
 
-      // Replace old _prefetchThumbnails with new pre‑init method
-      _preInitializeVideoControllers(initialPosts);
+      // Preload media via the shared service
+      _mediaService.preloadMedia(List<Map<String, dynamic>>.from(initialPosts));
 
       final processedData = await Future.wait([
         _processUserList(followersResponse, 'follower_id'),
@@ -796,7 +574,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(_postsOffset, _postsOffset + _subsequentPostsLimit - 1);
 
-      _preInitializeVideoControllers(newPosts);
+      _mediaService.preloadMedia(List<Map<String, dynamic>>.from(newPosts));
 
       if (newPosts.isNotEmpty && mounted) {
         setState(() {
@@ -831,6 +609,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           .order('datePublished', ascending: false)
           .range(currentCount, currentCount + _subsequentPostsLimit - 1);
 
+      _mediaService.preloadMedia(List<Map<String, dynamic>>.from(newPosts));
       return List<Map<String, dynamic>>.from(newPosts);
     } catch (e, stack) {
       await _logProfileError(
@@ -909,7 +688,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     ]);
   }
 
-  // ========== BUILD ==========
+  // ========== BUILD ======================================================
 
   @override
   Widget build(BuildContext context) {
@@ -1050,7 +829,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     ];
   }
 
-  // ========== EMPTY STATE WIDGETS ==========
+  // ========== EMPTY STATE WIDGETS =======================================
 
   Widget _buildEmptyPostsWidget(AppColorSet colors) {
     return Padding(
@@ -1080,6 +859,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           const SizedBox(height: 28),
           ElevatedButton(
             onPressed: () {
+              _mediaService.pauseAll(); // pause loop videos
               _muteProfileVideo();
               Navigator.push(
                 context,
@@ -1091,7 +871,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
                 ),
               ).then((_) {
                 Future.delayed(const Duration(milliseconds: 300), () {
-                  if (mounted) _unmuteProfileVideo();
+                  if (mounted) {
+                    _mediaService.resumeAll();
+                    _unmuteProfileVideo();
+                  }
                 });
               });
             },
@@ -1142,7 +925,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ========== PROFILE HEADER / BIO / METRICS ==========
+  // ========== PROFILE HEADER / BIO / METRICS ============================
 
   Widget _buildErrorWidget(AppColorSet colors) {
     return Center(
@@ -1342,12 +1125,12 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ========== GRID ITEM BUILDERS (now with loop/thumbnail decision) ==========
+  // ========== GRID ITEM BUILDERS (using shared helpers & service) ========
 
   Widget _buildAddPostButton(AppColorSet colors) {
     return GestureDetector(
       onTap: () {
-        _pauseAllVideos();
+        _mediaService.pauseAll();
         _muteProfileVideo();
         Navigator.push(
           context,
@@ -1360,7 +1143,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         ).then((_) {
           Future.delayed(const Duration(milliseconds: 300), () {
             if (mounted) {
-              _resumeAllVideos();
+              _mediaService.resumeAll();
               _unmuteProfileVideo();
             }
           });
@@ -1379,8 +1162,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   Widget _buildPostItem(
       Map<String, dynamic> post, AppColorSet colors, int postIndex) {
     final postUrl = post['postUrl'] ?? '';
-    final isVideo = _isVideoFile(postUrl);
-    final editResult = _parseEditResult(post);
+    final isVideo = isVideoFile(postUrl); // shared
+    final editResult = parseEditResult(post); // shared
     final postId = post['postId']?.toString() ?? '';
 
     final Map<String, dynamic> feedUserData = {
@@ -1393,7 +1176,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
     return GestureDetector(
       onTap: () {
-        _pauseAllVideos();
+        _mediaService.pauseAll();
         _muteProfileVideo();
         Navigator.push(
           context,
@@ -1410,7 +1193,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         ).then((_) {
           Future.delayed(const Duration(milliseconds: 300), () {
             if (mounted) {
-              _resumeAllVideos();
+              _mediaService.resumeAll();
               _unmuteProfileVideo();
             }
           });
@@ -1425,7 +1208,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           fit: StackFit.expand,
           children: [
             if (isVideo)
-              _shouldShowVideoLoop(postId)
+              shouldShowVideoLoop(postId) // shared
                   ? _buildPostVideoPlayer(postUrl, colors, editResult)
                   : _buildPostVideoThumbnail(postUrl, colors, editResult)
             else
@@ -1436,11 +1219,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Looping video player for grid ──────────────────────────────────
   Widget _buildPostVideoPlayer(
       String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
+    final controller = _mediaService.getController(videoUrl);
+    final isInitialized = _mediaService.isControllerInitialized(videoUrl);
 
     if (!isInitialized || controller == null) {
       return Container(
@@ -1449,7 +1231,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               child: CircularProgressIndicator(color: colors.textColor)));
     }
 
-    final List<double> matrix = _buildColorMatrix(editResult);
+    final List<double> matrix = buildColorMatrix(editResult); // shared
     final int quarters = editResult?.rotationQuarters ?? 0;
 
     return ClipRRect(
@@ -1475,8 +1257,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           Positioned.fill(
             child: IgnorePointer(
               child: LayoutBuilder(
-                builder: (context, constraints) =>
-                    _buildEditOverlayLayer(editResult, constraints),
+                builder: (context, constraints) => buildEditOverlayLayer(
+                  editResult: editResult,
+                  constraints: constraints,
+                  screenSize: MediaQuery.of(context).size,
+                ),
               ),
             ),
           ),
@@ -1484,14 +1269,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Updated thumbnail widget (now includes edit overlays) ──────────
   Widget _buildPostVideoThumbnail(
       String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = _buildColorMatrix(editResult);
+    final List<double> matrix = buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
     return FutureBuilder<Uint8List?>(
-      future: _getThumbnailFuture(videoUrl),
+      future: _mediaService.getThumbnailFuture(videoUrl),
       builder: (context, snapshot) {
         final haveImage = snapshot.connectionState == ConnectionState.done &&
             snapshot.data != null;
@@ -1516,8 +1300,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               Positioned.fill(
                 child: IgnorePointer(
                   child: LayoutBuilder(
-                    builder: (context, constraints) =>
-                        _buildEditOverlayLayer(editResult, constraints),
+                    builder: (context, constraints) => buildEditOverlayLayer(
+                      editResult: editResult,
+                      constraints: constraints,
+                      screenSize: MediaQuery.of(context).size,
+                    ),
                   ),
                 ),
               ),
@@ -1545,8 +1332,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   Widget _buildPostImage(Map<String, dynamic> post, AppColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
-    final editResult = _parseEditResult(post);
-    final List<double> matrix = _buildColorMatrix(editResult);
+    final editResult = parseEditResult(post);
+    final List<double> matrix = buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
     Widget baseImage = ClipRRect(
@@ -1591,8 +1378,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         Positioned.fill(
           child: IgnorePointer(
             child: LayoutBuilder(
-              builder: (context, constraints) =>
-                  _buildEditOverlayLayer(editResult, constraints),
+              builder: (context, constraints) => buildEditOverlayLayer(
+                editResult: editResult,
+                constraints: constraints,
+                screenSize: MediaQuery.of(context).size,
+              ),
             ),
           ),
         ),
@@ -1600,7 +1390,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ========== GALLERY BUILDERS (now with loop/thumbnail decision) ==========
+  // ========== GALLERY BUILDERS (using shared helpers & service) ==========
 
   Widget _buildAddGalleryButton(AppColorSet colors) {
     return GestureDetector(
@@ -1632,12 +1422,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         ? gallery['posts'] as Map<String, dynamic>
         : null;
     final coverImageUrl = coverPost != null ? coverPost['postUrl'] ?? '' : '';
-    final isVideoCover = _isVideoFile(coverImageUrl);
+    final isVideoCover = isVideoFile(coverImageUrl);
     final coverPostId = coverPost?['postId']?.toString() ?? '';
 
     VideoEditResult? coverEditResult;
     if (coverPost != null && !isVideoCover) {
-      final coverMeta = _extractEditMetadata(coverPost['video_edit_metadata']);
+      final coverMeta =
+          extractEditMetadata(coverPost['video_edit_metadata']); // shared
       if (coverMeta != null) {
         try {
           coverEditResult = VideoEditResult.fromJson(coverMeta, File(''));
@@ -1654,7 +1445,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
     return GestureDetector(
       onTap: () {
-        _pauseAllVideos();
+        _mediaService.pauseAll();
         _muteProfileVideo();
         Navigator.push(
           context,
@@ -1668,7 +1459,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         ).then((_) {
           Future.delayed(const Duration(milliseconds: 300), () {
             if (mounted) {
-              _resumeAllVideos();
+              _mediaService.resumeAll();
               _unmuteProfileVideo();
             }
           });
@@ -1683,7 +1474,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: isVideoCover
-                  ? (_shouldShowVideoLoop(coverPostId)
+                  ? (shouldShowVideoLoop(coverPostId)
                       ? _buildGalleryVideoPlayer(
                           coverImageUrl, colors, coverEditResult)
                       : _buildGalleryVideoThumbnail(
@@ -1739,11 +1530,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Gallery looping video player ────────────────────────────────────
   Widget _buildGalleryVideoPlayer(
       String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final controller = _getVideoController(videoUrl);
-    final isInitialized = _isVideoControllerInitialized(videoUrl);
+    final controller = _mediaService.getController(videoUrl);
+    final isInitialized = _mediaService.isControllerInitialized(videoUrl);
 
     if (!isInitialized || controller == null) {
       return Container(
@@ -1752,7 +1542,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               child: CircularProgressIndicator(color: colors.textColor)));
     }
 
-    final List<double> matrix = _buildColorMatrix(editResult);
+    final List<double> matrix = buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
     return ClipRRect(
@@ -1778,8 +1568,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           Positioned.fill(
             child: IgnorePointer(
               child: LayoutBuilder(
-                builder: (context, constraints) =>
-                    _buildEditOverlayLayer(editResult, constraints),
+                builder: (context, constraints) => buildEditOverlayLayer(
+                  editResult: editResult,
+                  constraints: constraints,
+                  screenSize: MediaQuery.of(context).size,
+                ),
               ),
             ),
           ),
@@ -1787,14 +1580,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Updated gallery thumbnail (edit overlays included) ──────────────
   Widget _buildGalleryVideoThumbnail(
       String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = _buildColorMatrix(editResult);
+    final List<double> matrix = buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
     return FutureBuilder<Uint8List?>(
-      future: _getThumbnailFuture(videoUrl),
+      future: _mediaService.getThumbnailFuture(videoUrl),
       builder: (context, snapshot) {
         final haveImage = snapshot.connectionState == ConnectionState.done &&
             snapshot.data != null;
@@ -1819,8 +1611,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               Positioned.fill(
                 child: IgnorePointer(
                   child: LayoutBuilder(
-                    builder: (context, constraints) =>
-                        _buildEditOverlayLayer(editResult, constraints),
+                    builder: (context, constraints) => buildEditOverlayLayer(
+                      editResult: editResult,
+                      constraints: constraints,
+                      screenSize: MediaQuery.of(context).size,
+                    ),
                   ),
                 ),
               ),
@@ -1848,7 +1643,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   Widget _buildGalleryCoverImage(
       String url, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = _buildColorMatrix(editResult);
+    final List<double> matrix = buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
     if (editResult == null) {
@@ -1884,7 +1679,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ========== GALLERY MANAGEMENT ==========
+  // ========== GALLERY MANAGEMENT =========================================
 
   void _createNewGallery() {
     final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
@@ -1947,7 +1742,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
-  // ========== LOADING SKELETON ==========
+  // ========== LOADING SKELETON ===========================================
 
   Widget _buildProfileSkeleton(AppColorSet colors) {
     return SingleChildScrollView(
@@ -2073,32 +1868,4 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       ),
     );
   }
-}
-
-// =============================================================================
-// SCALED DRAWING PAINTER (unchanged)
-// =============================================================================
-class _ScaledDrawingPainter extends CustomPainter {
-  final List<DrawStroke> strokes;
-  final double scaleX;
-  final double scaleY;
-
-  const _ScaledDrawingPainter({
-    required this.strokes,
-    required this.scaleX,
-    required this.scaleY,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.save();
-    canvas.scale(scaleX, scaleY);
-    DrawingPainter(strokes: strokes, currentStroke: null)
-        .paint(canvas, Size(size.width / scaleX, size.height / scaleY));
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(_ScaledDrawingPainter old) =>
-      old.strokes != strokes || old.scaleX != scaleX || old.scaleY != scaleY;
 }
