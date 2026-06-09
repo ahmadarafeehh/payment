@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data'; // NEW: for thumbnail bytes
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
@@ -12,6 +13,7 @@ import 'package:Ratedly/resources/block_firestore_methods.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
+import 'package:get_thumbnail_video/video_thumbnail.dart'; // NEW: thumbnail extraction
 import 'package:flutter/gestures.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:country_flags/country_flags.dart';
@@ -210,11 +212,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   List<dynamic> _followersList = [];
   int following = 0;
   bool _isMutualFollow = false;
-
-  // NEW: test user flag for conditional button styling
   bool _isTestUser = false;
 
-  // Video controllers
+  // Video controllers – only for videos that will loop
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
   Timer? _videoInitDebounce;
@@ -222,6 +222,10 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = false;
+
+  // ── Video thumbnail cache & stable futures ─────────────────────
+  final Map<String, Uint8List?> _thumbnailCache = {};
+  final Map<String, Future<Uint8List?>> _thumbnailFutures = {};
 
   List<dynamic> _galleries = [];
   int _selectedTabIndex = 0;
@@ -247,13 +251,10 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   ];
 
   bool _hasLoaded = false;
-
   final Set<String> _loggedPostRenders = {};
-
   DateTime? _lastLoadMoreTime;
   static const Duration _loadMoreCooldown = Duration(milliseconds: 500);
 
-  // ✅ screen tracking: store user ID and a flag to avoid duplicate entry
   String? _currentUserIdForTracking;
   bool _screenTrackingStarted = false;
 
@@ -274,7 +275,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         'stack_trace': stack?.toString(),
         'additional_data': additionalData,
       });
-    } catch (logError) {}
+    } catch (_) {}
   }
 
   _OtherProfileColorSet _getColors(ThemeProvider themeProvider) {
@@ -330,6 +331,56 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
     }
     return er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix);
+  }
+
+  // ── Deterministic decision: 20% chance of looping preview ──────
+  bool _shouldShowVideoLoop(String postId) {
+    if (postId.isEmpty) return false;
+    final hash = postId.hashCode;
+    return (hash % 100).abs() < 20; // 20%
+  }
+
+  // ── Thumbnail extraction & caching ─────────────────────────────
+  Future<Uint8List?> _getVideoThumbnail(String videoUrl) async {
+    if (_thumbnailCache.containsKey(videoUrl)) {
+      return _thumbnailCache[videoUrl];
+    }
+    try {
+      final data = await VideoThumbnail.thumbnailData(
+        video: videoUrl,
+        maxWidth: 200,
+        quality: 60,
+      );
+      _thumbnailCache[videoUrl] = data;
+      return data;
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'getVideoThumbnail',
+        error: e,
+        stack: stack,
+        additionalData: {'videoUrl': videoUrl},
+      );
+      _thumbnailCache[videoUrl] = null;
+      return null;
+    }
+  }
+
+  Future<Uint8List?> _getThumbnailFuture(String videoUrl) => _thumbnailFutures
+      .putIfAbsent(videoUrl, () => _getVideoThumbnail(videoUrl));
+
+  // ── Pre-initialize controllers only for videos that will loop ──
+  void _preInitializeVideoControllers(List<dynamic> posts) {
+    for (final p in posts) {
+      final url = p['postUrl'] ?? '';
+      final postId = p['postId']?.toString() ?? '';
+      if (!_isVideoFile(url)) continue;
+      if (_shouldShowVideoLoop(postId)) {
+        _initializeVideoController(url);
+      } else {
+        // Fire thumbnail fetch in background
+        _getThumbnailFuture(url);
+      }
+    }
   }
 
   Future<void> _initializeVideoController(String videoUrl) async {
@@ -392,11 +443,113 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
-  void _preInitializeVideoControllers(List<dynamic> posts) {
-    for (final p in posts) {
-      final url = p['postUrl'] ?? '';
-      if (_isVideoFile(url)) _initializeVideoController(url);
-    }
+  // ── NEW: Thumbnail widget for grid posts ───────────────────────
+  Widget _buildPostVideoThumbnail(String videoUrl, _OtherProfileColorSet colors,
+      VideoEditResult? editResult) {
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return FutureBuilder<Uint8List?>(
+      future: _getThumbnailFuture(videoUrl),
+      builder: (context, snapshot) {
+        final haveImage = snapshot.connectionState == ConnectionState.done &&
+            snapshot.data != null;
+
+        Widget imageLayer = haveImage
+            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+            : Container(color: colors.avatarBackgroundColor);
+
+        imageLayer = ColorFiltered(
+          colorFilter: ColorFilter.matrix(matrix),
+          child: Transform.rotate(
+            angle: quarters * math.pi / 2,
+            child: imageLayer,
+          ),
+        );
+
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Stack(fit: StackFit.expand, children: [
+            Positioned.fill(child: imageLayer),
+            if (editResult != null)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) =>
+                        _buildEditOverlayLayer(editResult, constraints),
+                  ),
+                ),
+              ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.55),
+                  shape: BoxShape.circle,
+                ),
+                padding: const EdgeInsets.all(2),
+                child: const Icon(
+                  Icons.play_arrow,
+                  color: Colors.white,
+                  size: 14,
+                ),
+              ),
+            ),
+          ]),
+        );
+      },
+    );
+  }
+
+  // ── NEW: Thumbnail widget for gallery covers ───────────────────
+  Widget _buildGalleryVideoThumbnail(String videoUrl,
+      _OtherProfileColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return FutureBuilder<Uint8List?>(
+      future: _getThumbnailFuture(videoUrl),
+      builder: (context, snapshot) {
+        final haveImage = snapshot.connectionState == ConnectionState.done &&
+            snapshot.data != null;
+
+        Widget imageLayer = haveImage
+            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+            : Container(color: colors.avatarBackgroundColor);
+
+        imageLayer = ColorFiltered(
+          colorFilter: ColorFilter.matrix(matrix),
+          child: Transform.rotate(
+            angle: quarters * math.pi / 2,
+            child: imageLayer,
+          ),
+        );
+
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Stack(fit: StackFit.expand, children: [
+            Positioned.fill(child: imageLayer),
+            Positioned(
+              top: 6,
+              right: 6,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.55),
+                  shape: BoxShape.circle,
+                ),
+                padding: const EdgeInsets.all(3),
+                child: const Icon(
+                  Icons.play_arrow,
+                  color: Colors.white,
+                  size: 18,
+                ),
+              ),
+            ),
+          ]),
+        );
+      },
+    );
   }
 
   Widget _buildEditOverlayLayer(
@@ -745,11 +898,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       try {
         _profileVideoController!.setVolume(0.0);
       } catch (e, stack) {
-        _logProfileError(
-          operation: 'muteProfileVideo',
-          error: e,
-          stack: stack,
-        );
+        _logProfileError(operation: 'muteProfileVideo', error: e, stack: stack);
       }
     }
   }
@@ -760,10 +909,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
       } catch (e, stack) {
         _logProfileError(
-          operation: 'unmuteProfileVideo',
-          error: e,
-          stack: stack,
-        );
+            operation: 'unmuteProfileVideo', error: e, stack: stack);
       }
     }
   }
@@ -775,10 +921,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
       } catch (e, stack) {
         _logProfileError(
-          operation: 'toggleProfileVideoMute',
-          error: e,
-          stack: stack,
-        );
+            operation: 'toggleProfileVideoMute', error: e, stack: stack);
       }
     }
   }
@@ -802,7 +945,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       _loadDataInParallel();
     }
 
-    // ✅ screen tracking: get current user ID and start screen tracking
     if (!_screenTrackingStarted) {
       final userProvider = Provider.of<UserProvider>(context, listen: false);
       final uid = userProvider.firebaseUid ?? userProvider.supabaseUid;
@@ -872,20 +1014,15 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
         userProvider.firebaseUid ?? userProvider.supabaseUid;
-    if (currentUserId == null || currentUserId.isEmpty) {
-      return;
-    }
+    if (currentUserId == null || currentUserId.isEmpty) return;
     try {
       final response = await _supabase
           .from('users')
-          .select('test') // ✅ changed from 'is_test' to 'test'
+          .select('test')
           .eq('uid', currentUserId)
           .maybeSingle();
-
       if (mounted && response != null) {
-        final isTest = response['test'] ?? false;
-
-        setState(() => _isTestUser = isTest);
+        setState(() => _isTestUser = response['test'] ?? false);
       }
     } catch (e, stack) {
       _logProfileError(
@@ -926,7 +1063,15 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
       for (final g in galleriesResponse) {
         final url = g['posts'] != null ? g['posts']['postUrl'] ?? '' : '';
-        if (_isVideoFile(url)) _initializeVideoController(url);
+        if (_isVideoFile(url)) {
+          final postId =
+              g['posts'] != null ? g['posts']['postId']?.toString() ?? '' : '';
+          if (_shouldShowVideoLoop(postId)) {
+            _initializeVideoController(url);
+          } else {
+            _getThumbnailFuture(url);
+          }
+        }
       }
       if (mounted) setState(() => _galleries = galleriesResponse);
     } catch (e, stack) {
@@ -993,7 +1138,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
         userProvider.firebaseUid ?? userProvider.supabaseUid;
-
     if (currentUserId == null || currentUserId.isEmpty) {
       if (mounted) {
         setState(() {
@@ -1004,13 +1148,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       }
       return;
     }
-
     try {
       final isBlockedByMe = await SupabaseBlockMethods().isBlockInitiator(
           currentUserId: currentUserId, targetUserId: widget.uid);
       final isBlockedByThem = await SupabaseBlockMethods().isUserBlocked(
           currentUserId: currentUserId, targetUserId: widget.uid);
-
       if (mounted) {
         setState(() {
           _isBlockedByMe = isBlockedByMe;
@@ -1018,7 +1160,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           _isBlocked = isBlockedByMe || isBlockedByThem;
         });
       }
-
       if (_isBlocked && mounted) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           Navigator.pushReplacement(
@@ -1056,7 +1197,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? currentUserId =
         userProvider.firebaseUid ?? userProvider.supabaseUid;
-
     if (currentUserId == null || currentUserId.isEmpty) {
       if (mounted) {
         setState(() {
@@ -1069,7 +1209,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       }
       return;
     }
-
     try {
       final results = await Future.wait<dynamic>([
         _supabase
@@ -1148,7 +1287,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       final elapsed = DateTime.now().difference(_lastLoadMoreTime!);
       if (elapsed < _loadMoreCooldown) return;
     }
-
     if (!_hasMorePosts || _isLoadingMore) return;
 
     _lastLoadMoreTime = DateTime.now();
@@ -1226,7 +1364,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     try {
       final isPrivate = userData['isPrivate'] ?? false;
       if (isFollowing) {
-        // Unfollow
         await SupabaseProfileMethods().unfollowUser(currentUserId, widget.uid);
         if (mounted) {
           setState(() {
@@ -1234,7 +1371,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             _isMutualFollow = false;
           });
         }
-        // Log unfollow after success
         AnalyticsService.logFollowPress(
           followerUid: currentUserId,
           followedUid: widget.uid,
@@ -1242,18 +1378,13 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           action: 'unfollow',
         );
       } else if (hasPendingRequest) {
-        // Decline pending request
         await SupabaseProfileMethods()
             .declineFollowRequest(widget.uid, currentUserId);
         if (mounted) setState(() => hasPendingRequest = false);
-        // No logging for 'decline' (optional)
       } else {
-        // Follow (or request)
         await SupabaseProfileMethods().followUser(currentUserId, widget.uid);
         if (isPrivate) {
-          // Private account -> request sent
           if (mounted) setState(() => hasPendingRequest = true);
-          // Log request action
           AnalyticsService.logFollowPress(
             followerUid: currentUserId,
             followedUid: widget.uid,
@@ -1261,10 +1392,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             action: 'request',
           );
         } else {
-          // Public account -> immediate follow
           if (mounted) setState(() => isFollowing = true);
           _checkMutualFollowAfterFollow();
-          // Log follow action
           AnalyticsService.logFollowPress(
             followerUid: currentUserId,
             followedUid: widget.uid,
@@ -1656,7 +1785,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   Widget _buildOtherProfileHeader(_OtherProfileColorSet colors) {
     return Column(children: [
       Transform.translate(
-        offset: const Offset(0, -12), // moves profile picture up by 12px
+        offset: const Offset(0, -12),
         child: _buildProfilePicture(colors),
       ),
       Padding(
@@ -1697,7 +1826,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             onPressed: _otherNavigateToMessaging,
             style: ElevatedButton.styleFrom(
               backgroundColor: _isTestUser
-                  ? const Color(0xFF0095F6) // Instagram blue for test users
+                  ? const Color(0xFF0095F6)
                   : colors.buttonBackgroundColor,
               foregroundColor:
                   _isTestUser ? Colors.white : colors.buttonTextColor,
@@ -1723,9 +1852,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     return ElevatedButton(
       onPressed: _otherHandleFollow,
       style: ElevatedButton.styleFrom(
-        backgroundColor: isTest
-            ? const Color(0xFF0095F6) // Instagram blue for test users
-            : colors.buttonBackgroundColor,
+        backgroundColor:
+            isTest ? const Color(0xFF0095F6) : colors.buttonBackgroundColor,
         foregroundColor: isTest ? Colors.white : colors.buttonTextColor,
         padding: const EdgeInsets.symmetric(horizontal: 24),
         side: BorderSide(
@@ -1910,6 +2038,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
+  // ── GRID ITEM BUILDERS (modified for video thumbnail/loop decision) ──
   Widget _buildOtherPostItem(
       Map<String, dynamic> post, _OtherProfileColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
@@ -1928,9 +2057,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       );
     }
 
-    final int tappedIndex =
+    final int startIndex =
         _displayedPosts.indexWhere((p) => p['postId']?.toString() == postId);
-    final int startIndex = tappedIndex < 0 ? 0 : tappedIndex;
+    final safeIndex = startIndex < 0 ? 0 : startIndex;
 
     final Map<String, dynamic> feedUserData = {
       'uid': widget.uid,
@@ -1944,13 +2073,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       onTap: () {
         _pauseAllVideos();
         _muteProfileVideo();
-
         Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => ProfilePostFeedScreen(
               initialPosts: List<Map<String, dynamic>>.from(_displayedPosts),
-              initialIndex: startIndex,
+              initialIndex: safeIndex,
               userData: feedUserData,
               onLoadMore: _loadMorePostsForFeed,
               initialHasMore: _hasMorePosts,
@@ -1974,9 +2102,12 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         child: Stack(
           fit: StackFit.expand,
           children: [
-            isVideo
-                ? _buildPostVideoPlayer(postUrl, colors, editResult)
-                : _buildPostImage(postUrl, colors, editResult),
+            if (isVideo)
+              _shouldShowVideoLoop(postId)
+                  ? _buildPostVideoPlayer(postUrl, colors, editResult)
+                  : _buildPostVideoThumbnail(postUrl, colors, editResult)
+            else
+              _buildPostImage(postUrl, colors, editResult),
           ],
         ),
       ),
@@ -1994,6 +2125,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         : null;
     final coverImageUrl = coverPost != null ? coverPost['postUrl'] ?? '' : '';
     final isVideoCover = _isVideoFile(coverImageUrl);
+    final coverPostId = coverPost?['postId']?.toString() ?? '';
 
     VideoEditResult? coverEditResult;
     if (coverPost != null) {
@@ -2077,8 +2209,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: isVideoCover
-                  ? _buildGalleryVideoPlayer(
-                      coverImageUrl, colors, coverEditResult)
+                  ? (_shouldShowVideoLoop(coverPostId)
+                      ? _buildGalleryVideoPlayer(
+                          coverImageUrl, colors, coverEditResult)
+                      : _buildGalleryVideoThumbnail(
+                          coverImageUrl, colors, coverEditResult))
                   : _buildGalleryCoverImage(
                       coverImageUrl, colors, coverEditResult),
             )
@@ -2309,7 +2444,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
 
   @override
   void dispose() {
-    // ✅ screen tracking: exit other_profile screen
     if (_currentUserIdForTracking != null &&
         _currentUserIdForTracking!.isNotEmpty) {
       AnalyticsService.screenExit(
@@ -2317,7 +2451,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         uid: _currentUserIdForTracking!,
       );
     }
-
     _videoInitDebounce?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_scrollListener);
