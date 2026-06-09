@@ -15,7 +15,7 @@ import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:provider/provider.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:video_thumbnail/video_thumbnail.dart';
+import 'package:get_thumbnail_video/video_thumbnail.dart';
 import 'package:flutter/gestures.dart';
 import 'package:Ratedly/screens/Profile_page/gallery_detail_screen.dart';
 import 'package:country_flags/country_flags.dart';
@@ -1579,7 +1579,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               Image.memory(snapshot.data!, fit: BoxFit.cover)
             else
               Container(color: colors.cardColor),
-
             const Center(
               child: Icon(
                 Icons.play_circle_outline,
