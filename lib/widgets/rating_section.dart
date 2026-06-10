@@ -39,6 +39,18 @@ class _RatingSectionState extends State<RatingSection> {
     _fetchReactionEmoji();
   }
 
+  // Keep internal state in sync whenever the parent passes a new ratings list
+  // or a different userId. Without this, _hasUserRated and _averageRating
+  // would remain stale after the parent calls setState on a successful react.
+  @override
+  void didUpdateWidget(RatingSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.ratings != widget.ratings ||
+        oldWidget.userId != widget.userId) {
+      _computeAverageRatingAndUserRating();
+    }
+  }
+
   // --------------------------------------------------------------------------
   // Error logging helper – logs only exceptions to reactions_error table
   // --------------------------------------------------------------------------
@@ -115,40 +127,45 @@ class _RatingSectionState extends State<RatingSection> {
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const SizedBox.shrink();
-    }
-
     // If user has already rated, start thumb at community average.
     // Otherwise start at centre (5.0).
     final double initialPos = _hasUserRated ? _averageRating : 5.0;
 
+    // The outer Column always renders so the parent layout never shifts.
+    // The SizedBox reserves the exact same vertical space whether we are still
+    // fetching the emoji or fully loaded, preventing Expanded siblings above
+    // from jumping when loading completes.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 4.0),
-        RatingBar(
-          averageRating: _averageRating,
-          reactionEmoji: _reactionEmoji,
-          initialThumbPosition: initialPos,
-          onRatingEnd: (rating) async {
-            // SupabaseReactionsMethods.reactToPost already logs its own errors
-            final String response =
-                await SupabaseReactionsMethods().reactToPost(
-              widget.postId,
-              widget.userId,
-              rating,
-            );
-            if (!mounted) return;
-            if (response != 'success') {
-              showSnackBar(context, response);
-            } else {
-              widget.onRatingEnd(rating);
-            }
-          },
-          hasUserRated: _hasUserRated,
-          userRating: widget.userRating,
-          userProfilePhoto: widget.userProfilePhoto,
+        SizedBox(
+          height: 90.6,
+          child: _isLoading
+              ? const SizedBox.shrink()
+              : RatingBar(
+                  averageRating: _averageRating,
+                  reactionEmoji: _reactionEmoji,
+                  initialThumbPosition: initialPos,
+                  onRatingEnd: (rating) async {
+                    // SupabaseReactionsMethods.reactToPost already logs its own errors
+                    final String response =
+                        await SupabaseReactionsMethods().reactToPost(
+                      widget.postId,
+                      widget.userId,
+                      rating,
+                    );
+                    if (!mounted) return;
+                    if (response != 'success') {
+                      showSnackBar(context, response);
+                    } else {
+                      widget.onRatingEnd(rating);
+                    }
+                  },
+                  hasUserRated: _hasUserRated,
+                  userRating: widget.userRating,
+                  userProfilePhoto: widget.userProfilePhoto,
+                ),
         ),
       ],
     );
