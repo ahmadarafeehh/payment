@@ -778,71 +778,71 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Nudge label
-                      if (!widget.hasUserRated)
-                        AnimatedOpacity(
-                          opacity: _isNudging ? 1.0 : 0.0,
-                          duration: const Duration(milliseconds: 200),
-                          child: Padding(
-                            padding:
-                                const EdgeInsets.only(left: 4.0, bottom: 6.0),
-                            child: AnimatedBuilder(
-                              animation: _nudgeGlow,
-                              builder: (context, _) {
-                                final glow = _nudgeGlow.value;
-                                return Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 12, vertical: 5),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white
-                                        .withOpacity(0.9 + 0.1 * glow),
-                                    borderRadius: BorderRadius.circular(20),
-                                    boxShadow: [
-                                      BoxShadow(
-                                          color: Colors.white
-                                              .withOpacity(0.35 * glow),
-                                          blurRadius: 10,
-                                          spreadRadius: 1)
-                                    ],
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Container(
-                                        width: 7,
-                                        height: 7,
-                                        margin: const EdgeInsets.only(right: 7),
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          color: Colors.black
-                                              .withOpacity(0.5 + 0.5 * glow),
-                                          boxShadow: [
-                                            BoxShadow(
-                                                color: Colors.black
-                                                    .withOpacity(0.2 * glow),
-                                                blurRadius: 4,
-                                                spreadRadius: 1)
-                                          ],
-                                        ),
+                      // Nudge label (always in tree, opacity controlled)
+                      AnimatedOpacity(
+                        opacity:
+                            (!widget.hasUserRated && _isNudging) ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 200),
+                        child: Padding(
+                          padding:
+                              const EdgeInsets.only(left: 4.0, bottom: 6.0),
+                          child: AnimatedBuilder(
+                            animation: _nudgeGlow,
+                            builder: (context, _) {
+                              final glow = _nudgeGlow.value;
+                              return Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: Colors.white
+                                      .withOpacity(0.9 + 0.1 * glow),
+                                  borderRadius: BorderRadius.circular(20),
+                                  boxShadow: [
+                                    BoxShadow(
+                                        color: Colors.white
+                                            .withOpacity(0.35 * glow),
+                                        blurRadius: 10,
+                                        spreadRadius: 1)
+                                  ],
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      width: 7,
+                                      height: 7,
+                                      margin: const EdgeInsets.only(right: 7),
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: Colors.black
+                                            .withOpacity(0.5 + 0.5 * glow),
+                                        boxShadow: [
+                                          BoxShadow(
+                                              color: Colors.black
+                                                  .withOpacity(0.2 * glow),
+                                              blurRadius: 4,
+                                              spreadRadius: 1)
+                                        ],
                                       ),
-                                      Text(
-                                        'Slide to react',
-                                        style: TextStyle(
-                                          color: Colors.black
-                                              .withOpacity(0.75 + 0.25 * glow),
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w600,
-                                          fontFamily: 'Inter',
-                                          letterSpacing: 0.2,
-                                        ),
+                                    ),
+                                    Text(
+                                      'Slide to react',
+                                      style: TextStyle(
+                                        color: Colors.black
+                                            .withOpacity(0.75 + 0.25 * glow),
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        fontFamily: 'Inter',
+                                        letterSpacing: 0.2,
                                       ),
-                                    ],
-                                  ),
-                                );
-                              },
-                            ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
                           ),
                         ),
+                      ),
 
                       // Track + markers
                       SizedBox(
