@@ -705,7 +705,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
                 height: 16,
                 width: 120,
                 decoration: BoxDecoration(
-                  color: colors.cardColor.withOpacity(0.6),
+                  color: colors.skeletonColor, // ← updated
                   borderRadius: BorderRadius.circular(4),
                 ),
               )
@@ -1024,7 +1024,9 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         }
       },
       style: ElevatedButton.styleFrom(
-          backgroundColor: colors.cardColor, foregroundColor: colors.textColor),
+        backgroundColor: colors.buttonBackgroundColor,
+        foregroundColor: colors.buttonTextColor,
+      ),
       child: const Text("Edit Profile"),
     );
   }
@@ -1755,7 +1757,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           Column(children: [
             _buildBioSectionSkeleton(colors),
             const SizedBox(height: 16),
-            Divider(color: colors.cardColor),
+            Divider(color: colors.dividerColor), // ← use dividerColor from set
             _buildPostsGridSkeleton(colors),
           ]),
         ]),
@@ -1773,7 +1775,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             height: 80,
             decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: colors.cardColor.withOpacity(0.6)),
+                color: colors.skeletonColor), // ← updated
           ),
         ),
       ),
@@ -1791,7 +1793,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         width: 120,
         height: 36,
         decoration: BoxDecoration(
-            color: colors.cardColor.withOpacity(0.6),
+            color: colors.skeletonColor, // ← updated
             borderRadius: BorderRadius.circular(8)),
       ),
     ]);
@@ -1803,14 +1805,14 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           height: 16,
           width: 30,
           decoration: BoxDecoration(
-              color: colors.cardColor.withOpacity(0.8),
+              color: colors.skeletonColor, // ← updated
               borderRadius: BorderRadius.circular(4))),
       const SizedBox(height: 6),
       Container(
           height: 12,
           width: 50,
           decoration: BoxDecoration(
-              color: colors.cardColor.withOpacity(0.6),
+              color: colors.skeletonColor, // ← updated
               borderRadius: BorderRadius.circular(4))),
     ]);
   }
@@ -1823,28 +1825,28 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             height: 18,
             width: 120,
             decoration: BoxDecoration(
-                color: colors.cardColor.withOpacity(0.8),
+                color: colors.skeletonColor, // ← updated
                 borderRadius: BorderRadius.circular(4))),
         const SizedBox(height: 12),
         Container(
             height: 14,
             width: double.infinity,
             decoration: BoxDecoration(
-                color: colors.cardColor.withOpacity(0.6),
+                color: colors.skeletonColor, // ← updated
                 borderRadius: BorderRadius.circular(4))),
         const SizedBox(height: 6),
         Container(
             height: 14,
             width: 250,
             decoration: BoxDecoration(
-                color: colors.cardColor.withOpacity(0.6),
+                color: colors.skeletonColor, // ← updated
                 borderRadius: BorderRadius.circular(4))),
         const SizedBox(height: 6),
         Container(
             height: 14,
             width: 200,
             decoration: BoxDecoration(
-                color: colors.cardColor.withOpacity(0.6),
+                color: colors.skeletonColor, // ← updated
                 borderRadius: BorderRadius.circular(4))),
       ]),
     );
@@ -1854,7 +1856,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      itemCount: 7,
+      itemCount: 9, // ← match other screen (9 items)
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 3,
           crossAxisSpacing: 2,
@@ -1864,7 +1866,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         margin: const EdgeInsets.all(1),
         decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(4),
-            color: colors.cardColor.withOpacity(0.5)),
+            color: colors.skeletonColor), // ← updated
       ),
     );
   }
