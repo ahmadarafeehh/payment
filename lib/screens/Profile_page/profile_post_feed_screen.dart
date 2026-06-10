@@ -352,6 +352,9 @@ class _FeedPostPageState extends State<_FeedPostPage>
   VideoEditResult? _editResult;
   bool _dataFetched = false;
 
+  // Global key for rating bar measurement
+  final GlobalKey _ratingBarKey = GlobalKey();
+
   String get _postUrl => widget.post['postUrl']?.toString() ?? '';
   String get _postId => widget.post['postId']?.toString() ?? '';
 
@@ -835,17 +838,27 @@ class _FeedPostPageState extends State<_FeedPostPage>
             ),
           ),
         if (!_isLoadingRatings)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: RatingBar(
-              averageRating: _averageRating,
-              reactionEmoji: _reactionEmoji,
-              initialThumbPosition: _userRating == null ? 5.0 : _averageRating,
-              onRatingEnd: _handleRatingSubmitted,
-              hasUserRated: _userRating != null,
-              userRating: _userRating,
-              userProfilePhoto: widget.userData['photoUrl']?.toString(),
-            ),
+          Builder(
+            key: _ratingBarKey,
+            builder: (context) {
+              return LayoutBuilder(
+                builder: (context, constraints) {
+                  return SizedBox(
+                    height: 90.6,
+                    child: RatingBar(
+                      averageRating: _averageRating,
+                      reactionEmoji: _reactionEmoji,
+                      initialThumbPosition:
+                          _userRating == null ? 5.0 : _averageRating,
+                      onRatingEnd: _handleRatingSubmitted,
+                      hasUserRated: _userRating != null,
+                      userRating: _userRating,
+                      userProfilePhoto: widget.userData['photoUrl']?.toString(),
+                    ),
+                  );
+                },
+              );
+            },
           )
         else
           const SizedBox(height: 48),
