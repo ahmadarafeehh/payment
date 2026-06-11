@@ -17,6 +17,183 @@ import 'package:Ratedly/screens/first_time/number_particle.dart';
 import 'package:Ratedly/screens/first_time/falling_number_painter.dart';
 import 'dart:math';
 
+// ============================================================================
+// 1. Compact Reaction Bar (visual only, theme‑aware)
+// ============================================================================
+class _ReactionBar extends StatelessWidget {
+  final double rating;
+  final String emoji;
+  final double width;
+  final double trackHeight;
+  final double emojiSize;
+  final Color trackColor;
+  final Color activeTrackColor;
+
+  const _ReactionBar({
+    required this.rating,
+    required this.emoji,
+    this.width = 60.0,
+    this.trackHeight = 2.5,
+    this.emojiSize = 16.0,
+    required this.trackColor,
+    required this.activeTrackColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final double normalized = (rating - 1.0) / 9.0; // 1..10 → 0..1
+    final double thumbHalf = emojiSize / 2;
+    final double trackWidth = width - emojiSize;
+    final double thumbLeft = thumbHalf + normalized * trackWidth;
+
+    return SizedBox(
+      width: width,
+      height: emojiSize + 4,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          // Background track
+          Positioned(
+            left: thumbHalf,
+            top: (emojiSize / 2) - (trackHeight / 2),
+            right: thumbHalf,
+            child: Container(
+              height: trackHeight,
+              decoration: BoxDecoration(
+                color: trackColor,
+                borderRadius: BorderRadius.circular(trackHeight / 2),
+              ),
+            ),
+          ),
+          // Active track
+          Positioned(
+            left: thumbHalf,
+            top: (emojiSize / 2) - (trackHeight / 2),
+            width: thumbLeft - thumbHalf,
+            child: Container(
+              height: trackHeight,
+              decoration: BoxDecoration(
+                color: activeTrackColor,
+                borderRadius: BorderRadius.horizontal(
+                  left: Radius.circular(trackHeight / 2),
+                ),
+              ),
+            ),
+          ),
+          // Emoji thumb
+          Positioned(
+            left: thumbLeft - (emojiSize / 2),
+            top: 0,
+            child: SizedBox(
+              width: emojiSize,
+              height: emojiSize,
+              child: FittedBox(
+                fit: BoxFit.contain,
+                child: Text(emoji, style: const TextStyle(fontSize: 100)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 2. Fetches rating + emoji and builds the bar
+// ============================================================================
+class _NotificationReactionBar extends StatefulWidget {
+  final String postId;
+  final String raterUid;
+  final Map<String, dynamic> customData;
+  final _NotificationColorSet colors;
+
+  const _NotificationReactionBar({
+    required this.postId,
+    required this.raterUid,
+    required this.customData,
+    required this.colors,
+  });
+
+  @override
+  State<_NotificationReactionBar> createState() =>
+      _NotificationReactionBarState();
+}
+
+class _NotificationReactionBarState extends State<_NotificationReactionBar> {
+  double? _rating;
+  String? _emoji;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    try {
+      // 1. Try to extract from the notification payload itself
+      var ratingVal = widget.customData['rating'] ??
+          widget.customData['ratingValue'];
+      var emojiVal = widget.customData['reactionEmoji'] ??
+          widget.customData['emoji'];
+
+      // 2. Fetch missing pieces from the database
+      if (ratingVal == null) {
+        final resp = await Supabase.instance.client
+            .from('post_rating')
+            .select('rating')
+            .eq('postid', widget.postId)
+            .eq('userid', widget.raterUid)
+            .maybeSingle();
+        ratingVal = resp?['rating'];
+      }
+      if (emojiVal == null) {
+        final resp = await Supabase.instance.client
+            .from('posts')
+            .select('reaction_emoji')
+            .eq('postId', widget.postId)
+            .maybeSingle();
+        emojiVal = resp?['reaction_emoji'];
+      }
+
+      if (ratingVal != null) _rating = (ratingVal as num).toDouble();
+      if (emojiVal != null && emojiVal.toString().isNotEmpty) {
+        _emoji = emojiVal.toString();
+      }
+    } catch (_) {
+      // Silently fail – missing bar is acceptable
+    }
+    if (mounted) setState(() => _isLoading = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const SizedBox(
+        height: 16,
+        width: 60,
+        child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+    if (_rating == null || _emoji == null || _emoji!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: _ReactionBar(
+        rating: _rating!,
+        emoji: _emoji!,
+        trackColor: widget.colors.subtitleTextColor.withOpacity(0.35),
+        activeTrackColor: widget.colors.textColor.withOpacity(0.8),
+      ),
+    );
+  }
+}
+
+// ─────────────────────── EXISTING UTILS & WIDGETS ─────────────────────────
+
 class VideoUtils {
   static bool isVideoFile(String url) {
     if (url.isEmpty) return false;
@@ -119,7 +296,7 @@ class _VideoProfileAvatarState extends State<VideoProfileAvatar> {
 }
 
 // =============================================================================
-// TikTok-style follow badge (UPDATED – logs every tap to Supabase)
+// TikTok-style follow badge (unchanged)
 // =============================================================================
 class _FollowBadge extends StatefulWidget {
   final String ownerUid;
@@ -200,7 +377,6 @@ class _FollowBadgeState extends State<_FollowBadge>
     } catch (_) {}
   }
 
-  // ── Contextual push after follow from a post_rating notification ──────────
   Future<void> _sendRatingFollowNotification() async {
     try {
       final followerRow = await _supabase
@@ -240,7 +416,6 @@ class _FollowBadgeState extends State<_FollowBadge>
     } catch (_) {}
   }
 
-  // ── Contextual push after follow from a comment notification ─────────────
   Future<void> _sendCommentFollowNotification() async {
     try {
       final followerRow = await _supabase
@@ -280,9 +455,6 @@ class _FollowBadgeState extends State<_FollowBadge>
     } catch (_) {}
   }
 
-  // ========================================================================
-  // FIXED: logs every tap (follow, unfollow, cancel) to follow_pressed
-  // ========================================================================
   Future<void> _handleTap() async {
     if (_isLoadingFollow) return;
 
@@ -290,7 +462,6 @@ class _FollowBadgeState extends State<_FollowBadge>
 
     try {
       if (_isFollowing) {
-        // Unfollow
         await SupabaseProfileMethods()
             .unfollowUser(widget.currentUserId, widget.ownerUid);
         if (mounted) {
@@ -301,7 +472,6 @@ class _FollowBadgeState extends State<_FollowBadge>
           });
           _scaleController.forward(from: 0.0);
         }
-        // Log unfollow after success
         AnalyticsService.logFollowPress(
           followerUid: widget.currentUserId,
           followedUid: widget.ownerUid,
@@ -309,7 +479,6 @@ class _FollowBadgeState extends State<_FollowBadge>
           action: 'unfollow',
         );
       } else if (_hasPendingRequest) {
-        // Cancel pending request
         await SupabaseProfileMethods()
             .declineFollowRequest(widget.ownerUid, widget.currentUserId);
         if (mounted) {
@@ -320,7 +489,6 @@ class _FollowBadgeState extends State<_FollowBadge>
           _scaleController.forward(from: 0.0);
         }
       } else {
-        // Follow (optimistic UI + request handling)
         setState(() => _isFollowing = true);
         _tickController.forward(from: 0.0).then((_) {
           if (mounted) {
@@ -441,7 +609,6 @@ class _FollowBadgeState extends State<_FollowBadge>
   }
 }
 
-// Stacks avatar + follow badge (unchanged)
 Widget _buildAvatarWithFollow({
   required Widget avatar,
   required double avatarDiameter,
@@ -472,6 +639,9 @@ Widget _buildAvatarWithFollow({
   );
 }
 
+// =============================================================================
+// COLOR SETS (unchanged)
+// =============================================================================
 class _NotificationColorSet {
   final Color backgroundColor;
   final Color textColor;
@@ -526,6 +696,9 @@ class _NotificationLightColors extends _NotificationColorSet {
         );
 }
 
+// =============================================================================
+// NOTIFICATION SCREEN (unchanged)
+// =============================================================================
 class NotificationScreen extends StatefulWidget {
   const NotificationScreen({Key? key}) : super(key: key);
 
@@ -684,6 +857,9 @@ class _NotificationScreenState extends State<NotificationScreen>
   }
 }
 
+// =============================================================================
+// FAST NOTIFICATION LIST (unchanged except for passing reaction bar)
+// =============================================================================
 class _FastNotificationList extends StatefulWidget {
   final String currentUserId;
   final _NotificationColorSet colors;
@@ -958,6 +1134,9 @@ class _FastNotificationListState extends State<_FastNotificationList> {
   }
 }
 
+// =============================================================================
+// FAST NOTIFICATION ITEM (MODIFIED to produce reaction bar)
+// =============================================================================
 class _FastNotificationItem extends StatelessWidget {
   final Map<String, dynamic> notification;
   final String currentUserId;
@@ -979,14 +1158,10 @@ class _FastNotificationItem extends StatelessWidget {
         MaterialPageRoute(builder: (context) => ProfileScreen(uid: uid)));
   }
 
-  // ─────────────────────────────── NEW ───────────────────────────────
-  // Instead of ImageViewScreen, push the ProfilePostFeedScreen so the
-  // user lands on the profile post feed with the tapped post visible.
   Future<void> _navigateToPost(BuildContext context, String postId) async {
     if (postId.isEmpty) return;
 
     try {
-      // 1. Fetch the post to get owner's uid and full details
       final postResponse = await Supabase.instance.client
           .from('posts')
           .select()
@@ -997,7 +1172,6 @@ class _FastNotificationItem extends StatelessWidget {
       final post = postResponse as Map<String, dynamic>;
       final ownerUid = post['uid']?.toString() ?? '';
 
-      // 2. Fetch the owner’s user data (username, photoUrl)
       final userResponse = await Supabase.instance.client
           .from('users')
           .select('uid, username, photoUrl')
@@ -1008,16 +1182,12 @@ class _FastNotificationItem extends StatelessWidget {
           ? Map<String, dynamic>.from(userResponse)
           : <String, dynamic>{};
 
-      // Ensure minimal fields exist
       userData['uid'] ??= ownerUid;
       userData['username'] ??= 'unknown';
       userData['photoUrl'] ??= '';
 
-      // 3. Build initial posts list with the tapped post
       final initialPosts = <Map<String, dynamic>>[post];
 
-      // 4. onLoadMore function: loads more posts by the same user
-      // (the type matches the `_LoadMore` typedef used in ProfilePostFeedScreen)
       Future<List<Map<String, dynamic>>> onLoadMore(int currentCount) async {
         final supabase = Supabase.instance.client;
         final more = await supabase
@@ -1025,30 +1195,26 @@ class _FastNotificationItem extends StatelessWidget {
             .select()
             .eq('uid', ownerUid)
             .order('datePublished', ascending: false)
-            .range(currentCount, currentCount + 9); // load next 10
-
+            .range(currentCount, currentCount + 9);
         return List<Map<String, dynamic>>.from(more);
       }
 
-      // 5. Push ProfilePostFeedScreen
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => ProfilePostFeedScreen(
             initialPosts: initialPosts,
-            initialIndex: 0, // the tapped post is the first (only) item
+            initialIndex: 0,
             userData: userData,
             onLoadMore: onLoadMore,
-            initialHasMore: true, // likely more posts exist
-            // onPostDeleted optional
+            initialHasMore: true,
           ),
         ),
       );
     } catch (e) {
-      // fail silently – errors are logged elsewhere if needed
+      // fail silently
     }
   }
-  // ────────────────────────────────────────────────────────────────────
 
   String _extractUserId() {
     final type = notification['type'] as String?;
@@ -1121,17 +1287,28 @@ class _FastNotificationItem extends StatelessWidget {
     VoidCallback? onTap;
     List<Widget>? actions;
 
+    // 🔽 Reaction bar – only for post_rating notifications
+    Widget? reactionBar;
+    final postId = _extractPostId();
+
     switch (type) {
       case 'comment':
         title = '$username commented on your post';
         subtitle = customData['commentText'] ?? customData['comment_text'];
-        final postId = _extractPostId();
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
       case 'post_rating':
         title = '$username reacted to your post';
-        final postId = _extractPostId();
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
+        // Build the reaction bar widget (fetches rating+emoji)
+        if (postId != null) {
+          reactionBar = _NotificationReactionBar(
+            postId: postId,
+            raterUid: userId,
+            customData: customData,
+            colors: colors,
+          );
+        }
         break;
       case 'follow_request':
         title = '$username wants to follow you';
@@ -1153,7 +1330,6 @@ class _FastNotificationItem extends StatelessWidget {
       case 'comment_like':
         title = '$username liked your comment';
         subtitle = customData['commentText'] ?? customData['comment_text'];
-        final postId = _extractPostId();
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
       case 'follow':
@@ -1171,13 +1347,11 @@ class _FastNotificationItem extends StatelessWidget {
       case 'reply':
         title = '$username replied to your comment';
         subtitle = customData['replyText'] ?? customData['reply_text'];
-        final postId = _extractPostId();
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
       case 'reply_like':
         title = '$username liked your reply';
         subtitle = customData['replyText'] ?? customData['reply_text'];
-        final postId = _extractPostId();
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
       default:
@@ -1196,10 +1370,14 @@ class _FastNotificationItem extends StatelessWidget {
       actions: actions,
       userCache: userCache,
       colors: colors,
+      reactionBar: reactionBar, // <-- Pass the reaction bar
     );
   }
 }
 
+// =============================================================================
+// TEMPLATE (MODIFIED to accept and display reactionBar)
+// =============================================================================
 class _FastNotificationTemplate extends StatelessWidget {
   final String userId;
   final String currentUserId;
@@ -1211,6 +1389,7 @@ class _FastNotificationTemplate extends StatelessWidget {
   final List<Widget>? actions;
   final Map<String, Map<String, dynamic>> userCache;
   final _NotificationColorSet colors;
+  final Widget? reactionBar; // ← NEW
 
   const _FastNotificationTemplate({
     required this.userId,
@@ -1223,6 +1402,7 @@ class _FastNotificationTemplate extends StatelessWidget {
     this.actions,
     required this.userCache,
     required this.colors,
+    this.reactionBar, // ← NEW
   });
 
   void _navigateToProfile(BuildContext context, String uid) {
@@ -1300,6 +1480,7 @@ class _FastNotificationTemplate extends StatelessWidget {
             if (subtitle != null)
               Text(subtitle!,
                   style: TextStyle(color: colors.subtitleTextColor)),
+            if (reactionBar != null) reactionBar!,   // ← REACTION BAR HERE
             Text(_formatTimestamp(timestamp),
                 style: TextStyle(color: colors.subtitleTextColor)),
             if (actions != null) ...actions!,
@@ -1311,6 +1492,9 @@ class _FastNotificationTemplate extends StatelessWidget {
   }
 }
 
+// =============================================================================
+// FALLING NUMBERS BACKGROUND (unchanged)
+// =============================================================================
 class _FallingNumbersBackground extends StatefulWidget {
   final AnimationController animationController;
   final Function(double) onInit;
