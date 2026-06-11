@@ -63,7 +63,7 @@ void main() async {
     try {
       await MobileAds.instance.initialize();
     } catch (e) {
-      // Save the error – we’ll log it once Supabase is ready.
+      // Save the error – we'll log it once Supabase is ready.
       _admobInitError = e.toString();
     }
   }
@@ -148,7 +148,7 @@ Future<void> _initializeOtherServicesInBackground() async {
   } catch (_) {}
 }
 
-// ────────── Everything below is identical to your original main.dart ──────────
+// ─── APP BOOTSTRAP ───────────────────────────────────────────────────────────
 
 class _AppBootstrap extends StatelessWidget {
   final ValueNotifier<_InitState> stateNotifier;
@@ -220,6 +220,8 @@ class _AppBootstrap extends StatelessWidget {
   }
 }
 
+// ─── MAIN APP ────────────────────────────────────────────────────────────────
+
 class _OptimizedMyApp extends StatefulWidget {
   final ThemeData lightTheme;
   final ThemeData darkTheme;
@@ -229,13 +231,40 @@ class _OptimizedMyApp extends StatefulWidget {
   State<_OptimizedMyApp> createState() => _OptimizedMyAppState();
 }
 
-class _OptimizedMyAppState extends State<_OptimizedMyApp> {
+// FIX: added WidgetsBindingObserver so didChangeAppLifecycleState fires.
+// Without this, warm-start taps stored _pendingData but executePendingNavigation()
+// was never called because the widget was already built (initState doesn't re-run).
+class _OptimizedMyAppState extends State<_OptimizedMyApp>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Handles cold start: app was terminated, now freshly built.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       NotificationNavigationHandler.executePendingNavigation();
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // FIX: This is the core of the warm-start fix.
+  // When the app resumes from background (warm start), the widget tree is
+  // already built so initState never fires again. The listener in
+  // registerWarmStartListener() correctly stored _pendingData, but nothing
+  // was ever consuming it. Now, as soon as the app comes to the foreground,
+  // we attempt to execute any pending navigation.
+  // executePendingNavigation() is idempotent — it clears _pendingData
+  // immediately, so repeated resumes without a notification tap are no-ops.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      NotificationNavigationHandler.executePendingNavigation();
+    }
   }
 
   @override
@@ -283,6 +312,8 @@ class _OptimizedMyAppState extends State<_OptimizedMyApp> {
   }
 }
 
+// ─── NAVIGATOR OBSERVER ──────────────────────────────────────────────────────
+
 class CountryCheckObserver extends NavigatorObserver {
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
@@ -304,6 +335,8 @@ class CountryCheckObserver extends NavigatorObserver {
     });
   }
 }
+
+// ─── ERROR SCREEN ─────────────────────────────────────────────────────────────
 
 class ErrorApp extends StatelessWidget {
   const ErrorApp({super.key});
@@ -335,6 +368,8 @@ class ErrorApp extends StatelessWidget {
     );
   }
 }
+
+// ─── ORIENTATION WRAPPER ──────────────────────────────────────────────────────
 
 class OrientationPersistentWrapper extends StatefulWidget {
   const OrientationPersistentWrapper({super.key});
@@ -385,6 +420,8 @@ class _OrientationPersistentWrapperState
     return const AuthWrapper();
   }
 }
+
+// ─── DEBUG HOME ───────────────────────────────────────────────────────────────
 
 class DebugHome extends StatefulWidget {
   const DebugHome({Key? key}) : super(key: key);
