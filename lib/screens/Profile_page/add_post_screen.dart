@@ -16,13 +16,30 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
+import 'package:Ratedly/screens/Profile_page/promote_post.dart'; // ✅ Added import
 
 // Identity matrix — passthrough when no filter/adjust is applied.
 const List<double> _kIdentityMatrix = [
-  1, 0, 0, 0, 0,
-  0, 1, 0, 0, 0,
-  0, 0, 1, 0, 0,
-  0, 0, 0, 1, 0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
 ];
 
 class AddPostScreen extends StatefulWidget {
@@ -63,7 +80,17 @@ class _AddPostScreenState extends State<AddPostScreen>
   late Animation<double> _pulseAnimation;
 
   static const List<String> _availableEmojis = [
-    '❤️', '😂', '😍', '🔥', '😎', '🥰', '😮', '👏', '💯', '😡', '💀',
+    '❤️',
+    '😂',
+    '😍',
+    '🔥',
+    '😎',
+    '🥰',
+    '😮',
+    '👏',
+    '💯',
+    '😡',
+    '💀',
   ];
   String _selectedEmoji = '❤️';
 
@@ -221,7 +248,8 @@ class _AddPostScreenState extends State<AddPostScreen>
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text(
               'I Understand',
-              style: TextStyle(color: primaryColor, fontWeight: FontWeight.bold),
+              style:
+                  TextStyle(color: primaryColor, fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -397,7 +425,8 @@ class _AddPostScreenState extends State<AddPostScreen>
       }
     } catch (e, stack) {
       setState(() => isLoading = false);
-      await _logError(operation: '_pickVideoFromGallery', error: e, stack: stack);
+      await _logError(
+          operation: '_pickVideoFromGallery', error: e, stack: stack);
       if (context.mounted) {
         showSnackBar(context, 'Failed to pick video: $e');
       }
@@ -500,7 +529,8 @@ class _AddPostScreenState extends State<AddPostScreen>
 
         final navigator = Navigator.of(context);
         // Pop until we reach the route that was pushed from the profile screen
-        navigator.popUntil((route) => route.settings.name == 'cameraFromProfile');
+        navigator
+            .popUntil((route) => route.settings.name == 'cameraFromProfile');
         navigator.pop(); // pop the camera route itself → back to profile
       } else if (context.mounted) {
         setState(() => isLoading = false);
@@ -935,6 +965,12 @@ class _AddPostScreenState extends State<AddPostScreen>
                   if (_isVideo && _videoFile != null) _buildVideoPreview(),
                   _buildEmojiPicker(),
                   _buildCaptionInput(user),
+
+                  // 🔥 ADDED: Promote button below the caption input
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                    child: PromotePostButton(postId: 'new_post'),
+                  ),
                 ],
               ),
             ),
