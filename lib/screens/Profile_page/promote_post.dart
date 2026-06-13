@@ -1,26 +1,79 @@
 // lib/screens/Profile_page/promote_post.dart
 import 'package:flutter/material.dart';
-import 'package:Ratedly/utils/colors.dart';
+import 'package:purchases_flutter/purchases_flutter.dart';
+import 'package:Ratedly/services/post_boost_service.dart';
+import 'package:Ratedly/utils/utils.dart';
 
 // =============================================================================
 // PROMOTE POST BUTTON
-// Drop this widget directly below the bio in your profile screen.
-// Now available for all platforms.
+// Drop this widget directly below a post's description.
 // =============================================================================
-class PromotePostButton extends StatelessWidget {
+class PromotePostButton extends StatefulWidget {
   final String postId;
+  final bool initialIsBoosted;
 
   const PromotePostButton({
     Key? key,
     required this.postId,
+    this.initialIsBoosted = false,
   }) : super(key: key);
 
   @override
+  State<PromotePostButton> createState() => _PromotePostButtonState();
+}
+
+class _PromotePostButtonState extends State<PromotePostButton> {
+  late bool _isBoosted;
+
+  @override
+  void initState() {
+    super.initState();
+    _isBoosted = widget.initialIsBoosted;
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (_isBoosted) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 13),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.06),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.white.withOpacity(0.1)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text('🔥', style: TextStyle(fontSize: 16)),
+              const SizedBox(width: 8),
+              Text(
+                'Boosted',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.75),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 15,
+                  letterSpacing: 0.1,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
       child: GestureDetector(
-        onTap: () => showPromotePostSheet(context, postId: postId),
+        onTap: () async {
+          final result =
+              await showPromotePostSheet(context, postId: widget.postId);
+          if (result == true && mounted) {
+            setState(() => _isBoosted = true);
+          }
+        },
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 13),
@@ -63,12 +116,11 @@ class PromotePostButton extends StatelessWidget {
 
 // =============================================================================
 // PROMOTE POST BOTTOM SHEET
-// Call showPromotePostSheet(context, postId: ...) to open.
-// UI/UX only — no purchase or backend logic wired up.
+// Returns true via Navigator.pop if the boost purchase succeeded.
 // =============================================================================
-Future<void> showPromotePostSheet(BuildContext context,
+Future<bool?> showPromotePostSheet(BuildContext context,
     {required String postId}) {
-  return showModalBottomSheet(
+  return showModalBottomSheet<bool>(
     context: context,
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
@@ -76,10 +128,74 @@ Future<void> showPromotePostSheet(BuildContext context,
   );
 }
 
-class _PromotePostSheet extends StatelessWidget {
+class _PromotePostSheet extends StatefulWidget {
   final String postId;
 
   const _PromotePostSheet({required this.postId});
+
+  @override
+  State<_PromotePostSheet> createState() => _PromotePostSheetState();
+}
+
+class _PromotePostSheetState extends State<_PromotePostSheet> {
+  final PostBoostService _boostService = PostBoostService();
+
+  StoreProduct? _product;
+  bool _isLoadingProduct = true;
+  bool _isPurchasing = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProduct();
+  }
+
+  Future<void> _loadProduct() async {
+    final product = await _boostService.getBoostProduct();
+    if (!mounted) return;
+    setState(() {
+      _product = product;
+      _isLoadingProduct = false;
+      if (product == null) {
+        _errorMessage =
+            'Boost is unavailable right now. Please try again later.';
+      }
+    });
+  }
+
+  Future<void> _onPromoteTap() async {
+    if (_product == null || _isPurchasing) return;
+
+    setState(() {
+      _isPurchasing = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final success = await _boostService.buyBoost(
+        postId: widget.postId,
+        product: _product!,
+      );
+
+      if (!mounted) return;
+
+      if (success) {
+        Navigator.pop(context, true);
+        showSnackBar(context, 'Your post has been boosted! 🔥');
+      } else {
+        setState(() => _isPurchasing = false);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isPurchasing = false;
+        _errorMessage = 'Something went wrong. Please try again.';
+      });
+    }
+  }
+
+  String get _priceLabel => _product?.priceString ?? '\$2.99';
 
   @override
   Widget build(BuildContext context) {
@@ -152,9 +268,9 @@ class _PromotePostSheet extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Text(
-              'Give your post a boost. For \$2.99, your post will receive '
-              '30 reactions, helping it reach more people and stand out '
-              'on the feed.',
+              'Give your post a boost. For $_priceLabel, we\'ll show it to '
+              'more people in the feed until it earns '
+              '${PostBoostService.targetNewReactions} new reactions.',
               style: TextStyle(
                 color: Colors.white.withOpacity(0.55),
                 fontSize: 14,
@@ -175,32 +291,45 @@ class _PromotePostSheet extends StatelessWidget {
               border: Border.all(color: Colors.white.withOpacity(0.06)),
             ),
             child: Column(
-              children: const [
-                _FeatureRow(
-                  icon: Icons.bolt_rounded,
-                  text: '30 reactions added to your post',
-                ),
-                SizedBox(height: 14),
+              children: [
                 _FeatureRow(
                   icon: Icons.trending_up_rounded,
-                  text: 'Increased visibility in the feed',
+                  text: 'Shown to more people until '
+                      '${PostBoostService.targetNewReactions} new reactions',
                 ),
-                SizedBox(height: 14),
-                _FeatureRow(
+                const SizedBox(height: 14),
+                const _FeatureRow(
+                  icon: Icons.visibility_rounded,
+                  text: 'Higher placement in the feed ranking',
+                ),
+                const SizedBox(height: 14),
+                const _FeatureRow(
                   icon: Icons.flash_on_rounded,
-                  text: 'Delivered shortly after purchase',
+                  text: 'Boost applies immediately',
                 ),
               ],
             ),
           ),
+
+          if (_errorMessage != null) ...[
+            const SizedBox(height: 16),
+            Text(
+              _errorMessage!,
+              style: TextStyle(
+                color: Colors.red.withOpacity(0.85),
+                fontSize: 13,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+
           const SizedBox(height: 28),
 
           // CTA button
           GestureDetector(
-            onTap: () {
-              // Purchase / backend logic intentionally not implemented.
-              Navigator.pop(context);
-            },
+            onTap: (_isLoadingProduct || _isPurchasing || _product == null)
+                ? null
+                : _onPromoteTap,
             child: Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 16),
@@ -219,16 +348,25 @@ class _PromotePostSheet extends StatelessWidget {
                   ),
                 ],
               ),
-              child: const Center(
-                child: Text(
-                  'Promote for \$2.99',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.2,
-                  ),
-                ),
+              child: Center(
+                child: (_isLoadingProduct || _isPurchasing)
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2.5,
+                        ),
+                      )
+                    : Text(
+                        'Promote for $_priceLabel',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
               ),
             ),
           ),
@@ -236,7 +374,7 @@ class _PromotePostSheet extends StatelessWidget {
 
           // Cancel
           GestureDetector(
-            onTap: () => Navigator.pop(context),
+            onTap: _isPurchasing ? null : () => Navigator.pop(context, false),
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text(
