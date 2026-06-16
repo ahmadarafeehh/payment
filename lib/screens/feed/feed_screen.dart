@@ -205,6 +205,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   bool _surveyShown = false;
 
+  // ---- NEW: batch counter for For You logging ----
+  int _forYouBatchNumber = 0;
+
   // ---------------------------------------------------------------------------
   // HELPERS (unchanged)
   // ---------------------------------------------------------------------------
@@ -1564,6 +1567,38 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     unawaited(FeedCacheService.cacheCurrentPostsNow(candidates, userId));
   }
 
+  // ---------------------------------------------------------------------------
+  // NEW: Non‑blocking logger for For You feed batches
+  // ---------------------------------------------------------------------------
+  Future<void> _logForYouFeedBatch(List<Map<String, dynamic>> posts, bool loadMore, int batchNumber) async {
+    if (currentUserId == null || posts.isEmpty) return;
+    try {
+      final rows = <Map<String, dynamic>>[];
+      for (int i = 0; i < posts.length; i++) {
+        final p = posts[i];
+        final postId = p['postId']?.toString();
+        if (postId == null || postId.isEmpty) continue;
+        rows.add({
+          'user_id': currentUserId,
+          'post_id': postId,
+          'feed_source': p['feed_source']?.toString() ?? 'unknown',
+          'position': i,
+          'batch_load': loadMore,
+          'batch_number': batchNumber,
+          'timestamp': DateTime.now().toUtc().toIso8601String(),
+        });
+      }
+      if (rows.isNotEmpty) {
+        await _supabase.from('foryou_algo_logs').insert(rows);
+      }
+    } catch (_) {
+      // Fail silently – logging must never crash or block the UI
+    }
+  }
+
+  // ===========================================================================
+  // MAIN FEED LOADER (modified)
+  // ===========================================================================
   Future<void> _loadData({bool loadMore = false}) async {
     if ((_selectedTab == 1 && !_hasMoreForYou && loadMore) ||
         (_selectedTab == 0 && !_hasMoreFollowing && loadMore) ||
@@ -1648,6 +1683,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           );
         }
       } else {
+        // For You tab
         try {
           final raw = await _supabase.rpc('get_for_you_feed_test', params: {
             'current_user_id': userId,
@@ -1698,6 +1734,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         }
 
         _schedulePrefetch();
+
+        // ---- Increment batch number for logging ----
+        _forYouBatchNumber++;
       }
 
       if (!loadMore) {
@@ -1742,6 +1781,11 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           }
           _isLoadingMore = false;
         });
+
+        // ---- LOG the final For You batch (non‑blocking) ----
+        if (_selectedTab == 1) {
+          unawaited(_logForYouFeedBatch(_forYouPosts, loadMore, _forYouBatchNumber));
+        }
 
         if (!loadMore &&
             _selectedTab == 1 &&
@@ -1879,6 +1923,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         });
       }
     } else {
+      // Switching to For You – reset batch counter
+      _forYouBatchNumber = 0;
       _forYouPosts.clear();
       _hasMoreForYou = true;
       _currentForYouPage = 0;
