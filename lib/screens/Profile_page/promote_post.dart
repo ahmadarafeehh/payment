@@ -6,15 +6,25 @@ import 'package:Ratedly/utils/utils.dart';
 
 // =============================================================================
 // PROMOTE POST BUTTON
+//
+// Two modes:
+//   • Post-exists mode  — pass a real [postId]. Purchase + Supabase update
+//                         happen together inside the sheet.
+//   • Pre-post mode     — pass postId: null. Only the RevenueCat purchase
+//                         happens; the caller must call
+//                         PostBoostService().applyBoost(postId) after the
+//                         post is uploaded. Use [onBoosted] to be notified.
 // =============================================================================
 class PromotePostButton extends StatefulWidget {
-  final String postId;
+  final String? postId; // null → pre-post mode
   final bool initialIsBoosted;
+  final VoidCallback? onBoosted; // fired when purchase succeeds
 
   const PromotePostButton({
     Key? key,
     required this.postId,
     this.initialIsBoosted = false,
+    this.onBoosted,
   }) : super(key: key);
 
   @override
@@ -49,7 +59,7 @@ class _PromotePostButtonState extends State<PromotePostButton> {
               const Text('🔥', style: TextStyle(fontSize: 16)),
               const SizedBox(width: 8),
               Text(
-                'Boosted',
+                'Boost Added',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.75),
                   fontWeight: FontWeight.w700,
@@ -72,6 +82,7 @@ class _PromotePostButtonState extends State<PromotePostButton> {
           );
           if (result == true && mounted) {
             setState(() => _isBoosted = true);
+            widget.onBoosted?.call();
           }
         },
         child: Container(
@@ -98,7 +109,7 @@ class _PromotePostButtonState extends State<PromotePostButton> {
               Text('🔥', style: TextStyle(fontSize: 16)),
               SizedBox(width: 8),
               Text(
-                'Increase Reactions',
+                'Boost This Post',
                 style: TextStyle(
                   color: Colors.white,
                   fontWeight: FontWeight.w700,
@@ -116,11 +127,11 @@ class _PromotePostButtonState extends State<PromotePostButton> {
 
 // =============================================================================
 // PROMOTE POST BOTTOM SHEET
-// Returns true via Navigator.pop if the boost purchase succeeded.
+// Returns true via Navigator.pop if the purchase succeeded.
 // =============================================================================
 Future<bool?> showPromotePostSheet(
   BuildContext context, {
-  required String postId,
+  required String? postId, // null → pre-post / purchase-only mode
 }) {
   return showModalBottomSheet<bool>(
     context: context,
@@ -133,22 +144,10 @@ Future<bool?> showPromotePostSheet(
 // =============================================================================
 // SHEET STATE
 // =============================================================================
-enum _SheetState {
-  /// Product is being fetched from RevenueCat — CTA shows a spinner.
-  loading,
-
-  /// Product fetched successfully — CTA shows price and is tappable.
-  ready,
-
-  /// Product not found or RevenueCat error — CTA is disabled with label.
-  unavailable,
-
-  /// Purchase is in progress (Apple payment sheet is open).
-  purchasing,
-}
+enum _SheetState { loading, ready, unavailable, purchasing }
 
 class _PromotePostSheet extends StatefulWidget {
-  final String postId;
+  final String? postId;
   const _PromotePostSheet({required this.postId});
 
   @override
@@ -161,6 +160,8 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
   _SheetState _sheetState = _SheetState.loading;
   StoreProduct? _product;
 
+  bool get _isPrePostMode => widget.postId == null;
+
   @override
   void initState() {
     super.initState();
@@ -168,7 +169,6 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
   }
 
   Future<void> _loadProduct() async {
-    // Sheet is already showing "loading" spinner in the CTA — fetch quietly.
     final product = await _boostService.getBoostProduct();
     if (!mounted) return;
     setState(() {
@@ -180,22 +180,31 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
 
   Future<void> _onPromoteTap() async {
     if (_product == null || _sheetState != _SheetState.ready) return;
-
     setState(() => _sheetState = _SheetState.purchasing);
 
     try {
-      final success = await _boostService.buyBoost(
-        postId: widget.postId,
-        product: _product!,
-      );
+      bool success;
+
+      if (_isPrePostMode) {
+        // Pre-post: purchase only — caller applies boost after upload.
+        success = await _boostService.purchaseBoostOnly(product: _product!);
+      } else {
+        // Post exists: purchase + apply boost in one step.
+        success = await _boostService.buyBoost(
+          postId: widget.postId!,
+          product: _product!,
+        );
+      }
 
       if (!mounted) return;
 
       if (success) {
         Navigator.pop(context, true);
-        showSnackBar(context, 'Your post has been boosted! 🔥');
+        if (!_isPrePostMode) {
+          showSnackBar(context, 'Your post has been boosted! 🔥');
+        }
       } else {
-        // User cancelled — silently return to ready state.
+        // User cancelled — return to ready state silently.
         setState(() => _sheetState = _SheetState.ready);
       }
     } catch (_) {
@@ -205,7 +214,7 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
     }
   }
 
-  // ── CTA label / content ────────────────────────────────────────────────────
+  // ── CTA label ──────────────────────────────────────────────────────────────
 
   Widget _buildCtaChild() {
     switch (_sheetState) {
@@ -214,16 +223,14 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
         return const SizedBox(
           width: 22,
           height: 22,
-          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+          child:
+              CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
         );
       case _SheetState.unavailable:
         return const Text(
           'Currently Unavailable',
           style: TextStyle(
-            color: Colors.white,
-            fontSize: 16,
-            fontWeight: FontWeight.w700,
-          ),
+              color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700),
         );
       case _SheetState.ready:
         return Text(
@@ -309,13 +316,13 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
           ),
           const SizedBox(height: 10),
 
-          // Description
+          // Description — slightly different copy for pre-post mode
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Text(
-              'Give your post a boost. We\'ll show it to more people in the '
-              'feed until it earns '
-              '${PostBoostService.targetNewReactions} new reactions.',
+              _isPrePostMode
+                  ? 'Pay now and your post will be boosted the moment it goes live — shown to more people until it earns ${PostBoostService.targetNewReactions} new reactions.'
+                  : 'Give your post a boost. We\'ll show it to more people in the feed until it earns ${PostBoostService.targetNewReactions} new reactions.',
               style: TextStyle(
                 color: Colors.white.withOpacity(0.55),
                 fontSize: 14,
@@ -348,16 +355,18 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
                   text: 'Higher placement in the feed ranking',
                 ),
                 const SizedBox(height: 14),
-                const _FeatureRow(
+                _FeatureRow(
                   icon: Icons.flash_on_rounded,
-                  text: 'Boost applies immediately',
+                  text: _isPrePostMode
+                      ? 'Boost activates the moment your post goes live'
+                      : 'Boost applies immediately',
                 ),
               ],
             ),
           ),
           const SizedBox(height: 28),
 
-          // CTA button — state-driven, no separate error text block
+          // CTA
           GestureDetector(
             onTap: _ctaTappable ? _onPromoteTap : null,
             child: AnimatedOpacity(
@@ -399,8 +408,8 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
               child: Text(
                 'Not Now',
                 style: TextStyle(
-                  color: Colors.white
-                      .withOpacity(_sheetState == _SheetState.purchasing ? 0.2 : 0.45),
+                  color: Colors.white.withOpacity(
+                      _sheetState == _SheetState.purchasing ? 0.2 : 0.45),
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),
