@@ -16,30 +16,15 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
-import 'package:Ratedly/screens/Profile_page/promote_post.dart'; // ✅ Added import
+import 'package:Ratedly/screens/Profile_page/promote_post.dart';
+import 'package:Ratedly/services/post_boost_service.dart';
 
 // Identity matrix — passthrough when no filter/adjust is applied.
 const List<double> _kIdentityMatrix = [
-  1,
-  0,
-  0,
-  0,
-  0,
-  0,
-  1,
-  0,
-  0,
-  0,
-  0,
-  0,
-  1,
-  0,
-  0,
-  0,
-  0,
-  0,
-  1,
-  0,
+  1, 0, 0, 0, 0,
+  0, 1, 0, 0, 0,
+  0, 0, 1, 0, 0,
+  0, 0, 0, 1, 0,
 ];
 
 class AddPostScreen extends StatefulWidget {
@@ -66,6 +51,7 @@ class _AddPostScreenState extends State<AddPostScreen>
   File? _videoFile;
   bool isLoading = false;
   bool _isVideo = false;
+  bool _boostPurchased = false; // ← pre-post boost flag
   final TextEditingController _descriptionController = TextEditingController();
   final FocusNode _captionFocusNode = FocusNode();
   final double _maxFileSize = 2.5 * 1024 * 1024;
@@ -80,17 +66,7 @@ class _AddPostScreenState extends State<AddPostScreen>
   late Animation<double> _pulseAnimation;
 
   static const List<String> _availableEmojis = [
-    '❤️',
-    '😂',
-    '😍',
-    '🔥',
-    '😎',
-    '🥰',
-    '😮',
-    '👏',
-    '💯',
-    '😡',
-    '💀',
+    '❤️', '😂', '😍', '🔥', '😎', '🥰', '😮', '👏', '💯', '😡', '💀',
   ];
   String _selectedEmoji = '❤️';
 
@@ -248,8 +224,8 @@ class _AddPostScreenState extends State<AddPostScreen>
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text(
               'I Understand',
-              style:
-                  TextStyle(color: primaryColor, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                  color: primaryColor, fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -361,7 +337,8 @@ class _AddPostScreenState extends State<AddPostScreen>
           );
         }
 
-        if (compressedImage != null && compressedImage.length > _maxFileSize) {
+        if (compressedImage != null &&
+            compressedImage.length > _maxFileSize) {
           compressedImage = await _compressUntilUnderLimit(compressedImage);
         }
 
@@ -481,17 +458,17 @@ class _AddPostScreenState extends State<AddPostScreen>
       return;
     }
     if (_isVideo && _videoFile == null) {
-      if (context.mounted)
-        showSnackBar(context, "Please select a video first.");
+      if (context.mounted) showSnackBar(context, "Please select a video first.");
       return;
     }
 
     await _videoController?.pause();
-    if (mounted)
+    if (mounted) {
       setState(() {
         isLoading = true;
         _isPlaying = false;
       });
+    }
 
     try {
       final String res;
@@ -520,18 +497,40 @@ class _AddPostScreenState extends State<AddPostScreen>
         );
       }
 
-      // ── Updated pop logic: pop ALL screens back to the profile ──
       if (res == "success" && context.mounted) {
+        // ── Apply pre-purchased boost to the just-uploaded post ──────────────
+        if (_boostPurchased) {
+          try {
+            final row = await Supabase.instance.client
+                .from('posts')
+                .select('postId')
+                .eq('uid', user.uid)
+                .order('datePublished', ascending: false)
+                .limit(1)
+                .maybeSingle();
+            final uploadedPostId = row?['postId'] as String?;
+            if (uploadedPostId != null) {
+              await PostBoostService().applyBoost(uploadedPostId);
+            }
+          } catch (_) {
+            // Non-critical — post uploaded successfully regardless.
+          }
+        }
+
         setState(() => isLoading = false);
-        showSnackBar(context, _isVideo ? 'Video Posted!' : 'Posted!');
+        showSnackBar(
+          context,
+          _boostPurchased
+              ? (_isVideo ? 'Video Posted & Boosted! 🔥' : 'Posted & Boosted! 🔥')
+              : (_isVideo ? 'Video Posted!' : 'Posted!'),
+        );
         clearMedia();
         widget.onPostUploaded?.call();
 
         final navigator = Navigator.of(context);
-        // Pop until we reach the route that was pushed from the profile screen
         navigator
             .popUntil((route) => route.settings.name == 'cameraFromProfile');
-        navigator.pop(); // pop the camera route itself → back to profile
+        navigator.pop();
       } else if (context.mounted) {
         setState(() => isLoading = false);
         showSnackBar(context, 'Error: $res');
@@ -558,6 +557,7 @@ class _AddPostScreenState extends State<AddPostScreen>
       _isVideo = false;
       isLoading = false;
       _selectedEmoji = '❤️';
+      _boostPurchased = false;
       _descriptionController.clear();
     });
   }
@@ -878,7 +878,9 @@ class _AddPostScreenState extends State<AddPostScreen>
                   minHeight: 2,
                   backgroundColor: Colors.white.withOpacity(0.08),
                   valueColor: AlwaysStoppedAnimation<Color>(
-                    isOverLimit ? Colors.red : Colors.white.withOpacity(0.55),
+                    isOverLimit
+                        ? Colors.red
+                        : Colors.white.withOpacity(0.55),
                   ),
                 ),
               ),
@@ -966,10 +968,11 @@ class _AddPostScreenState extends State<AddPostScreen>
                   _buildEmojiPicker(),
                   _buildCaptionInput(user),
 
-                  // 🔥 ADDED: Promote button below the caption input
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                    child: PromotePostButton(postId: 'new_post'),
+                  // 🔥 Pre-post boost button — purchase only, applied after upload
+                  PromotePostButton(
+                    postId: null,
+                    initialIsBoosted: _boostPurchased,
+                    onBoosted: () => setState(() => _boostPurchased = true),
                   ),
                 ],
               ),
@@ -1030,7 +1033,9 @@ class _PermissionSheet extends StatelessWidget {
               shape: BoxShape.circle,
             ),
             child: Icon(
-              needsMic ? Icons.mic_off_rounded : Icons.no_photography_rounded,
+              needsMic
+                  ? Icons.mic_off_rounded
+                  : Icons.no_photography_rounded,
               color: Colors.white.withOpacity(0.55),
               size: 30,
             ),
@@ -1052,7 +1057,9 @@ class _PermissionSheet extends StatelessWidget {
           const SizedBox(height: 28),
           if (isPermanent && onOpenSettings != null)
             _Btn(
-                label: 'Open Settings', isPrimary: true, onTap: onOpenSettings!)
+                label: 'Open Settings',
+                isPrimary: true,
+                onTap: onOpenSettings!)
           else
             _Btn(
                 label: 'Allow Access',
