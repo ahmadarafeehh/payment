@@ -205,8 +205,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   bool _surveyShown = false;
 
-  // ---- NEW: batch counter for For You logging ----
+  // ---- For You logging ----
   int _forYouBatchNumber = 0;
+  bool _hasLoggedEmptyForYou = false;   // prevent duplicate empty logs
 
   // ---------------------------------------------------------------------------
   // HELPERS (unchanged)
@@ -1568,8 +1569,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ---------------------------------------------------------------------------
-  // NEW: Non‑blocking logger for For You feed batches
+  // NEW: Logging methods
   // ---------------------------------------------------------------------------
+
+  /// Logs a batch of posts shown in the For You feed.
   Future<void> _logForYouFeedBatch(List<Map<String, dynamic>> posts, bool loadMore, int batchNumber) async {
     if (currentUserId == null || posts.isEmpty) return;
     try {
@@ -1592,7 +1595,25 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         await _supabase.from('foryou_algo_logs').insert(rows);
       }
     } catch (_) {
-      // Fail silently – logging must never crash or block the UI
+      // Fail silently – logging must never crash the UI
+    }
+  }
+
+  /// Logs that the user reached the end of the For You feed (no more posts).
+  Future<void> _logForYouFeedEmpty() async {
+    if (currentUserId == null) return;
+    try {
+      await _supabase.from('foryou_algo_logs').insert({
+        'user_id': currentUserId,
+        'post_id': null,                // no post for this event
+        'feed_source': 'empty',
+        'position': -1,
+        'batch_load': false,
+        'batch_number': _forYouBatchNumber,
+        'timestamp': DateTime.now().toUtc().toIso8601String(),
+      });
+    } catch (_) {
+      // Fail silently
     }
   }
 
@@ -1721,7 +1742,13 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           );
         }
 
+        // Update _hasMoreForYou and log if it becomes false for the first time
+        final bool wasEmptyBefore = !_hasMoreForYou;
         _hasMoreForYou = newPosts.isNotEmpty;
+        if (!_hasMoreForYou && !wasEmptyBefore && !_hasLoggedEmptyForYou) {
+          _hasLoggedEmptyForYou = true;
+          unawaited(_logForYouFeedEmpty());
+        }
 
         if (!loadMore && newPosts.isEmpty && rpcSuccess) {
           await _logFeedError(
@@ -1923,8 +1950,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         });
       }
     } else {
-      // Switching to For You – reset batch counter
+      // Switching to For You – reset batch counter and empty‑log flag
       _forYouBatchNumber = 0;
+      _hasLoggedEmptyForYou = false;
       _forYouPosts.clear();
       _hasMoreForYou = true;
       _currentForYouPage = 0;
