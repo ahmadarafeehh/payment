@@ -18,18 +18,22 @@ class PostBoostService {
   factory PostBoostService() => _instance;
   PostBoostService._internal();
 
-  /// RevenueCat product identifier for the one-time post boost.
-  /// Configure this as a consumable product in App Store Connect / RevenueCat.
-  static const String productId = 'post_boost_2_99';
+  /// RevenueCat product identifier — must match App Store Connect + RC exactly.
+  static const String productId = 'boost_30';
 
-  /// Feed-ranking weight applied while the post is boosted.
-  /// Must satisfy the posts table check constraint: 150 <= boost_views <= 1000.
-  static const int boostViews = 300;
+  /// RevenueCat offering identifier.
+  static const String _offeringId = 'boost';
+
+  /// RevenueCat package identifier inside the offering.
+  static const String _packageId = 'boost_package';
 
   /// Number of NEW reactions the post must receive (on top of its count at
   /// purchase time) before the boost automatically expires. Enforced by the
   /// `trg_post_rating_boost_expiry` trigger in Supabase.
   static const int targetNewReactions = 30;
+
+  // Cache the resolved package to avoid re-fetching on buyBoost.
+  Package? _cachedPackage;
 
   final SupabaseClient _supabase = Supabase.instance.client;
 
@@ -89,8 +93,9 @@ class PostBoostService {
 
   // ─── Get Product ──────────────────────────────────────────────────────────
 
-  /// Fetches the boost product from the current RevenueCat offerings.
-  /// Returns null if unavailable. Logs each lookup attempt.
+  /// Fetches the boost product from the dedicated 'boost' offering.
+  /// Falls back to searching all offerings, then getProducts() as a last
+  /// resort. Returns null if unavailable.
   Future<StoreProduct?> getBoostProduct() async {
     await _log(
       step: 'get_boost_product',
@@ -109,25 +114,61 @@ class PostBoostService {
             'offeringCount=${offerings.all.length}, currentOffering=${offerings.current?.identifier}',
       );
 
-      // Look across all offerings (not just `current`) since the boost
-      // product may live in its own offering separate from the
-      // subscription paywall.
+      // ── Step 1: Look in the dedicated 'boost' offering first ──────────────
+      final boostOffering = offerings.getOffering(_offeringId);
+      if (boostOffering != null) {
+        Package? package;
+        try {
+          package = boostOffering.availablePackages.firstWhere(
+            (p) => p.identifier == _packageId,
+          );
+        } catch (_) {
+          // Package identifier not matched — fall back to first in offering.
+          package = boostOffering.availablePackages.isNotEmpty
+              ? boostOffering.availablePackages.first
+              : null;
+        }
+
+        if (package != null) {
+          _cachedPackage = package;
+          await _log(
+            step: 'get_boost_product',
+            status: 'success',
+            productId: productId,
+            offeringId: _offeringId,
+            extraInfo:
+                'source=boost_offering, price=${package.storeProduct.priceString}',
+          );
+          return package.storeProduct;
+        }
+      }
+
+      // ── Step 2: Search across all offerings ───────────────────────────────
+      await _log(
+        step: 'get_boost_product',
+        status: 'boost_offering_not_found',
+        productId: productId,
+        extraInfo: 'falling back to searching all offerings',
+      );
+
       for (final offering in offerings.all.values) {
         for (final package in offering.availablePackages) {
           if (package.storeProduct.identifier == productId) {
+            _cachedPackage = package;
             await _log(
               step: 'get_boost_product',
               status: 'success',
               productId: productId,
               offeringId: offering.identifier,
               extraInfo:
-                  'source=offering_package, price=${package.storeProduct.priceString}',
+                  'source=all_offerings_scan, price=${package.storeProduct.priceString}',
             );
             return package.storeProduct;
           }
         }
       }
 
+      // ── Step 3: Last resort — getProducts() direct lookup ─────────────────
       await _log(
         step: 'get_boost_product',
         status: 'not_found_in_offerings',
@@ -135,14 +176,14 @@ class PostBoostService {
         extraInfo: 'falling back to getProducts([productId])',
       );
 
-      // Fallback: try fetching the product directly by ID.
       final products = await Purchases.getProducts([productId]);
       if (products.isNotEmpty) {
         await _log(
           step: 'get_boost_product',
           status: 'success',
           productId: productId,
-          extraInfo: 'source=getProducts, price=${products.first.priceString}',
+          extraInfo:
+              'source=getProducts, price=${products.first.priceString}',
         );
         return products.first;
       }
@@ -167,7 +208,10 @@ class PostBoostService {
         errorMessage: e.toString(),
       );
       await _logError(
-          operationType: 'getBoostProduct', error: e, stackTrace: st);
+        operationType: 'getBoostProduct',
+        error: e,
+        stackTrace: st,
+      );
       return null;
     }
   }
@@ -178,7 +222,7 @@ class PostBoostService {
   /// in Supabase. Returns true if the post was successfully boosted.
   ///
   /// Throws on unexpected errors (other than user cancellation, which
-  /// returns false silently — matching [IAPService.buyProduct]).
+  /// returns false silently).
   Future<bool> buyBoost({
     required String postId,
     required StoreProduct product,
@@ -191,7 +235,15 @@ class PostBoostService {
     );
 
     try {
-      final customerInfo = await Purchases.purchaseStoreProduct(product);
+      CustomerInfo customerInfo;
+
+      if (_cachedPackage != null) {
+        // Preferred: purchase via package (RevenueCat recommendation).
+        customerInfo = await Purchases.purchasePackage(_cachedPackage!);
+      } else {
+        // Fallback: purchase directly by product.
+        customerInfo = await Purchases.purchaseStoreProduct(product);
+      }
 
       await _log(
         step: 'buy_boost_purchase',
@@ -201,7 +253,8 @@ class PostBoostService {
             'postId=$postId, activeEntitlements=${customerInfo.entitlements.active.keys.join(",")}',
       );
 
-      // Purchase succeeded — apply the boost to this specific post.
+      // Consumables don't create entitlements — a non-error response means
+      // the transaction completed successfully; apply the boost immediately.
       final applied = await _applyBoost(postId);
 
       if (!applied) {
@@ -209,13 +262,17 @@ class PostBoostService {
           step: 'buy_boost',
           status: 'error',
           productId: product.identifier,
-          errorMessage: 'Purchase succeeded but failed to apply boost to post',
+          errorMessage:
+              'Purchase succeeded but failed to apply boost to post',
           extraInfo: 'postId=$postId',
         );
         await _logError(
           operationType: 'buyBoost_applyFailed',
           error: 'Purchase succeeded but failed to update post',
-          additionalData: {'postId': postId, 'productId': product.identifier},
+          additionalData: {
+            'postId': postId,
+            'productId': product.identifier,
+          },
         );
       } else {
         await _log(
@@ -271,8 +328,10 @@ class PostBoostService {
     }
   }
 
-  /// Marks the given post as boosted: sets the feed-ranking weight and
-  /// records the reaction-count target at which the boost should expire
+  // ─── Apply Boost ─────────────────────────────────────────────────────────
+
+  /// Marks the given post as boosted: sets is_boosted = true and records
+  /// the reaction-count target at which the boost should expire
   /// (current ratingsCount + [targetNewReactions]).
   Future<bool> _applyBoost(String postId) async {
     await _log(
@@ -282,6 +341,7 @@ class PostBoostService {
     );
 
     try {
+      // Fetch current ratingsCount to calculate the expiry target.
       final post = await _supabase
           .from('posts')
           .select('ratingsCount')
@@ -303,7 +363,8 @@ class PostBoostService {
         return false;
       }
 
-      final int currentRatings = (post['ratingsCount'] as num?)?.toInt() ?? 0;
+      final int currentRatings =
+          (post['ratingsCount'] as num?)?.toInt() ?? 0;
       final int target = currentRatings + targetNewReactions;
 
       await _log(
@@ -315,15 +376,14 @@ class PostBoostService {
 
       await _supabase.from('posts').update({
         'is_boosted': true,
-        'boost_views': boostViews,
-        'boost_target_ratings_count': target,
+        'boost_reactions_target': target,
       }).eq('postId', postId);
 
       await _log(
         step: 'apply_boost',
         status: 'success',
         extraInfo:
-            'postId=$postId, boostViews=$boostViews, targetRatingsCount=$target',
+            'postId=$postId, targetRatingsCount=$target',
       );
 
       return true;
