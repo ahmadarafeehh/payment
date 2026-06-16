@@ -3,36 +3,16 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// Handles the one-time "Boost Post" in-app purchase and applies the
-/// resulting visibility boost to the purchased post in Supabase.
-///
-/// Mirrors the structure of [IAPService] but is scoped to a single,
-/// consumable purchase tied to a specific postId rather than a
-/// subscription entitlement.
-///
-/// Every meaningful step is logged to `purchase_logs` (status: 'start',
-/// 'success', 'error', 'cancelled', etc.) and unexpected failures are
-/// additionally logged to `purchase_errors` with a stack trace.
 class PostBoostService {
   static final PostBoostService _instance = PostBoostService._internal();
   factory PostBoostService() => _instance;
   PostBoostService._internal();
 
-  /// RevenueCat product identifier — must match App Store Connect + RC exactly.
   static const String productId = 'boost_30';
-
-  /// RevenueCat offering identifier.
   static const String _offeringId = 'boost';
-
-  /// RevenueCat package identifier inside the offering.
   static const String _packageId = 'boost_package';
-
-  /// Number of NEW reactions the post must receive (on top of its count at
-  /// purchase time) before the boost automatically expires. Enforced by the
-  /// `trg_post_rating_boost_expiry` trigger in Supabase.
   static const int targetNewReactions = 30;
 
-  // Cache the resolved package to avoid re-fetching on buyBoost.
   Package? _cachedPackage;
 
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -41,8 +21,6 @@ class PostBoostService {
 
   // ─── Logging: purchase_logs ────────────────────────────────────────────────
 
-  /// Inserts a row into `purchase_logs`. Never throws — logging failures
-  /// must not interfere with the purchase flow itself.
   Future<void> _log({
     required String step,
     required String status,
@@ -63,15 +41,11 @@ class PostBoostService {
         'error_code': errorCode,
         'extra_info': extraInfo,
       });
-    } catch (_) {
-      // Swallow — logging must never break the purchase flow.
-    }
+    } catch (_) {}
   }
 
   // ─── Logging: purchase_errors ──────────────────────────────────────────────
 
-  /// Inserts a row into `purchase_errors` with full error + stack trace
-  /// detail. Never throws.
   Future<void> _logError({
     required String operationType,
     required dynamic error,
@@ -86,16 +60,11 @@ class PostBoostService {
         'stack_trace': stackTrace?.toString(),
         'additional_data': additionalData,
       });
-    } catch (_) {
-      // Insertion failed – ignore to avoid infinite loops or console spam.
-    }
+    } catch (_) {}
   }
 
   // ─── Get Product ──────────────────────────────────────────────────────────
 
-  /// Fetches the boost product from the dedicated 'boost' offering.
-  /// Falls back to searching all offerings, then getProducts() as a last
-  /// resort. Returns null if unavailable.
   Future<StoreProduct?> getBoostProduct() async {
     await _log(
       step: 'get_boost_product',
@@ -114,21 +83,18 @@ class PostBoostService {
             'offeringCount=${offerings.all.length}, currentOffering=${offerings.current?.identifier}',
       );
 
-      // ── Step 1: Look in the dedicated 'boost' offering first ──────────────
+      // ── Step 1: dedicated 'boost' offering ────────────────────────────────
       final boostOffering = offerings.getOffering(_offeringId);
       if (boostOffering != null) {
         Package? package;
         try {
-          package = boostOffering.availablePackages.firstWhere(
-            (p) => p.identifier == _packageId,
-          );
+          package = boostOffering.availablePackages
+              .firstWhere((p) => p.identifier == _packageId);
         } catch (_) {
-          // Package identifier not matched — fall back to first in offering.
           package = boostOffering.availablePackages.isNotEmpty
               ? boostOffering.availablePackages.first
               : null;
         }
-
         if (package != null) {
           _cachedPackage = package;
           await _log(
@@ -143,7 +109,7 @@ class PostBoostService {
         }
       }
 
-      // ── Step 2: Search across all offerings ───────────────────────────────
+      // ── Step 2: scan all offerings ─────────────────────────────────────────
       await _log(
         step: 'get_boost_product',
         status: 'boost_offering_not_found',
@@ -168,7 +134,7 @@ class PostBoostService {
         }
       }
 
-      // ── Step 3: Last resort — getProducts() direct lookup ─────────────────
+      // ── Step 3: getProducts() direct lookup ────────────────────────────────
       await _log(
         step: 'get_boost_product',
         status: 'not_found_in_offerings',
@@ -182,8 +148,7 @@ class PostBoostService {
           step: 'get_boost_product',
           status: 'success',
           productId: productId,
-          extraInfo:
-              'source=getProducts, price=${products.first.priceString}',
+          extraInfo: 'source=getProducts, price=${products.first.priceString}',
         );
         return products.first;
       }
@@ -216,13 +181,75 @@ class PostBoostService {
     }
   }
 
-  // ─── Purchase + Apply Boost ──────────────────────────────────────────────
+  // ─── Purchase Only (no Supabase update) ───────────────────────────────────
+  //
+  // Used in the pre-post flow: user pays before the post exists.
+  // Call applyBoost(postId) after the post is successfully uploaded.
 
-  /// Purchases the boost product and, on success, marks [postId] as boosted
-  /// in Supabase. Returns true if the post was successfully boosted.
-  ///
-  /// Throws on unexpected errors (other than user cancellation, which
-  /// returns false silently).
+  Future<bool> purchaseBoostOnly({required StoreProduct product}) async {
+    await _log(
+      step: 'purchase_boost_only',
+      status: 'start',
+      productId: product.identifier,
+      extraInfo: 'price=${product.priceString}',
+    );
+
+    try {
+      if (_cachedPackage != null) {
+        await Purchases.purchasePackage(_cachedPackage!);
+      } else {
+        await Purchases.purchaseStoreProduct(product);
+      }
+
+      await _log(
+        step: 'purchase_boost_only',
+        status: 'success',
+        productId: product.identifier,
+      );
+      return true;
+    } on PurchasesErrorCode catch (e, st) {
+      if (e == PurchasesErrorCode.purchaseCancelledError) {
+        await _log(
+          step: 'purchase_boost_only',
+          status: 'cancelled',
+          productId: product.identifier,
+          errorCode: e.toString(),
+        );
+        return false;
+      }
+      await _log(
+        step: 'purchase_boost_only',
+        status: 'error',
+        productId: product.identifier,
+        errorMessage: e.toString(),
+        errorCode: e.toString(),
+      );
+      await _logError(
+        operationType: 'purchaseBoostOnly',
+        error: e,
+        stackTrace: st,
+        additionalData: {'productId': product.identifier},
+      );
+      rethrow;
+    } catch (e, st) {
+      await _log(
+        step: 'purchase_boost_only',
+        status: 'error',
+        productId: product.identifier,
+        errorMessage: e.toString(),
+      );
+      await _logError(
+        operationType: 'purchaseBoostOnly',
+        error: e,
+        stackTrace: st,
+        additionalData: {'productId': product.identifier},
+      );
+      rethrow;
+    }
+  }
+
+  // ─── Purchase + Apply (post already exists) ────────────────────────────────
+
   Future<bool> buyBoost({
     required String postId,
     required StoreProduct product,
@@ -234,106 +261,39 @@ class PostBoostService {
       extraInfo: 'postId=$postId, price=${product.priceString}',
     );
 
-    try {
-      CustomerInfo customerInfo;
+    final purchased = await purchaseBoostOnly(product: product);
+    if (!purchased) return false;
 
-      if (_cachedPackage != null) {
-        // Preferred: purchase via package (RevenueCat recommendation).
-        customerInfo = await Purchases.purchasePackage(_cachedPackage!);
-      } else {
-        // Fallback: purchase directly by product.
-        customerInfo = await Purchases.purchaseStoreProduct(product);
-      }
+    final applied = await applyBoost(postId);
 
+    if (!applied) {
       await _log(
-        step: 'buy_boost_purchase',
+        step: 'buy_boost',
+        status: 'error',
+        productId: product.identifier,
+        errorMessage: 'Purchase succeeded but failed to apply boost to post',
+        extraInfo: 'postId=$postId',
+      );
+      await _logError(
+        operationType: 'buyBoost_applyFailed',
+        error: 'Purchase succeeded but failed to update post',
+        additionalData: {'postId': postId, 'productId': product.identifier},
+      );
+    } else {
+      await _log(
+        step: 'buy_boost',
         status: 'success',
         productId: product.identifier,
-        extraInfo:
-            'postId=$postId, activeEntitlements=${customerInfo.entitlements.active.keys.join(",")}',
-      );
-
-      // Consumables don't create entitlements — a non-error response means
-      // the transaction completed successfully; apply the boost immediately.
-      final applied = await _applyBoost(postId);
-
-      if (!applied) {
-        await _log(
-          step: 'buy_boost',
-          status: 'error',
-          productId: product.identifier,
-          errorMessage:
-              'Purchase succeeded but failed to apply boost to post',
-          extraInfo: 'postId=$postId',
-        );
-        await _logError(
-          operationType: 'buyBoost_applyFailed',
-          error: 'Purchase succeeded but failed to update post',
-          additionalData: {
-            'postId': postId,
-            'productId': product.identifier,
-          },
-        );
-      } else {
-        await _log(
-          step: 'buy_boost',
-          status: 'success',
-          productId: product.identifier,
-          extraInfo: 'postId=$postId',
-        );
-      }
-
-      return applied;
-    } on PurchasesErrorCode catch (e, st) {
-      if (e == PurchasesErrorCode.purchaseCancelledError) {
-        await _log(
-          step: 'buy_boost',
-          status: 'cancelled',
-          productId: product.identifier,
-          errorCode: e.toString(),
-          extraInfo: 'postId=$postId',
-        );
-        return false; // Not an error – do not log to purchase_errors.
-      }
-      await _log(
-        step: 'buy_boost',
-        status: 'error',
-        productId: product.identifier,
-        errorMessage: e.toString(),
-        errorCode: e.toString(),
         extraInfo: 'postId=$postId',
       );
-      await _logError(
-        operationType: 'buyBoost',
-        error: e,
-        stackTrace: st,
-        additionalData: {'postId': postId, 'productId': product.identifier},
-      );
-      rethrow;
-    } catch (e, st) {
-      await _log(
-        step: 'buy_boost',
-        status: 'error',
-        productId: product.identifier,
-        errorMessage: e.toString(),
-        extraInfo: 'postId=$postId',
-      );
-      await _logError(
-        operationType: 'buyBoost',
-        error: e,
-        stackTrace: st,
-        additionalData: {'postId': postId, 'productId': product.identifier},
-      );
-      rethrow;
     }
+
+    return applied;
   }
 
-  // ─── Apply Boost ─────────────────────────────────────────────────────────
+  // ─── Apply Boost (public — called after post upload in pre-post flow) ──────
 
-  /// Marks the given post as boosted: sets is_boosted = true and records
-  /// the reaction-count target at which the boost should expire
-  /// (current ratingsCount + [targetNewReactions]).
-  Future<bool> _applyBoost(String postId) async {
+  Future<bool> applyBoost(String postId) async {
     await _log(
       step: 'apply_boost',
       status: 'start',
@@ -341,7 +301,6 @@ class PostBoostService {
     );
 
     try {
-      // Fetch current ratingsCount to calculate the expiry target.
       final post = await _supabase
           .from('posts')
           .select('ratingsCount')
@@ -356,15 +315,14 @@ class PostBoostService {
           extraInfo: 'postId=$postId',
         );
         await _logError(
-          operationType: '_applyBoost',
+          operationType: 'applyBoost',
           error: 'Post not found',
           additionalData: {'postId': postId},
         );
         return false;
       }
 
-      final int currentRatings =
-          (post['ratingsCount'] as num?)?.toInt() ?? 0;
+      final int currentRatings = (post['ratingsCount'] as num?)?.toInt() ?? 0;
       final int target = currentRatings + targetNewReactions;
 
       await _log(
@@ -382,8 +340,7 @@ class PostBoostService {
       await _log(
         step: 'apply_boost',
         status: 'success',
-        extraInfo:
-            'postId=$postId, targetRatingsCount=$target',
+        extraInfo: 'postId=$postId, targetRatingsCount=$target',
       );
 
       return true;
@@ -395,7 +352,7 @@ class PostBoostService {
         extraInfo: 'postId=$postId',
       );
       await _logError(
-        operationType: '_applyBoost',
+        operationType: 'applyBoost',
         error: e,
         stackTrace: st,
         additionalData: {'postId': postId},
@@ -404,9 +361,8 @@ class PostBoostService {
     }
   }
 
-  // ─── Status check ────────────────────────────────────────────────────────
+  // ─── Status check ─────────────────────────────────────────────────────────
 
-  /// Returns the current boost status for a post, or null on error.
   Future<bool?> isPostBoosted(String postId) async {
     await _log(
       step: 'is_post_boosted',
