@@ -1,6 +1,6 @@
 // lib/screens/Profile_page/promote_post.dart
 import 'package:flutter/material.dart';
-import 'package:purchases_flutter/purchases_flutter.dart'; // kept for compatibility
+import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:Ratedly/services/post_boost_service.dart';
 import 'package:Ratedly/utils/utils.dart';
 
@@ -140,8 +140,8 @@ enum _SheetState {
   /// Product fetched successfully — CTA shows price and is tappable.
   ready,
 
-  /// *** REMOVED UNAVAILABLE STATE FOR TESTING ***
-  // unavailable,
+  /// Product not found or RevenueCat error — CTA is disabled with label.
+  unavailable,
 
   /// Purchase is in progress (Apple payment sheet is open).
   purchasing,
@@ -156,34 +156,53 @@ class _PromotePostSheet extends StatefulWidget {
 }
 
 class _PromotePostSheetState extends State<_PromotePostSheet> {
-  // PostBoostService _boostService = PostBoostService(); // removed for testing
+  final PostBoostService _boostService = PostBoostService();
+
   _SheetState _sheetState = _SheetState.loading;
+  StoreProduct? _product;
 
   @override
   void initState() {
     super.initState();
-    _loadProduct(); // now just marks ready immediately
+    _loadProduct();
   }
 
-  void _loadProduct() {
-    // Always ready for screenshots – no real product fetch.
+  Future<void> _loadProduct() async {
+    // Sheet is already showing "loading" spinner in the CTA — fetch quietly.
+    final product = await _boostService.getBoostProduct();
     if (!mounted) return;
     setState(() {
-      _sheetState = _SheetState.ready;
+      _product = product;
+      _sheetState =
+          product != null ? _SheetState.ready : _SheetState.unavailable;
     });
   }
 
   Future<void> _onPromoteTap() async {
-    if (_sheetState != _SheetState.ready) return;
+    if (_product == null || _sheetState != _SheetState.ready) return;
 
     setState(() => _sheetState = _SheetState.purchasing);
 
-    // Simulate a successful purchase after a short delay.
-    await Future.delayed(const Duration(milliseconds: 600));
-    if (!mounted) return;
+    try {
+      final success = await _boostService.buyBoost(
+        postId: widget.postId,
+        product: _product!,
+      );
 
-    Navigator.pop(context, true);
-    showSnackBar(context, 'Your post has been boosted! 🔥');
+      if (!mounted) return;
+
+      if (success) {
+        Navigator.pop(context, true);
+        showSnackBar(context, 'Your post has been boosted! 🔥');
+      } else {
+        // User cancelled — silently return to ready state.
+        setState(() => _sheetState = _SheetState.ready);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _sheetState = _SheetState.ready);
+      showSnackBar(context, 'Something went wrong. Please try again.');
+    }
   }
 
   // ── CTA label / content ────────────────────────────────────────────────────
@@ -195,22 +214,21 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
         return const SizedBox(
           width: 22,
           height: 22,
-          child:
-              CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
         );
-      // case _SheetState.unavailable: // removed
-      //   return const Text(
-      //     'Currently Unavailable',
-      //     style: TextStyle(
-      //       color: Colors.white,
-      //       fontSize: 16,
-      //       fontWeight: FontWeight.w700,
-      //     ),
-      //   );
-      case _SheetState.ready:
+      case _SheetState.unavailable:
         return const Text(
-          'Promote for \$0.99', // hardcoded for screenshots
+          'Currently Unavailable',
           style: TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+          ),
+        );
+      case _SheetState.ready:
+        return Text(
+          'Promote for ${_product!.priceString}',
+          style: const TextStyle(
             color: Colors.white,
             fontSize: 16,
             fontWeight: FontWeight.w800,
@@ -339,12 +357,12 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
           ),
           const SizedBox(height: 28),
 
-          // CTA button — always tappable, always full opacity
+          // CTA button — state-driven, no separate error text block
           GestureDetector(
             onTap: _ctaTappable ? _onPromoteTap : null,
             child: AnimatedOpacity(
               duration: const Duration(milliseconds: 150),
-              opacity: 1.0, // always fully visible now
+              opacity: _sheetState == _SheetState.unavailable ? 0.45 : 1.0,
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 16),
@@ -381,8 +399,8 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
               child: Text(
                 'Not Now',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(
-                      _sheetState == _SheetState.purchasing ? 0.2 : 0.45),
+                  color: Colors.white
+                      .withOpacity(_sheetState == _SheetState.purchasing ? 0.2 : 0.45),
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),
