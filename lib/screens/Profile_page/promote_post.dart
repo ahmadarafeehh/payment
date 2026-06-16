@@ -6,7 +6,6 @@ import 'package:Ratedly/utils/utils.dart';
 
 // =============================================================================
 // PROMOTE POST BUTTON
-// Drop this widget directly below a post's description.
 // =============================================================================
 class PromotePostButton extends StatefulWidget {
   final String postId;
@@ -55,7 +54,6 @@ class _PromotePostButtonState extends State<PromotePostButton> {
                   color: Colors.white.withOpacity(0.75),
                   fontWeight: FontWeight.w700,
                   fontSize: 15,
-                  letterSpacing: 0.1,
                 ),
               ),
             ],
@@ -68,8 +66,10 @@ class _PromotePostButtonState extends State<PromotePostButton> {
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
       child: GestureDetector(
         onTap: () async {
-          final result =
-              await showPromotePostSheet(context, postId: widget.postId);
+          final result = await showPromotePostSheet(
+            context,
+            postId: widget.postId,
+          );
           if (result == true && mounted) {
             setState(() => _isBoosted = true);
           }
@@ -92,11 +92,11 @@ class _PromotePostButtonState extends State<PromotePostButton> {
               ),
             ],
           ),
-          child: Row(
+          child: const Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text('🔥', style: TextStyle(fontSize: 16)),
-              const SizedBox(width: 8),
+              Text('🔥', style: TextStyle(fontSize: 16)),
+              SizedBox(width: 8),
               Text(
                 'Increase Reactions',
                 style: TextStyle(
@@ -118,8 +118,10 @@ class _PromotePostButtonState extends State<PromotePostButton> {
 // PROMOTE POST BOTTOM SHEET
 // Returns true via Navigator.pop if the boost purchase succeeded.
 // =============================================================================
-Future<bool?> showPromotePostSheet(BuildContext context,
-    {required String postId}) {
+Future<bool?> showPromotePostSheet(
+  BuildContext context, {
+  required String postId,
+}) {
   return showModalBottomSheet<bool>(
     context: context,
     backgroundColor: Colors.transparent,
@@ -128,9 +130,25 @@ Future<bool?> showPromotePostSheet(BuildContext context,
   );
 }
 
+// =============================================================================
+// SHEET STATE
+// =============================================================================
+enum _SheetState {
+  /// Product is being fetched from RevenueCat — CTA shows a spinner.
+  loading,
+
+  /// Product fetched successfully — CTA shows price and is tappable.
+  ready,
+
+  /// Product not found or RevenueCat error — CTA is disabled with label.
+  unavailable,
+
+  /// Purchase is in progress (Apple payment sheet is open).
+  purchasing,
+}
+
 class _PromotePostSheet extends StatefulWidget {
   final String postId;
-
   const _PromotePostSheet({required this.postId});
 
   @override
@@ -140,10 +158,8 @@ class _PromotePostSheet extends StatefulWidget {
 class _PromotePostSheetState extends State<_PromotePostSheet> {
   final PostBoostService _boostService = PostBoostService();
 
+  _SheetState _sheetState = _SheetState.loading;
   StoreProduct? _product;
-  bool _isLoadingProduct = true;
-  bool _isPurchasing = false;
-  String? _errorMessage;
 
   @override
   void initState() {
@@ -152,25 +168,20 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
   }
 
   Future<void> _loadProduct() async {
+    // Sheet is already showing "loading" spinner in the CTA — fetch quietly.
     final product = await _boostService.getBoostProduct();
     if (!mounted) return;
     setState(() {
       _product = product;
-      _isLoadingProduct = false;
-      if (product == null) {
-        _errorMessage =
-            'Boost is unavailable right now. Please try again later.';
-      }
+      _sheetState =
+          product != null ? _SheetState.ready : _SheetState.unavailable;
     });
   }
 
   Future<void> _onPromoteTap() async {
-    if (_product == null || _isPurchasing) return;
+    if (_product == null || _sheetState != _SheetState.ready) return;
 
-    setState(() {
-      _isPurchasing = true;
-      _errorMessage = null;
-    });
+    setState(() => _sheetState = _SheetState.purchasing);
 
     try {
       final success = await _boostService.buyBoost(
@@ -184,18 +195,53 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
         Navigator.pop(context, true);
         showSnackBar(context, 'Your post has been boosted! 🔥');
       } else {
-        setState(() => _isPurchasing = false);
+        // User cancelled — silently return to ready state.
+        setState(() => _sheetState = _SheetState.ready);
       }
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
-      setState(() {
-        _isPurchasing = false;
-        _errorMessage = 'Something went wrong. Please try again.';
-      });
+      setState(() => _sheetState = _SheetState.ready);
+      showSnackBar(context, 'Something went wrong. Please try again.');
     }
   }
 
-  String get _priceLabel => _product?.priceString ?? '\$2.99';
+  // ── CTA label / content ────────────────────────────────────────────────────
+
+  Widget _buildCtaChild() {
+    switch (_sheetState) {
+      case _SheetState.loading:
+      case _SheetState.purchasing:
+        return const SizedBox(
+          width: 22,
+          height: 22,
+          child:
+              CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+        );
+      case _SheetState.unavailable:
+        return const Text(
+          'Currently Unavailable',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+          ),
+        );
+      case _SheetState.ready:
+        return Text(
+          'Promote for ${_product!.priceString}',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.2,
+          ),
+        );
+    }
+  }
+
+  bool get _ctaTappable => _sheetState == _SheetState.ready;
+
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -268,8 +314,8 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Text(
-              'Give your post a boost. For $_priceLabel, we\'ll show it to '
-              'more people in the feed until it earns '
+              'Give your post a boost. We\'ll show it to more people in the '
+              'feed until it earns '
               '${PostBoostService.targetNewReactions} new reactions.',
               style: TextStyle(
                 color: Colors.white.withOpacity(0.55),
@@ -281,7 +327,7 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
           ),
           const SizedBox(height: 24),
 
-          // Feature list card
+          // Feature list
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
@@ -294,8 +340,8 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
               children: [
                 _FeatureRow(
                   icon: Icons.trending_up_rounded,
-                  text: 'Shown to more people until '
-                      '${PostBoostService.targetNewReactions} new reactions',
+                  text:
+                      'Shown to more people until ${PostBoostService.targetNewReactions} new reactions',
                 ),
                 const SizedBox(height: 14),
                 const _FeatureRow(
@@ -310,63 +356,35 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
               ],
             ),
           ),
-
-          if (_errorMessage != null) ...[
-            const SizedBox(height: 16),
-            Text(
-              _errorMessage!,
-              style: TextStyle(
-                color: Colors.red.withOpacity(0.85),
-                fontSize: 13,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ],
-
           const SizedBox(height: 28),
 
-          // CTA button
+          // CTA button — state-driven, no separate error text block
           GestureDetector(
-            onTap: (_isLoadingProduct || _isPurchasing || _product == null)
-                ? null
-                : _onPromoteTap,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFFFF6B35), Color(0xFFFF9248)],
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                ),
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFFFF6B35).withOpacity(0.35),
-                    blurRadius: 16,
-                    offset: const Offset(0, 6),
+            onTap: _ctaTappable ? _onPromoteTap : null,
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 150),
+              opacity: _sheetState == _SheetState.unavailable ? 0.45 : 1.0,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFFFF6B35), Color(0xFFFF9248)],
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
                   ),
-                ],
-              ),
-              child: Center(
-                child: (_isLoadingProduct || _isPurchasing)
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                          strokeWidth: 2.5,
-                        ),
-                      )
-                    : Text(
-                        'Promote for $_priceLabel',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.2,
-                        ),
-                      ),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: _ctaTappable
+                      ? [
+                          BoxShadow(
+                            color: const Color(0xFFFF6B35).withOpacity(0.35),
+                            blurRadius: 16,
+                            offset: const Offset(0, 6),
+                          ),
+                        ]
+                      : [],
+                ),
+                child: Center(child: _buildCtaChild()),
               ),
             ),
           ),
@@ -374,13 +392,16 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
 
           // Cancel
           GestureDetector(
-            onTap: _isPurchasing ? null : () => Navigator.pop(context, false),
+            onTap: _sheetState == _SheetState.purchasing
+                ? null
+                : () => Navigator.pop(context, false),
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text(
                 'Not Now',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.45),
+                  color: Colors.white.withOpacity(
+                      _sheetState == _SheetState.purchasing ? 0.2 : 0.45),
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),
@@ -393,6 +414,9 @@ class _PromotePostSheetState extends State<_PromotePostSheet> {
   }
 }
 
+// =============================================================================
+// FEATURE ROW
+// =============================================================================
 class _FeatureRow extends StatelessWidget {
   final IconData icon;
   final String text;
