@@ -69,7 +69,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // UPLOAD POST METHODS (unchanged)
+  // UPLOAD POST METHODS
   // ----------------------
 
   Future<String> uploadVideoPost(
@@ -103,9 +103,8 @@ class SupabasePostsMethods {
         'username': username,
         'commentsCount': 0,
         'datePublished': DateTime.now().toUtc().toIso8601String(),
-        'boost_views': boostViews,
         'is_boosted': isBoosted,
-        'viewers_count': boostViews,
+        'viewers_count': 0,
       });
 
       res = "success";
@@ -119,7 +118,6 @@ class SupabasePostsMethods {
         additionalData: {
           'username': username,
           'gender': gender,
-          'boostViews': boostViews,
           'isBoosted': isBoosted,
         },
       );
@@ -159,9 +157,8 @@ class SupabasePostsMethods {
         'username': username,
         'commentsCount': 0,
         'datePublished': DateTime.now().toUtc().toIso8601String(),
-        'boost_views': boostViews,
         'is_boosted': isBoosted,
-        'viewers_count': boostViews,
+        'viewers_count': 0,
         'reaction_emoji': reactionEmoji ?? '❤️',
       });
 
@@ -176,7 +173,6 @@ class SupabasePostsMethods {
         additionalData: {
           'username': username,
           'gender': gender,
-          'boostViews': boostViews,
           'isBoosted': isBoosted,
         },
       );
@@ -217,9 +213,8 @@ class SupabasePostsMethods {
         'username': username,
         'commentsCount': 0,
         'datePublished': DateTime.now().toUtc().toIso8601String(),
-        'boost_views': boostViews,
         'is_boosted': isBoosted,
-        'viewers_count': boostViews,
+        'viewers_count': 0,
         'reaction_emoji': reactionEmoji ?? '❤️',
       };
 
@@ -240,7 +235,6 @@ class SupabasePostsMethods {
         additionalData: {
           'username': username,
           'gender': gender,
-          'boostViews': boostViews,
           'isBoosted': isBoosted,
           'hasEditMetadata': editMetadata != null,
         },
@@ -280,9 +274,8 @@ class SupabasePostsMethods {
         'username': username,
         'commentsCount': 0,
         'datePublished': DateTime.now().toUtc().toIso8601String(),
-        'boost_views': boostViews,
         'is_boosted': isBoosted,
-        'viewers_count': boostViews,
+        'viewers_count': 0,
       });
 
       res = "success";
@@ -296,7 +289,6 @@ class SupabasePostsMethods {
         additionalData: {
           'username': username,
           'gender': gender,
-          'boostViews': boostViews,
           'isBoosted': isBoosted,
         },
       );
@@ -305,14 +297,13 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Delete a post – FIXED: isolated storage deletion + guaranteed cleanup
+  // Delete a post
   // ----------------------
   Future<String> deletePost(String postId) async {
     String res = "Some error occurred";
     String? postOwnerUid;
     String? postUrl;
     try {
-      // 1. Fetch post metadata
       final postSel = await _supabase
           .from('posts')
           .select('postUrl, uid')
@@ -324,7 +315,6 @@ class SupabasePostsMethods {
       postUrl = postData['postUrl']?.toString() ?? '';
       postOwnerUid = postData['uid']?.toString() ?? '';
 
-      // 2. Isolate storage deletion – failure must NOT block DB cleanup
       if (postUrl.isNotEmpty) {
         try {
           if (_isVideoUrl(postUrl)) {
@@ -340,11 +330,9 @@ class SupabasePostsMethods {
             error: storageErr,
             additionalData: {'postId': postId},
           );
-          // Intentionally continue to database cleanup
         }
       }
 
-      // 3. Delete all related data (notifications first, post row last)
       await _supabase.from('notifications').delete().or(
           'custom_data->>postId.eq.$postId,custom_data->>post_id.eq.$postId');
       await _supabase.from('user_post_views').delete().eq('post_id', postId);
@@ -368,7 +356,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Get viewed post ids (unchanged)
+  // Get viewed post ids
   // ----------------------
   Future<List<String>> getViewedPostIds(String userId) async {
     try {
@@ -397,7 +385,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Share a post through chat (unchanged)
+  // Share a post through chat
   // ----------------------
   Future<String> sharePostThroughChat({
     required String chatId,
@@ -457,7 +445,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Record post view (unchanged)
+  // Record post view
   // ----------------------
   Future<void> recordPostView(String postId, String userId) async {
     try {
@@ -481,7 +469,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Mutual block check (unchanged)
+  // Mutual block check
   // ----------------------
   Future<bool> checkMutualBlock(String userId1, String userId2) async {
     try {
@@ -516,7 +504,7 @@ class SupabasePostsMethods {
   }
 
   // ----------------------
-  // Report a post (unchanged)
+  // Report a post
   // ----------------------
   Future<String> reportPost(String postId, String reason) async {
     try {
