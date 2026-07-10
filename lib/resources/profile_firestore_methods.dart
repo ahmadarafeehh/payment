@@ -587,12 +587,17 @@ class SupabaseProfileMethods {
 
   // ==========================================================================
   // FINAL WORKING ACCOUNT DELETION – matches all schemas + cleans up chats/streaks
+  // PATCHED: each step is now tagged with `currentStep` so that, if anything
+  // fails, the returned error string tells you EXACTLY which operation broke
+  // instead of a generic message. No behavior/order changed — diagnostics only.
   // ==========================================================================
   Future<String> deleteEntireUserAccount(
       String uid, firebase_auth.AuthCredential? credential) async {
     String res = "Some error occurred";
+    String currentStep = "init";
 
     try {
+      currentStep = "fetch_user";
       final userSel =
           await _supabase.from('users').select().eq('uid', uid).maybeSingle();
       final userData = _unwrap(userSel) ?? userSel;
@@ -612,6 +617,7 @@ class SupabaseProfileMethods {
       }
 
       // 1. Delete profile picture/video from storage
+      currentStep = "delete_profile_media";
       String? profilePhoto = userData['photoUrl']?.toString();
       if (profilePhoto != null &&
           profilePhoto.isNotEmpty &&
@@ -620,24 +626,30 @@ class SupabaseProfileMethods {
       }
 
       // 2. Delete all posts (and their media, comments, ratings, notifications)
+      currentStep = "delete_all_user_posts";
       await _deleteAllUserPosts(uid);
 
       // 3. Delete user's comments on other people's posts
+      currentStep = "delete_comments";
       await _supabase.from('comments').delete().eq('uid', uid);
 
       // 4. Delete user's replies
+      currentStep = "delete_replies";
       await _supabase.from('replies').delete().eq('uid', uid);
 
       // 5. Delete user's ratings (column 'userid' per schema)
+      currentStep = "delete_ratings";
       await _supabase.from('post_rating').delete().eq('userid', uid);
 
       // 6. Delete followers & following relationships
+      currentStep = "delete_followers_following";
       await _supabase.from('user_followers').delete().eq('user_id', uid);
       await _supabase.from('user_followers').delete().eq('follower_id', uid);
       await _supabase.from('user_following').delete().eq('user_id', uid);
       await _supabase.from('user_following').delete().eq('following_id', uid);
 
       // 7. Delete follow requests (sent & received)
+      currentStep = "delete_follow_requests";
       await _supabase.from('user_follow_request').delete().eq('user_id', uid);
       await _supabase
           .from('user_follow_request')
@@ -645,6 +657,7 @@ class SupabaseProfileMethods {
           .eq('requester_id', uid);
 
       // 8. Delete profile views (as viewer & as target)
+      currentStep = "delete_profile_views";
       await _supabase.from('user_profile_views').delete().eq('user_id', uid);
       await _supabase
           .from('user_profile_views')
@@ -652,11 +665,12 @@ class SupabaseProfileMethods {
           .eq('profileowneruid', uid);
 
       // 9. Delete notifications
+      currentStep = "delete_notifications";
       await _supabase.from('notifications').delete().eq('target_user_id', uid);
       await _deleteUserActorNotifications(uid);
 
-      // ========== NEW: Clean up chats and streaks ==========
-      // Find all chats where the user is a participant
+      // ========== Clean up chats and streaks ==========
+      currentStep = "cleanup_chats";
       final chatsResponse = await _supabase
           .from('chats')
           .select('id, participants')
@@ -672,8 +686,8 @@ class SupabaseProfileMethods {
             // No other participants – delete the chat entirely
             await _supabase.from('chats').delete().eq('id', chat['id']);
           } else {
-            // Keep the chat for the remaining participant(s), but remove the deleted user
-            // and reset all streak-related data
+            // Keep the chat for the remaining participant(s), but remove the
+            // deleted user and reset all streak-related data
             await _supabase.from('chats').update({
               'participants': participants,
               'streak_count': 0,
@@ -688,15 +702,18 @@ class SupabaseProfileMethods {
       // ========== End of chat cleanup ==========
 
       // 10. Delete the user record itself (cascades to foreign keys where defined)
+      currentStep = "delete_user_record";
       await _supabase.from('users').delete().eq('uid', uid);
 
       // 11. Delete Firebase Auth account (re-authenticate first)
+      currentStep = "delete_firebase_account";
       if (isFirebaseUser && credential != null) {
         await firebaseUser!.reauthenticateWithCredential(credential);
         await firebaseUser!.delete();
       }
 
       // 12. Sign out from Supabase (if session exists)
+      currentStep = "sign_out_supabase";
       if (isSupabaseUser) {
         await _supabase.auth.signOut();
       }
@@ -707,7 +724,8 @@ class SupabaseProfileMethods {
           ? "Re-authentication required. Please sign in again."
           : e.message ?? "Authentication error";
     } catch (e) {
-      res = e.toString();
+      // Tag the step so we know EXACTLY where it failed next time
+      res = "Failed at step [$currentStep]: ${e.toString()}";
     }
 
     return res;
