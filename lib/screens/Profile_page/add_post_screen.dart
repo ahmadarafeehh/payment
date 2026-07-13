@@ -2,6 +2,7 @@
 import 'dart:typed_data';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show TargetPlatform;
 import 'package:image_picker/image_picker.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
@@ -284,9 +285,9 @@ class _AddPostScreenState extends State<AddPostScreen>
         },
         onOpenSettings: isPermanent
             ? () async {
-                Navigator.pop(ctx);
-                await openAppSettings();
-              }
+          Navigator.pop(ctx);
+          await openAppSettings();
+        }
             : null,
       ),
     );
@@ -318,7 +319,7 @@ class _AddPostScreenState extends State<AddPostScreen>
         final int rawSize = await File(pickedFile.path).length();
 
         Uint8List? compressedImage =
-            await FlutterImageCompress.compressWithFile(
+        await FlutterImageCompress.compressWithFile(
           pickedFile.path,
           minWidth: 800,
           minHeight: 800,
@@ -443,7 +444,7 @@ class _AddPostScreenState extends State<AddPostScreen>
         showSnackBar(
           context,
           'Caption cannot exceed 250 characters. '
-          'Your caption is ${_descriptionController.text.length} characters.',
+              'Your caption is ${_descriptionController.text.length} characters.',
         );
       }
       return;
@@ -792,10 +793,10 @@ class _AddPostScreenState extends State<AddPostScreen>
                   ),
                   child: ClipOval(
                     child: (user.photoUrl?.isNotEmpty == true &&
-                            user.photoUrl != 'default')
+                        user.photoUrl != 'default')
                         ? Image.network(user.photoUrl!, fit: BoxFit.cover)
                         : Icon(Icons.account_circle,
-                            size: 38, color: primaryColor),
+                        size: 38, color: primaryColor),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -925,6 +926,9 @@ class _AddPostScreenState extends State<AddPostScreen>
       );
     }
 
+    final bool showBoostButton =
+        Theme.of(context).platform == TargetPlatform.iOS;
+
     return Scaffold(
       backgroundColor: mobileBackgroundColor,
       appBar: AppBar(
@@ -946,37 +950,39 @@ class _AddPostScreenState extends State<AddPostScreen>
       ),
       body: _file == null && _videoFile == null
           ? Center(
-              child: ScaleTransition(
-                scale: _pulseAnimation,
-                child: IconButton(
-                  icon: Icon(Icons.upload, color: primaryColor, size: 50),
-                  onPressed: _onUploadButtonPressed,
-                ),
-              ),
-            )
+        child: ScaleTransition(
+          scale: _pulseAnimation,
+          child: IconButton(
+            icon: Icon(Icons.upload, color: primaryColor, size: 50),
+            onPressed: _onUploadButtonPressed,
+          ),
+        ),
+      )
           : SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (isLoading)
-                    LinearProgressIndicator(
-                      color: primaryColor,
-                      backgroundColor: primaryColor.withOpacity(0.2),
-                    ),
-                  if (!_isVideo && _file != null) _buildImagePreview(),
-                  if (_isVideo && _videoFile != null) _buildVideoPreview(),
-                  _buildEmojiPicker(),
-                  _buildCaptionInput(user),
-
-                  // 🔥 Pre-post boost button — purchase only, applied after upload
-                  PromotePostButton(
-                    postId: null,
-                    initialIsBoosted: _boostPurchased,
-                    onBoosted: () => setState(() => _boostPurchased = true),
-                  ),
-                ],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (isLoading)
+              LinearProgressIndicator(
+                color: primaryColor,
+                backgroundColor: primaryColor.withOpacity(0.2),
               ),
-            ),
+            if (!_isVideo && _file != null) _buildImagePreview(),
+            if (_isVideo && _videoFile != null) _buildVideoPreview(),
+            _buildEmojiPicker(),
+            _buildCaptionInput(user),
+
+            // 🔥 Pre-post boost button — purchase only, applied after upload
+            // iOS only, per product decision
+            if (showBoostButton)
+              PromotePostButton(
+                postId: null,
+                initialIsBoosted: _boostPurchased,
+                onBoosted: () => setState(() => _boostPurchased = true),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1000,7 +1006,7 @@ class _PermissionSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final String title =
-        needsMic ? 'Camera & Microphone Access' : 'Camera Access';
+    needsMic ? 'Camera & Microphone Access' : 'Camera Access';
     final String description = needsMic
         ? 'To record videos, Ratedly needs access to your camera and microphone.'
         : 'To take photos, Ratedly needs access to your camera.';
