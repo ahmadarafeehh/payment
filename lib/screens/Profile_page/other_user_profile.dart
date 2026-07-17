@@ -1378,11 +1378,25 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       return SizedBox(height: 200, child: _buildPrivateAccountMessage(colors));
     }
     if (_displayedPosts.isEmpty) {
-      return SizedBox(
-          height: 200,
-          child: Center(
-              child: Text('This user has no posts.',
-                  style: TextStyle(fontSize: 16, color: colors.errorColor))));
+      // Empty-state for "no posts": mirrors the galleries tab's empty state
+      // for visual consistency — icon + bold title + soft subtitle, using
+      // textColor (not errorColor, since an empty list isn't an error).
+      return Padding(
+          padding: const EdgeInsets.all(40.0),
+          child: Column(children: [
+            Icon(Icons.grid_on,
+                size: 64, color: colors.textColor.withOpacity(0.4)),
+            const SizedBox(height: 16),
+            Text('No Posts Yet',
+                style: TextStyle(
+                    color: colors.textColor,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text('This user hasn\'t shared any posts',
+                style: TextStyle(color: colors.textColor.withOpacity(0.7)),
+                textAlign: TextAlign.center),
+          ]));
     }
 
     return GridView.builder(
