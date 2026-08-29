@@ -8,6 +8,8 @@ import 'package:Ratedly/responsive/responsive_layout.dart';
 import 'package:Ratedly/utils/utils.dart';
 import 'package:Ratedly/widgets/text_filed_input.dart';
 import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
+import 'package:Ratedly/services/debug_logger.dart'; // NEW
+import 'package:Ratedly/services/device_session.dart'; // NEW
 
 class ProfileSetupScreen extends StatefulWidget {
   final DateTime dateOfBirth;
@@ -35,17 +37,24 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   @override
   void initState() {
     super.initState();
-    // ✅ screen tracking: enter profile_setup screen (anonymous user)
+    // ✅ screen tracking: enter profile_setup screen (timing only)
     AnalyticsService.screenEnter('profile_setup');
     _usernameController.addListener(_validateUsername);
+
+    // NEW: crash-proof marker that this screen was reached
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final deviceId = await DeviceSession.id;
+      DebugLogger.logEvent('SCREEN_ENTERED', 'profile_setup deviceId=$deviceId');
+    });
   }
 
   @override
   void dispose() {
-    // ✅ screen tracking: exit profile_setup screen (anonymous user)
+    // ✅ screen tracking: exit profile_setup screen
+    final deviceId = DeviceSession.idSync ?? 'anonymous';
     AnalyticsService.screenExit(
       screenName: 'profile_setup',
-      uid: 'anonymous',
+      uid: deviceId,
     );
     _usernameController.dispose();
     _usernameController.removeListener(_validateUsername);
@@ -103,6 +112,10 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
 
     setState(() => _isLoading = true);
 
+    final deviceId = DeviceSession.idSync ?? await DeviceSession.id;
+    DebugLogger.logEvent(
+        'PROFILE_SETUP_SUBMIT_STARTED', 'deviceId=$deviceId'); // NEW
+
     // Call Supabase-only completion method
     final res = await AuthMethods().completeProfileSupabase(
       username: _usernameController.text.trim(),
@@ -111,6 +124,9 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       dateOfBirth: widget.dateOfBirth,
       gender: _selectedGender!,
     );
+
+    DebugLogger.logEvent(
+        'PROFILE_SETUP_SUBMIT_RESULT', 'deviceId=$deviceId result=$res'); // NEW
 
     if (res == "success") {
       // Notify completion
