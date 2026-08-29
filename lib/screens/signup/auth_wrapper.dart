@@ -16,6 +16,7 @@ import 'package:Ratedly/resources/auth_methods.dart';
 import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
+import 'package:Ratedly/services/device_session.dart'; // NEW
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 import 'package:Ratedly/services/feed_cache_service.dart';
 import 'package:Ratedly/services/platform_service.dart';
@@ -103,6 +104,10 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    // NEW: crash-proof marker — AuthWrapper itself started initializing.
+    DebugLogger.logEvent('AUTH_WRAPPER_INIT_STARTED');
+
     _initializeAuth();
 
     _authSubscription = _supabase.auth.onAuthStateChange.listen((data) async {
@@ -147,7 +152,17 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final step = _tracker?.currentStep ?? 'unknown';
       final elapsed = _tracker?.totalElapsedSeconds ?? 0;
       DebugLogger.logEvent(
-          'ONBOARDING_APP_BACKGROUNDED [$userId] at step=$step after ${elapsed}s — possible abandon (not logged to DB)');
+          'ONBOARDING_APP_BACKGROUNDED [$userId] at step=$step after ${elapsed}s — possible abandon');
+    }
+    // NEW: also capture resume, so we can tell "backgrounded and came back"
+    // apart from "backgrounded and never returned".
+    if (state == AppLifecycleState.resumed &&
+        (_firebaseUid != null || _supabaseUid != null) &&
+        !_onboardingComplete) {
+      final userId = _firebaseUid ?? _supabaseUid ?? 'unknown';
+      final step = _tracker?.currentStep ?? 'unknown';
+      DebugLogger.logEvent(
+          'ONBOARDING_APP_RESUMED [$userId] at step=$step — user came back');
     }
   }
 
@@ -181,6 +196,13 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     bool found = false;
     Map<String, dynamic>? userData;
     final firebaseUser = _auth.currentUser;
+
+    // NEW: crash-proof marker at the very start of this function — the
+    // single most important line we added. This is the function our 5
+    // stuck users entered but never finished; now we know for certain
+    // whether they got this far.
+    DebugLogger.logEvent(
+        'HANDLE_SUPABASE_SESSION_STARTED', 'supabaseUid=${session.user.id}');
 
     try {
       // --- STEP 1: Find by Firebase UID (migration path) ---
@@ -327,6 +349,30 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         };
         await _supabase.from('users').upsert(newUser, onConflict: 'uid');
         userData = newUser;
+
+        // NEW: link this device's anonymous pre-signup logs (GetStartedPage,
+        // SignupScreen, etc.) to the real uid, now that it exists.
+        try {
+          final deviceId = DeviceSession.idSync ?? await DeviceSession.id;
+          if (deviceId != session.user.id) {
+            await _supabase
+                .from('login_logs')
+                .update({'supabase_uid': session.user.id})
+                .eq('firebase_uid', deviceId);
+            await _supabase
+                .from('signup_debug_logs')
+                .update({'supabase_uid': session.user.id})
+                .eq('firebase_uid', deviceId);
+            await _supabase
+                .from('screen_time')
+                .update({'uid': session.user.id})
+                .eq('uid', deviceId);
+            DebugLogger.logEvent('DEVICE_LOGS_LINKED_IN_AUTH_WRAPPER',
+                'deviceId=$deviceId realUid=${session.user.id}');
+          }
+        } catch (e) {
+          DebugLogger.logError('DEVICE_LOGS_LINK_IN_AUTH_WRAPPER', e);
+        }
       }
 
       _supabaseUid = session.user.id;
@@ -362,6 +408,12 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final hasCompletedOnboarding =
           await _checkOnboardingStatus(_firebaseUid!);
 
+      // NEW: crash-proof marker right before the mounted check, which is
+      // exactly the line most likely to silently skip if the widget has
+      // been disposed while we were awaiting the DB call above.
+      DebugLogger.logEvent(
+          'REACHED_SETSTATE_CHECK [${_firebaseUid}] mounted=$mounted hasCompletedOnboarding=$hasCompletedOnboarding');
+
       if (mounted) {
         setState(() {
           if (!_onboardingComplete) {
@@ -369,6 +421,16 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           }
           _isLoading = false;
         });
+        // NEW: confirms the loading screen has actually been dismissed.
+        DebugLogger.logEvent(
+            'LOADING_COMPLETE [${_firebaseUid}] isLoading=false onboardingComplete=$_onboardingComplete');
+      } else {
+        // NEW: this is the single most important new log line in the whole
+        // fix. If this ever fires, it proves definitively that a user got
+        // stuck because the widget was disposed mid-flow — not because of
+        // a thrown error, a network failure, or abandonment.
+        DebugLogger.logEvent(
+            'LOADING_SKIPPED_UNMOUNTED [${_firebaseUid}] — widget was disposed before setState could run');
       }
 
       if (!hasCompletedOnboarding) {
@@ -701,6 +763,12 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   Widget _buildLoadingScreen() {
     final hasPersistedUser =
         FeedCacheService.getLastUserIdSync()?.isNotEmpty == true;
+
+    // NEW: this screen previously had zero logging at all. This is the
+    // exact screen our 5 stuck users were frozen on, with no way to tell.
+    // Fire-and-forget is intentional here — build() must stay synchronous.
+    DebugLogger.logEvent(
+        'LOADING_SCREEN_SHOWN firebaseUid=$_firebaseUid supabaseUid=$_supabaseUid hasPersistedUser=$hasPersistedUser');
 
     if (hasPersistedUser) {
       return const FeedSkeleton(isDark: true);
