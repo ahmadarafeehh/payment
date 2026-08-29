@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
+import 'package:Ratedly/services/debug_logger.dart'; // NEW
+import 'package:Ratedly/services/device_session.dart'; // NEW
 
 class AgeVerificationScreen extends StatefulWidget {
   final Function(DateTime) onComplete; // receives selected date
@@ -20,16 +22,24 @@ class _AgeVerificationScreenState extends State<AgeVerificationScreen> {
   @override
   void initState() {
     super.initState();
-    // ✅ screen tracking: enter age_verification screen (anonymous user)
+    // ✅ screen tracking: enter age_verification screen (timing only)
     AnalyticsService.screenEnter('age_verification');
+
+    // NEW: crash-proof marker that this screen was reached
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final deviceId = await DeviceSession.id;
+      DebugLogger.logEvent(
+          'SCREEN_ENTERED', 'age_verification deviceId=$deviceId');
+    });
   }
 
   @override
   void dispose() {
-    // ✅ screen tracking: exit age_verification screen (anonymous user)
+    // ✅ screen tracking: exit age_verification screen
+    final deviceId = DeviceSession.idSync ?? 'anonymous';
     AnalyticsService.screenExit(
       screenName: 'age_verification',
-      uid: 'anonymous',
+      uid: deviceId,
     );
     super.dispose();
   }
