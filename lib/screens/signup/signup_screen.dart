@@ -11,6 +11,8 @@ import 'package:flutter/foundation.dart'
     show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
+import 'package:Ratedly/services/debug_logger.dart'; // NEW
+import 'package:Ratedly/services/device_session.dart'; // NEW
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({Key? key}) : super(key: key);
@@ -26,16 +28,23 @@ class _SignupScreenState extends State<SignupScreen> {
   @override
   void initState() {
     super.initState();
-    // ✅ screen tracking: enter signup screen (anonymous user)
+    // ✅ screen tracking: enter signup screen (timing only)
     AnalyticsService.screenEnter('signup');
+
+    // NEW: crash-proof marker that this screen was reached
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final deviceId = await DeviceSession.id;
+      DebugLogger.logEvent('SCREEN_ENTERED', 'signup deviceId=$deviceId');
+    });
   }
 
   @override
   void dispose() {
-    // ✅ screen tracking: exit signup screen (anonymous user)
+    // ✅ screen tracking: exit signup screen
+    final deviceId = DeviceSession.idSync ?? 'anonymous';
     AnalyticsService.screenExit(
       screenName: 'signup',
-      uid: 'anonymous',
+      uid: deviceId,
     );
     super.dispose();
   }
