@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';                              // ← needed for Platform in ad error logger
+import 'dart:io'; // ← needed for Platform in ad error logger
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +20,8 @@ import 'package:Ratedly/services/country_service.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 import 'package:Ratedly/services/feed_cache_service.dart';
 import 'package:Ratedly/services/iap_service.dart';
+import 'package:Ratedly/services/debug_logger.dart'; // NEW
+import 'package:Ratedly/services/device_session.dart'; // NEW
 
 const bool useDebugHome = false;
 
@@ -56,6 +58,29 @@ Future<void> _logAdError({
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // NEW: global crash handlers. These catch Flutter framework errors and
+  // uncaught async errors app-wide, logging them to signup_debug_logs.
+  // Note: these cannot catch a hard OS-level process kill (out of memory,
+  // force-stop) — nothing running in Dart can log after the process itself
+  // is gone. That is a genuine platform limit, not something any in-app
+  // logging (ours or a third-party crash tool) can fully close.
+  FlutterError.onError = (FlutterErrorDetails details) {
+    DebugLogger.logFlutterError(details);
+    // Still forward to the default handler so errors remain visible in
+    // debug console / IDE as before.
+    FlutterError.presentError(details);
+  };
+
+  PlatformDispatcher.instance.onError = (error, stack) {
+    DebugLogger.logUncaughtError(error, stack);
+    return true;
+  };
+
+  // NEW: generate/load this install's persistent device session id before
+  // anything else runs, so it's available synchronously (via
+  // DeviceSession.idSync) in places like dispose() that can't await.
+  await DeviceSession.warm();
 
   await FeedCacheService.warmUserIdCache();
 
