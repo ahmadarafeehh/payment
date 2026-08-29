@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; // for session check
 import 'package:Ratedly/services/debug_logger.dart'; // for DebugLogger
+import 'package:Ratedly/services/device_session.dart'; // NEW
 import 'falling_number_painter.dart';
 import 'number_particle.dart';
 import 'package:Ratedly/screens/login.dart';
@@ -73,21 +74,26 @@ class _GetStartedPageState extends State<GetStartedPage>
       duration: const Duration(seconds: 20),
     )..repeat();
 
-    // ✅ screen tracking: enter get_started_page with 'anonymous' user
+    // ✅ screen tracking: enter get_started_page (timing only)
     AnalyticsService.screenEnter('get_started_page');
 
-    // Log that this screen is shown, including current session state
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Log that this screen is shown, including current session state,
+    // plus the crash-proof SCREEN_ENTERED marker tagged with deviceId.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       final session = _supabase.auth.currentSession;
+      final deviceId = await DeviceSession.id;
+
+      DebugLogger.logEvent(
+          'SCREEN_ENTERED', 'get_started_page deviceId=$deviceId'); // NEW
+
       _logLoginEvent(
         eventType: 'GET_STARTED_PAGE_SHOWN',
         supabaseUid: session?.user.id,
+        firebaseUid: deviceId,
         email: session?.user.email,
         hasSupabaseSession: session != null,
         additionalData: {'timestamp': DateTime.now().toIso8601String()},
       );
-      DebugLogger.logEvent('GET_STARTED_PAGE_SHOWN',
-          'GetStartedPage displayed, session exists: ${session != null}');
     });
   }
 
@@ -130,10 +136,11 @@ class _GetStartedPageState extends State<GetStartedPage>
 
   @override
   void dispose() {
-    // ✅ screen tracking: exit get_started_page with 'anonymous' user
+    // ✅ screen tracking: exit get_started_page
+    final deviceId = DeviceSession.idSync ?? 'anonymous';
     AnalyticsService.screenExit(
       screenName: 'get_started_page',
-      uid: 'anonymous',
+      uid: deviceId,
     );
     _controller.dispose();
     super.dispose();
