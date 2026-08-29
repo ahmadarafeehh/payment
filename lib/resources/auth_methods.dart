@@ -11,6 +11,8 @@ import 'package:Ratedly/resources/storage_methods.dart';
 import 'package:Ratedly/models/user.dart';
 import 'package:country_detector/country_detector.dart';
 import 'package:Ratedly/services/country_service.dart';
+import 'package:Ratedly/services/debug_logger.dart'; // NEW: logging added throughout this file (was previously zero)
+import 'package:Ratedly/services/device_session.dart'; // NEW: used for pre-signup log linking
 import 'package:flutter/foundation.dart'
     show kIsWeb, defaultTargetPlatform, TargetPlatform;
 
@@ -49,19 +51,63 @@ class AuthMethods {
   }
 
   // =============================================
+  // DEVICE-ID LINK-BACK
+  // =============================================
+  // Once a real uid exists (new account created), retroactively attach that
+  // uid to every pre-signup log row that was tagged with this device's
+  // anonymous session id. This makes a user's full journey — from the very
+  // first GetStartedPage view through signup — traceable after the fact.
+  // Safe to call multiple times; a no-op if there are no matching rows.
+  Future<void> _linkDeviceLogsToUid(String realUid) async {
+    try {
+      final deviceId = DeviceSession.idSync ?? await DeviceSession.id;
+      if (deviceId == realUid) return; // nothing to link
+
+      await _supabase
+          .from('login_logs')
+          .update({'supabase_uid': realUid}).eq('firebase_uid', deviceId);
+
+      await _supabase
+          .from('signup_debug_logs')
+          .update({'supabase_uid': realUid}).eq('firebase_uid', deviceId);
+
+      await _supabase
+          .from('screen_time')
+          .update({'uid': realUid}).eq('uid', deviceId);
+
+      DebugLogger.logEvent(
+          'DEVICE_LOGS_LINKED', 'deviceId=$deviceId realUid=$realUid');
+    } catch (e) {
+      // Linking is best-effort — never let it block signup.
+      DebugLogger.logError('LINK_DEVICE_LOGS', e);
+    }
+  }
+
+  // =============================================
   // NATIVE GOOGLE SIGN‑IN
   // =============================================
   Future<String> signInWithGoogleNative() async {
+    final deviceId = DeviceSession.idSync ?? await DeviceSession.id;
+    DebugLogger.logEvent('GOOGLE_SIGNIN_STARTED', 'deviceId=$deviceId');
     try {
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
-      if (googleUser == null) return "cancelled";
+      if (googleUser == null) {
+        DebugLogger.logEvent('GOOGLE_SIGNIN_CANCELLED', 'deviceId=$deviceId');
+        return "cancelled";
+      }
+      DebugLogger.logEvent(
+          'GOOGLE_SIGNIN_ACCOUNT_OBTAINED', 'deviceId=$deviceId');
 
       final GoogleSignInAuthentication googleAuth =
           await googleUser.authentication;
 
       if (googleAuth.idToken == null) {
+        DebugLogger.logEvent(
+            'GOOGLE_SIGNIN_NO_ID_TOKEN', 'deviceId=$deviceId');
         return "Google sign‑in failed: no ID token";
       }
+      DebugLogger.logEvent(
+          'GOOGLE_SIGNIN_ID_TOKEN_OBTAINED', 'deviceId=$deviceId');
 
       final AuthResponse response = await _supabase.auth.signInWithIdToken(
         provider: OAuthProvider.google,
@@ -69,10 +115,24 @@ class AuthMethods {
         accessToken: googleAuth.accessToken,
       );
 
-      if (response.user == null) return "Supabase sign‑in failed";
+      if (response.user == null) {
+        DebugLogger.logEvent(
+            'GOOGLE_SIGNIN_SUPABASE_NULL_USER', 'deviceId=$deviceId');
+        return "Supabase sign‑in failed";
+      }
+      DebugLogger.logEvent('GOOGLE_SIGNIN_SUPABASE_SUCCESS',
+          'deviceId=$deviceId supabaseUid=${response.user!.id}');
 
-      return await _checkSupabaseUserOnboarding();
+      final result = await _checkSupabaseUserOnboarding();
+      DebugLogger.logEvent(
+          'GOOGLE_SIGNIN_COMPLETE', 'deviceId=$deviceId result=$result');
+      return result;
     } catch (e, stack) {
+      DebugLogger.log(
+        eventName: 'GOOGLE_SIGNIN_EXCEPTION',
+        errorDetails: e.toString(),
+        message: 'deviceId=$deviceId stack=${stack.toString()}',
+      );
       return "Google sign‑in failed: ${e.toString()}";
     }
   }
@@ -92,6 +152,7 @@ class AuthMethods {
       }
       return result;
     } catch (e) {
+      DebugLogger.logError('GOOGLE_MIGRATION', e);
       return "Google migration failed: $e";
     }
   }
@@ -100,6 +161,8 @@ class AuthMethods {
   // NATIVE APPLE SIGN‑IN
   // =============================================
   Future<String> signInWithAppleNative() async {
+    final deviceId = DeviceSession.idSync ?? await DeviceSession.id;
+    DebugLogger.logEvent('APPLE_SIGNIN_STARTED', 'deviceId=$deviceId');
     try {
       final rawNonce = _generateRawNonce();
       final hashedNonce = _sha256ofString(rawNonce);
@@ -108,9 +171,14 @@ class AuthMethods {
         scopes: [AppleIDAuthorizationScopes.email],
         nonce: hashedNonce,
       );
+      DebugLogger.logEvent(
+          'APPLE_SIGNIN_CREDENTIAL_OBTAINED', 'deviceId=$deviceId');
 
       final idToken = appleCredential.identityToken;
-      if (idToken == null) return "Apple sign‑in failed: no ID token";
+      if (idToken == null) {
+        DebugLogger.logEvent('APPLE_SIGNIN_NO_ID_TOKEN', 'deviceId=$deviceId');
+        return "Apple sign‑in failed: no ID token";
+      }
 
       final AuthResponse response = await _supabase.auth.signInWithIdToken(
         provider: OAuthProvider.apple,
@@ -118,13 +186,35 @@ class AuthMethods {
         nonce: rawNonce,
       );
 
-      if (response.user == null) return "Supabase sign‑in failed";
+      if (response.user == null) {
+        DebugLogger.logEvent(
+            'APPLE_SIGNIN_SUPABASE_NULL_USER', 'deviceId=$deviceId');
+        return "Supabase sign‑in failed";
+      }
+      DebugLogger.logEvent('APPLE_SIGNIN_SUPABASE_SUCCESS',
+          'deviceId=$deviceId supabaseUid=${response.user!.id}');
 
-      return await _checkSupabaseUserOnboarding();
+      final result = await _checkSupabaseUserOnboarding();
+      DebugLogger.logEvent(
+          'APPLE_SIGNIN_COMPLETE', 'deviceId=$deviceId result=$result');
+      return result;
     } on SignInWithAppleAuthorizationException catch (e, stack) {
-      if (e.code == AuthorizationErrorCode.canceled) return "cancelled";
+      if (e.code == AuthorizationErrorCode.canceled) {
+        DebugLogger.logEvent('APPLE_SIGNIN_CANCELLED', 'deviceId=$deviceId');
+        return "cancelled";
+      }
+      DebugLogger.log(
+        eventName: 'APPLE_SIGNIN_AUTHORIZATION_EXCEPTION',
+        errorDetails: e.message,
+        message: 'deviceId=$deviceId stack=${stack.toString()}',
+      );
       return "Apple sign‑in failed: ${e.message}";
     } catch (e, stack) {
+      DebugLogger.log(
+        eventName: 'APPLE_SIGNIN_EXCEPTION',
+        errorDetails: e.toString(),
+        message: 'deviceId=$deviceId stack=${stack.toString()}',
+      );
       return "Apple sign‑in failed: ${e.toString()}";
     }
   }
@@ -140,6 +230,7 @@ class AuthMethods {
       );
       return "oauth_initiated";
     } catch (e) {
+      DebugLogger.logError('GOOGLE_SUPABASE_OAUTH', e);
       if (e is AuthException) return "Google sign-up failed: ${e.message}";
       return "Google sign-up failed: $e";
     }
@@ -153,6 +244,7 @@ class AuthMethods {
       );
       return "oauth_initiated";
     } catch (e) {
+      DebugLogger.logError('APPLE_SUPABASE_OAUTH', e);
       if (e is AuthException) return "Apple sign-up failed: ${e.message}";
       return "Apple sign-up failed: $e";
     }
@@ -164,7 +256,10 @@ class AuthMethods {
   Future<String> _checkSupabaseUserOnboarding() async {
     try {
       final session = _supabase.auth.currentSession;
-      if (session == null) return "no_session";
+      if (session == null) {
+        DebugLogger.logEvent('CHECK_ONBOARDING_NO_SESSION');
+        return "no_session";
+      }
 
       final List<dynamic> userRecords = await _supabase
           .from('users')
@@ -173,6 +268,8 @@ class AuthMethods {
           .limit(1);
 
       if (userRecords.isEmpty) {
+        DebugLogger.logEvent('CHECK_ONBOARDING_CREATING_NEW_USER',
+            'supabaseUid=${session.user.id}');
         try {
           await _supabase.from('users').upsert({
             'uid': session.user.id,
@@ -192,8 +289,18 @@ class AuthMethods {
             'supabase_uid': session.user.id,
             'test': Random().nextBool(),
           }, onConflict: 'uid');
+
+          // NEW: link this device's anonymous pre-signup logs to the
+          // real uid now that the account exists.
+          await _linkDeviceLogsToUid(session.user.id);
         } catch (e) {
-          // ignore
+          // FIX: previously silently ignored. Now logged so a failed
+          // account-creation upsert is actually visible.
+          DebugLogger.log(
+            eventName: 'CHECK_ONBOARDING_USER_CREATE_ERROR',
+            errorDetails: e.toString(),
+            message: 'supabaseUid=${session.user.id}',
+          );
         }
         return "onboarding_required";
       }
@@ -206,8 +313,16 @@ class AuthMethods {
               data['gender'] != null &&
               data['gender'].toString().isNotEmpty);
 
+      DebugLogger.logEvent('CHECK_ONBOARDING_EXISTING_USER',
+          'supabaseUid=${session.user.id} complete=$hasCompletedOnboarding');
+
       return hasCompletedOnboarding ? "success" : "onboarding_required";
     } catch (e) {
+      // FIX: previously silently swallowed. Now logged.
+      DebugLogger.log(
+        eventName: 'CHECK_ONBOARDING_UNEXPECTED_ERROR',
+        errorDetails: e.toString(),
+      );
       return "onboarding_required";
     }
   }
@@ -289,8 +404,14 @@ class AuthMethods {
       await _supabase.from('users').upsert(payload, onConflict: 'uid');
       await _countryService.setCountryForUser(session.user.id);
 
+      DebugLogger.logEvent(
+          'COMPLETE_PROFILE_SUCCESS', 'supabaseUid=${session.user.id}');
       return "success";
     } catch (e) {
+      DebugLogger.log(
+        eventName: 'COMPLETE_PROFILE_ERROR',
+        errorDetails: e.toString(),
+      );
       return "Failed to save profile: ${e.toString()}";
     }
   }
@@ -333,6 +454,7 @@ class AuthMethods {
       );
       return "oauth_initiated";
     } catch (e) {
+      DebugLogger.logError('GOOGLE_MIGRATE', e);
       return "Google migration failed: $e";
     }
   }
@@ -368,6 +490,7 @@ class AuthMethods {
 
       return "success";
     } catch (e) {
+      DebugLogger.logError('COMPLETE_MIGRATION_AFTER_OAUTH', e);
       return "Failed to complete migration: $e";
     }
   }
@@ -396,6 +519,7 @@ class AuthMethods {
       }
       return true;
     } catch (e) {
+      DebugLogger.logError('CHECK_AND_COMPLETE_MIGRATION', e);
       return false;
     }
   }
@@ -443,6 +567,7 @@ class AuthMethods {
         'supabase_uid': supabaseUid,
       }).eq('uid', uid);
     } catch (e) {
+      DebugLogger.logError('MARK_AS_MIGRATED', e);
       rethrow;
     }
   }
@@ -496,7 +621,18 @@ class AuthMethods {
           'country': null,
           'migrated': false,
         });
-      } catch (_) {}
+
+        // NEW: link this device's anonymous pre-signup logs to the
+        // real uid now that the account exists.
+        await _linkDeviceLogsToUid(cred.user!.uid);
+      } catch (e) {
+        // FIX: previously silently ignored.
+        DebugLogger.log(
+          eventName: 'SIGNUP_USER_CREATE_ROW_ERROR',
+          errorDetails: e.toString(),
+          message: 'uid=${cred.user!.uid}',
+        );
+      }
 
       return "success";
     } on firebase_auth.FirebaseAuthException catch (e) {
@@ -505,6 +641,7 @@ class AuthMethods {
       }
       return e.message ?? "Registration failed";
     } catch (err) {
+      DebugLogger.logError('SIGNUP_USER', err);
       return err.toString();
     }
   }
@@ -596,6 +733,7 @@ class AuthMethods {
 
       return "success";
     } on Exception catch (e) {
+      DebugLogger.logError('COMPLETE_PROFILE_FIREBASE', e);
       return e.toString();
     }
   }
@@ -648,6 +786,7 @@ class AuthMethods {
 
       return "Incorrect email or password";
     } catch (e) {
+      DebugLogger.logError('LOGIN_USER', e);
       return "An unexpected error occurred";
     }
   }
@@ -688,6 +827,7 @@ class AuthMethods {
         return "Incorrect email or password";
       }
     } catch (e) {
+      DebugLogger.logError('LOGIN_WITH_FIREBASE', e);
       return "An unexpected error occurred";
     }
   }
@@ -854,6 +994,10 @@ class AuthMethods {
     } on AuthException catch (e, stack) {
       return "Supabase auth error: ${e.message}";
     } catch (e, stack) {
+      DebugLogger.log(
+        eventName: 'GOOGLE_SIGNIN_LEGACY_EXCEPTION',
+        errorDetails: e.toString(),
+      );
       return "Google sign‑in failed: ${e.toString()}";
     }
   }
@@ -913,7 +1057,13 @@ class AuthMethods {
             'country': null,
             'migrated': false,
           });
-        } catch (e) {}
+        } catch (e) {
+          DebugLogger.log(
+            eventName: 'APPLE_LEGACY_USER_CREATE_ERROR',
+            errorDetails: e.toString(),
+            message: 'uid=$userId',
+          );
+        }
         return "onboarding_required";
       }
 
@@ -935,6 +1085,10 @@ class AuthMethods {
     } on firebase_auth.FirebaseAuthException catch (e) {
       return _handleFirebaseAuthError(e);
     } catch (e) {
+      DebugLogger.log(
+        eventName: 'APPLE_SIGNIN_LEGACY_EXCEPTION',
+        errorDetails: e.toString(),
+      );
       return "Unexpected error: ${e.toString()}";
     }
   }
