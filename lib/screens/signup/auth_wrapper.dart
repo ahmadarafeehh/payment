@@ -63,6 +63,13 @@ class _OnboardingTracker {
       DateTime.now().difference(sessionStart).inSeconds;
 }
 
+/// Tracks what the most recently completed _initializeAuth() call actually
+/// resolved, so a second caller arriving mid-flight can decide whether to
+/// skip (a session was already resolved) or re-run (the first call found no
+/// session, but this caller knows — because it's the signedIn event — that
+/// a session now genuinely exists).
+enum _InitOutcome { resolvedWithSession, resolvedNoSession }
+
 class AuthWrapper extends StatefulWidget {
   const AuthWrapper({Key? key}) : super(key: key);
 
@@ -80,7 +87,15 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   bool _usingCachedData = false;
   bool _needsMigration = false;
   bool _checkingMigration = false;
+
+  // --- Guarded-init state ---
   bool _initLock = false;
+  _InitOutcome? _lastInitOutcome;
+  // Completer that resolves when the in-flight _initializeAuth() call
+  // finishes. A second caller arriving while _initLock is true awaits this
+  // instead of polling, then inspects _lastInitOutcome to decide whether to
+  // skip or re-run.
+  Completer<void>? _initCompleter;
 
   String? _firebaseUid;
   String? _supabaseUid;
@@ -108,19 +123,30 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     // NEW: crash-proof marker — AuthWrapper itself started initializing.
     DebugLogger.logEvent('AUTH_WRAPPER_INIT_STARTED');
 
-    _initializeAuth();
+    // FIX: previously this called _initializeAuth() directly, unguarded,
+    // while the onAuthStateChange listener below guarded ITS OWN call with
+    // _initLock. That meant a fresh signup — where initState() runs
+    // immediately AND the auth listener fires `signedIn` moments later once
+    // the sign-in actually completes — could trigger _handleSupabaseSession()
+    // TWICE, concurrently. Confirmed in production logs: two
+    // HANDLE_SUPABASE_SESSION_STARTED events 13ms apart for the same user,
+    // duplicate device-log linking, duplicate onboarding checks, and two
+    // separate OnboardingFlow/AgeVerificationScreen builds. Routing both
+    // call sites through the same guarded helper closes that race.
+    //
+    // isFromAuthEvent: false — this call site has no independent knowledge
+    // that a session exists; it's just the app starting up.
+    _guardedInitializeAuth(isFromAuthEvent: false);
 
     _authSubscription = _supabase.auth.onAuthStateChange.listen((data) async {
       if (data.event == AuthChangeEvent.signedIn) {
         DebugLogger.logEvent('AUTH_EVENT: signedIn — triggering init');
-        if (!_initLock) {
-          _initLock = true;
-          await _initializeAuth();
-          _initLock = false;
-        } else {
-          DebugLogger.logEvent(
-              'AUTH_EVENT: signedIn ignored — init already running');
-        }
+        // isFromAuthEvent: true — this call site DOES know a session now
+        // genuinely exists (Supabase just told us so). If it arrives while
+        // initState()'s call is still in flight, it must not be silently
+        // dropped in case that first call resolves "no session" and would
+        // otherwise leave the user permanently stuck on GetStartedPage.
+        await _guardedInitializeAuth(isFromAuthEvent: true);
       } else if (data.event == AuthChangeEvent.tokenRefreshed) {
         DebugLogger.logEvent(
             'AUTH_EVENT: tokenRefreshed — intentionally ignored');
@@ -134,6 +160,64 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         });
       }
     });
+  }
+
+  /// Serializes every call to _initializeAuth() behind a single lock,
+  /// regardless of which call site triggers it (initState()'s direct call,
+  /// or the onAuthStateChange listener's signedIn event).
+  ///
+  /// Outcome-aware behavior:
+  /// - If no call is in flight, this runs _initializeAuth() normally.
+  /// - If a call IS in flight and this caller has no special knowledge
+  ///   (isFromAuthEvent=false), it skips immediately — same as before.
+  /// - If a call IS in flight and this caller is the signedIn listener
+  ///   (isFromAuthEvent=true), it waits for the in-flight call to finish,
+  ///   then checks what that call resolved:
+  ///     - resolvedWithSession  -> the work is already done; skip.
+  ///     - resolvedNoSession    -> the first call ran before the session
+  ///       existed and bailed out early. Since we now KNOW a session
+  ///       exists, re-run _initializeAuth() for real instead of leaving
+  ///       the user stuck.
+  ///
+  /// The lock is always released in `finally`, including on normal
+  /// completion, so this can never deadlock — a later, genuinely new
+  /// signedIn event (e.g. after a sign-out/sign-in cycle) always gets a
+  /// fresh attempt once the current call exits.
+  Future<void> _guardedInitializeAuth({required bool isFromAuthEvent}) async {
+    if (_initLock) {
+      if (!isFromAuthEvent) {
+        DebugLogger.logEvent(
+            'INIT_AUTH: skipped — already running (duplicate call site)');
+        return;
+      }
+
+      DebugLogger.logEvent(
+          'INIT_AUTH: signedIn arrived mid-flight — waiting for in-flight call to finish');
+      final pending = _initCompleter?.future;
+      if (pending != null) {
+        await pending;
+      }
+
+      if (_lastInitOutcome == _InitOutcome.resolvedWithSession) {
+        DebugLogger.logEvent(
+            'INIT_AUTH: in-flight call already resolved a session — skipping duplicate signedIn');
+        return;
+      }
+
+      DebugLogger.logEvent(
+          'INIT_AUTH: in-flight call found no session, but signedIn confirms one exists — re-running');
+      // Fall through and run it for real below.
+    }
+
+    _initLock = true;
+    _initCompleter = Completer<void>();
+    try {
+      await _initializeAuth();
+    } finally {
+      _initLock = false;
+      _initCompleter?.complete();
+      _initCompleter = null;
+    }
   }
 
   @override
@@ -176,15 +260,18 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         'INIT_AUTH: hasSupabase=${supabaseSession != null} hasFirebase=${firebaseUser != null}');
 
     if (supabaseSession != null) {
+      _lastInitOutcome = _InitOutcome.resolvedWithSession;
       await _handleSupabaseSession(supabaseSession, userProvider);
       return;
     }
 
     if (firebaseUser != null) {
+      _lastInitOutcome = _InitOutcome.resolvedWithSession;
       await _handleFirebaseUser(firebaseUser, userProvider);
       return;
     }
 
+    _lastInitOutcome = _InitOutcome.resolvedNoSession;
     DebugLogger.logEvent(
         'INIT_AUTH: no session found — showing GetStartedPage');
     if (mounted) setState(() => _isLoading = false);
