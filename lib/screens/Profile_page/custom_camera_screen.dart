@@ -113,6 +113,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     WidgetsBinding.instance.removeObserver(this);
     _recordingTimer?.cancel();
     _controller?.dispose();
+    _controller = null;
     super.dispose();
   }
 
@@ -124,7 +125,16 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
             'isInitialized=$_isInitialized');
     if (_controller == null || !_isInitialized) return;
     if (state == AppLifecycleState.inactive) {
+      // FIX: previously this disposed the controller without clearing
+      // _controller/_isInitialized, leaving a dangling reference to a
+      // disposed native camera session. Any later code (including the
+      // preview widget rebuild, or this screen briefly becoming current
+      // again during a multi-pop navigation) could then try to render
+      // through that disposed controller, which is a strong candidate for
+      // the black-screen-after-post bug.
       _controller?.dispose();
+      _controller = null;
+      _isInitialized = false;
     } else if (state == AppLifecycleState.resumed) {
       _initCamera();
     }
@@ -183,6 +193,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
         await _log('initCamera_success');
       } else {
         await _log('initCamera_notMounted_afterInit');
+        // Screen was disposed while initializing — don't leak the session.
+        await controller.dispose();
       }
     } catch (e, st) {
       final stStr = st.toString();
@@ -241,6 +253,40 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
         return Icons.flash_on;
       default:
         return Icons.flash_off;
+    }
+  }
+
+  // ===========================================================================
+  // PREVIEW PAUSE / RESUME (around forward navigation)
+  // ===========================================================================
+
+  /// Pauses the live camera preview without tearing down the session.
+  /// Called before navigating forward to the editor/composer, since those
+  /// screens sit on top of this one for several seconds (editing, upload,
+  /// optional boost purchase) while this screen — and its camera texture —
+  /// stays mounted underneath, fully obscured. Leaving the preview running
+  /// that whole time is unnecessary and a likely contributor to the
+  /// black-screen-after-post bug when this route briefly becomes current
+  /// again during the post-success navigation pop.
+  Future<void> _pausePreviewSafely() async {
+    if (_controller == null || !_isInitialized) return;
+    try {
+      await _controller!.pausePreview();
+      await _log('pausePreview_success');
+    } catch (e) {
+      await _log('pausePreview_error', errorMessage: e.toString());
+    }
+  }
+
+  /// Resumes the live camera preview after returning from the
+  /// editor/composer (e.g. user backs out without posting).
+  Future<void> _resumePreviewSafely() async {
+    if (!mounted || _controller == null || !_isInitialized) return;
+    try {
+      await _controller!.resumePreview();
+      await _log('resumePreview_success');
+    } catch (e) {
+      await _log('resumePreview_error', errorMessage: e.toString());
     }
   }
 
@@ -356,7 +402,15 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
               'hasOnPostUploaded=${widget.onPostUploaded != null}');
 
       if (mounted) {
-        Navigator.push(
+        // FIX: pause the live camera preview before this screen gets
+        // buried under the editor + composer for the duration of editing,
+        // uploading, and (iOS) an optional boost purchase. Previously the
+        // preview stayed live and fully obscured that whole time.
+        await _pausePreviewSafely();
+
+        if (!mounted) return;
+
+        await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => MediaEditScreen(
@@ -369,6 +423,12 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
           ),
         );
         await _log('capturePhoto_navigated');
+
+        // Only reached if the user backed out without completing a post
+        // (on success, postMedia() pops this route away entirely via
+        // popUntil('cameraFromProfile') + pop(), so this screen — and this
+        // resume call — never comes back into play).
+        await _resumePreviewSafely();
       } else {
         await _log('capturePhoto_notMounted_beforeNavigate');
       }
@@ -446,7 +506,13 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
               'hasOnPostUploaded=${widget.onPostUploaded != null}');
 
       if (mounted) {
-        Navigator.push(
+        // FIX: same rationale as _capturePhoto() — pause the live preview
+        // before this screen sits buried under the editor + composer.
+        await _pausePreviewSafely();
+
+        if (!mounted) return;
+
+        await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => VideoEditScreen(
@@ -459,6 +525,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
           ),
         );
         await _log('stopVideoRecording_navigated');
+
+        // Only reached if the user backed out without completing a post.
+        await _resumePreviewSafely();
       } else {
         await _log('stopVideoRecording_notMounted_beforeNavigate');
       }
@@ -500,7 +569,13 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
             'onImageResult=${widget.onImageResult != null} '
             'onVideoResult=${widget.onVideoResult != null}');
 
-    Navigator.push(
+    // FIX: same rationale as the camera-capture paths — this screen (and
+    // its live preview) stays mounted underneath the gallery picker and
+    // whatever it pushes next, so pause it here too.
+    await _pausePreviewSafely();
+    if (!mounted) return;
+
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => GalleryPickerScreen(
@@ -514,6 +589,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     );
 
     await _log('openGallery_navigated');
+    await _resumePreviewSafely();
   }
 
   // ===========================================================================
