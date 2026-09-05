@@ -16,7 +16,7 @@ import 'package:Ratedly/resources/auth_methods.dart';
 import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
-import 'package:Ratedly/services/device_session.dart'; // NEW
+import 'package:Ratedly/services/device_session.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 import 'package:Ratedly/services/feed_cache_service.dart';
 import 'package:Ratedly/services/platform_service.dart';
@@ -97,6 +97,19 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   // skip or re-run.
   Completer<void>? _initCompleter;
 
+  // FIX-BOUNCE: Once the user has been handed off to OnboardingFlow, a
+  // later signedIn event firing (confirmed in production logs happening
+  // repeatedly, ~30-90s apart, on some Android sessions even though
+  // AuthWrapper never remounts and _authSubscription is never cancelled)
+  // must NOT re-run _initializeAuth() and rebuild a fresh OnboardingFlow.
+  // Doing so was the confirmed root cause of users being silently bounced
+  // from profile_setup back to age_verification, losing in-progress state
+  // — ONBOARDING_FLOW_DISPOSE logs showed the old OnboardingFlow (with
+  // step=profile_setup) being torn down and replaced by a brand new one
+  // every time this fired. The session is already resolved once onboarding
+  // has started; there is nothing left to (re)do.
+  bool _onboardingHandedOff = false;
+
   String? _firebaseUid;
   String? _supabaseUid;
   String? _userEmail;
@@ -157,6 +170,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           _supabaseUid = null;
           _isLoading = false;
           _onboardingComplete = false;
+          _onboardingHandedOff = false; // FIX-BOUNCE: allow a real future sign-in to proceed normally
         });
       }
     });
@@ -184,6 +198,15 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   /// signedIn event (e.g. after a sign-out/sign-in cycle) always gets a
   /// fresh attempt once the current call exits.
   Future<void> _guardedInitializeAuth({required bool isFromAuthEvent}) async {
+    // FIX-BOUNCE: if onboarding is already underway, a redundant signedIn
+    // event must not re-run _initializeAuth() and rebuild OnboardingFlow
+    // from scratch. This is the primary fix — see field doc comment above.
+    if (_onboardingHandedOff && isFromAuthEvent) {
+      DebugLogger.logEvent(
+          'INIT_AUTH: skipped — onboarding already handed off, ignoring redundant signedIn');
+      return;
+    }
+
     if (_initLock) {
       if (!isFromAuthEvent) {
         DebugLogger.logEvent(
@@ -811,6 +834,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     DebugLogger.logEvent(
         'ONBOARDING_COMPLETE: uid=${_firebaseUid ?? _supabaseUid} totalTime=${elapsed}s');
     _tracker?.step('completed');
+    _onboardingHandedOff = false; // FIX-BOUNCE: onboarding is done, not "in progress" anymore
     if (mounted) setState(() => _onboardingComplete = true);
     _updateAuthCache(true);
   }
@@ -826,7 +850,16 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     }
 
     if (hasUser) {
+      _onboardingHandedOff = true; // FIX-BOUNCE: mark onboarding as in-progress
       return OnboardingFlow(
+        // FIX-BOUNCE: stable key so Flutter treats this as the SAME widget
+        // instance across any AuthWrapper rebuild, instead of tearing down
+        // and recreating OnboardingFlow (and losing its internal state /
+        // the pushed ProfileSetupScreen route) every time. This is a
+        // defensive second layer — the _onboardingHandedOff guard above is
+        // the primary fix, since it stops the wasteful rebuild from
+        // happening in the first place.
+        key: ValueKey(_supabaseUid ?? _firebaseUid),
         onComplete: _handleOnboardingComplete,
         onError: (error) async {
           await _logError(
