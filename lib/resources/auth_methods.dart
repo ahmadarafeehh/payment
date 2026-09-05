@@ -261,13 +261,77 @@ class AuthMethods {
         return "no_session";
       }
 
-      final List<dynamic> userRecords = await _supabase
+      List<dynamic> userRecords = await _supabase
           .from('users')
           .select('username, "dateOfBirth", gender, "onboardingComplete", uid')
           .eq('supabase_uid', session.user.id)
           .limit(1);
 
+      // FIX-PHANTOM: before assuming "not found under supabase_uid" means
+      // this is a brand new user, check whether a real account already
+      // exists for this person under their Firebase uid or email — mirrors
+      // the fallback lookups auth_wrapper.dart's _handleSupabaseSession
+      // already does correctly (Steps 1-2). Without this, a migrated user
+      // whose real row is still keyed by their old Firebase uid (because
+      // supabase_uid hasn't been linked onto it yet) gets a brand new,
+      // blank, orphaned row created here instead — confirmed in production
+      // as accounts with uid == supabase_uid, onboardingComplete=false,
+      // permanently blank, on both Android and iOS.
       if (userRecords.isEmpty) {
+        final firebaseUser = _auth.currentUser;
+
+        // Fallback 1: match by Firebase uid (the migration path).
+        if (firebaseUser != null) {
+          final byFirebaseUid = await _supabase
+              .from('users')
+              .select(
+                  'username, "dateOfBirth", gender, "onboardingComplete", uid')
+              .eq('uid', firebaseUser.uid)
+              .limit(1);
+
+          if (byFirebaseUid.isNotEmpty) {
+            await _supabase.from('users').update({
+              'supabase_uid': session.user.id,
+              'migrated': true,
+            }).eq('uid', firebaseUser.uid);
+
+            DebugLogger.logEvent(
+                'CHECK_ONBOARDING_LINKED_VIA_FIREBASE_UID',
+                'firebaseUid=${firebaseUser.uid} supabaseUid=${session.user.id}');
+
+            userRecords = byFirebaseUid;
+          }
+        }
+
+        // Fallback 2: match by email, for an unmigrated record.
+        if (userRecords.isEmpty && session.user.email != null) {
+          final byEmail = await _supabase
+              .from('users')
+              .select(
+                  'username, "dateOfBirth", gender, "onboardingComplete", uid')
+              .eq('email', session.user.email!)
+              .eq('migrated', false)
+              .limit(1);
+
+          if (byEmail.isNotEmpty) {
+            final matchedUid = byEmail[0]['uid'];
+            await _supabase.from('users').update({
+              'supabase_uid': session.user.id,
+              'migrated': true,
+            }).eq('uid', matchedUid);
+
+            DebugLogger.logEvent(
+                'CHECK_ONBOARDING_LINKED_VIA_EMAIL',
+                'email=${session.user.email} supabaseUid=${session.user.id}');
+
+            userRecords = byEmail;
+          }
+        }
+      }
+
+      if (userRecords.isEmpty) {
+        // Genuinely no existing record under supabase_uid, Firebase uid, or
+        // email — this really is a brand new user.
         DebugLogger.logEvent('CHECK_ONBOARDING_CREATING_NEW_USER',
             'supabaseUid=${session.user.id}');
         try {
