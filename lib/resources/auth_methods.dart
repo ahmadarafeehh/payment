@@ -50,6 +50,14 @@ class AuthMethods {
     return digest.toString();
   }
 
+  // Shared username validation regex. Kept in one place so the client
+  // (profile_setup_screen.dart) and server (this file) rules can no longer
+  // silently drift apart the way they had — the client already allows and
+  // documents '.', '_', digits, and lowercase letters, so the server now
+  // accepts the same set instead of silently rejecting '.' with a message
+  // that contradicted what the input screen told the user was valid.
+  static final RegExp _usernameAllowedChars = RegExp(r'^[a-zA-Z0-9_.]+$');
+
   // =============================================
   // DEVICE-ID LINK-BACK
   // =============================================
@@ -412,8 +420,16 @@ class AuthMethods {
         return "Username must be at least 3 characters";
       if (processedUsername.length > 20)
         return "Username cannot exceed 20 characters";
-      if (!RegExp(r'^[a-zA-Z0-9_]+$').hasMatch(processedUsername)) {
-        return "Username can only contain letters, numbers, and underscores";
+      // FIX: this regex previously excluded '.', contradicting the client
+      // (profile_setup_screen.dart), which explicitly allows and documents
+      // '.' as a valid username character. A username like "john.doe" would
+      // pass client-side validation (button green) and then fail here with
+      // a message that flatly disagreed with what the input screen just
+      // told the user was fine — a likely contributor to repeated,
+      // unexplained submission failures. Now uses the same allowed-char set
+      // as the client instead of a second, silently-diverging regex.
+      if (!_usernameAllowedChars.hasMatch(processedUsername)) {
+        return "Username can only contain letters, numbers, '.', and underscores";
       }
 
       final List<dynamic> usernameRes = await _supabase
@@ -736,8 +752,11 @@ class AuthMethods {
         return "Username must be at least 3 characters";
       if (processedUsername.length > 20)
         return "Username cannot exceed 20 characters";
-      if (!RegExp(r'^[a-zA-Z0-9_]+$').hasMatch(processedUsername)) {
-        return "Username can only contain letters, numbers, and underscores";
+      // FIX: same reconciliation as completeProfileSupabase above — this
+      // legacy Firebase path had the identical dot-excluding mismatch
+      // against the client's allowed character set.
+      if (!_usernameAllowedChars.hasMatch(processedUsername)) {
+        return "Username can only contain letters, numbers, '.', and underscores";
       }
 
       final List<dynamic> usernameRes = await _supabase
