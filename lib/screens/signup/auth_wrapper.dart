@@ -108,6 +108,18 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   // step=profile_setup) being torn down and replaced by a brand new one
   // every time this fired. The session is already resolved once onboarding
   // has started; there is nothing left to (re)do.
+  //
+  // UPDATED (this session): now set synchronously inside
+  // _handleSupabaseSession, right after the onboarding-vs-home-screen
+  // outcome is known, rather than in build(). The previous build()-only
+  // assignment left a real gap: between session resolution finishing and
+  // the next build() running, a re-fired signedIn event could still find
+  // this flag false and re-enter _initializeAuth(). Moving it here is
+  // guarded on !_onboardingComplete so it is set true only when the user
+  // is actually being routed to onboarding — a fully onboarded/returning
+  // user is never marked "handed off" here, matching the original
+  // semantics of the flag (mirrors the `hasUser` gate that used to wrap
+  // this assignment in build()).
   bool _onboardingHandedOff = false;
 
   String? _firebaseUid;
@@ -518,6 +530,21 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final hasCompletedOnboarding =
           await _checkOnboardingStatus(_firebaseUid!);
 
+      // FIX-BOUNCE: set the moment the onboarding-vs-home outcome is known,
+      // instead of waiting for build() to run on the next frame. This is
+      // the actual gap the 2026-09-01 signup_debug_logs pull points to: a
+      // signedIn re-fire arriving after this point but before the next
+      // build() previously found _onboardingHandedOff still false and
+      // re-entered _initializeAuth(), tearing down the in-progress
+      // OnboardingFlow. Guarded on !hasCompletedOnboarding to preserve the
+      // original semantics — a fully onboarded/returning user (routed to
+      // the home screen, not OnboardingFlow) is never marked "handed off"
+      // here, matching the `hasUser` guard that used to wrap this
+      // assignment in build().
+      if (!hasCompletedOnboarding) {
+        _onboardingHandedOff = true;
+      }
+
       // NEW: crash-proof marker right before the mounted check, which is
       // exactly the line most likely to silently skip if the widget has
       // been disposed while we were awaiting the DB call above.
@@ -850,7 +877,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     }
 
     if (hasUser) {
-      _onboardingHandedOff = true; // FIX-BOUNCE: mark onboarding as in-progress
       return OnboardingFlow(
         // FIX-BOUNCE: stable key so Flutter treats this as the SAME widget
         // instance across any AuthWrapper rebuild, instead of tearing down
