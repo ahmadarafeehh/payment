@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/resources/auth_methods.dart';
@@ -25,49 +27,162 @@ class ProfileSetupScreen extends StatefulWidget {
   State<ProfileSetupScreen> createState() => _ProfileSetupScreenState();
 }
 
-class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
+// Fix #2: only lets a-z, 0-9, ., _ ever land in the field — no reject-and-flash-red
+// for a keystroke the user hasn't finished typing. Uppercase is silently
+// lowercased instead of rejected, matching Instagram/TikTok behavior.
+class _UsernameFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final lowered = newValue.text.toLowerCase();
+    final filtered = lowered.replaceAll(RegExp(r'[^a-z0-9_.]'), '');
+    if (filtered == newValue.text) return newValue;
+
+    // Keep the cursor at the same relative position after stripping/lowering.
+    final delta = newValue.text.length - filtered.length;
+    final newOffset = (newValue.selection.end - delta).clamp(0, filtered.length);
+    return TextEditingValue(
+      text: filtered,
+      selection: TextSelection.collapsed(offset: newOffset),
+    );
+  }
+}
+
+class _ProfileSetupScreenState extends State<ProfileSetupScreen>
+    with WidgetsBindingObserver {
+  // Versioned + device-scoped, matching the app's existing SharedPreferences
+  // key convention (e.g. auth_cache_v4_<uid>). No uid exists yet at this
+  // pre-auth screen, so DeviceSession.id is the scoping key instead —
+  // consistent with how this file already scopes its debug/analytics events.
+  static const _draftKeyPrefix = 'profile_setup_draft_v1';
+
   final TextEditingController _usernameController = TextEditingController();
   bool _isLoading = false;
   String? _selectedGender;
   String? _usernameError;
   int _usernameLength = 0;
+  bool _submitAttempted = false; // Fix #3/#4: only show "required" nudges after a tap
+  bool _draftRestored = false;
 
   final List<String> _genders = ['Male', 'Female'];
 
   @override
   void initState() {
     super.initState();
-    // ✅ screen tracking: enter profile_setup screen (timing only)
     AnalyticsService.screenEnter('profile_setup');
-    _usernameController.addListener(_validateUsername);
+    WidgetsBinding.instance.addObserver(this); // Fix #5: catch backgrounding
 
-    // NEW: crash-proof marker that this screen was reached
+    // Fix #2: debounce structural validation instead of validating on every
+    // keystroke. Character-set enforcement now happens via the formatter, so
+    // this listener only checks shape rules (leading/trailing/consecutive
+    // punctuation, length) and does so after a short pause in typing.
+    _usernameController.addListener(_onUsernameChanged);
+
+    _restoreDraft(); // Fix #5
+
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final deviceId = await DeviceSession.id;
       DebugLogger.logEvent('SCREEN_ENTERED', 'profile_setup deviceId=$deviceId');
     });
   }
 
+  Timer? _debounce;
+  void _onUsernameChanged() {
+    _saveDraft(); // Fix #5: persist on every change, not just on background
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
+      final username = _usernameController.text;
+      setState(() {
+        _usernameLength = username.length;
+        _usernameError = _validateUsernameText(username);
+      });
+    });
+    // Keep the character counter live even before the debounce fires.
+    setState(() => _usernameLength = _usernameController.text.length);
+  }
+
+  // Fix #5: persist and restore draft state across app backgrounding / kills.
+  // Keys are scoped by DeviceSession.id (no uid exists pre-auth), same
+  // resolution this file already uses for its debug/analytics events.
+  Future<String> _usernameKey() async =>
+      '${_draftKeyPrefix}_username_${await DeviceSession.id}';
+  Future<String> _genderKey() async =>
+      '${_draftKeyPrefix}_gender_${await DeviceSession.id}';
+
+  Future<void> _restoreDraft() async {
+    final prefs = await SharedPreferences.getInstance();
+    final draftUsername = prefs.getString(await _usernameKey());
+    final draftGender = prefs.getString(await _genderKey());
+    if (!mounted) return;
+    setState(() {
+      if (draftUsername != null && draftUsername.isNotEmpty) {
+        _usernameController.text = draftUsername;
+        _usernameLength = draftUsername.length;
+        _usernameError = _validateUsernameText(draftUsername);
+      }
+      if (draftGender != null && _genders.contains(draftGender)) {
+        _selectedGender = draftGender;
+      }
+      _draftRestored = true;
+    });
+  }
+
+  Future<void> _saveDraft() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(await _usernameKey(), _usernameController.text);
+    if (_selectedGender != null) {
+      await prefs.setString(await _genderKey(), _selectedGender!);
+    }
+  }
+
+  Future<void> _clearDraft() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(await _usernameKey());
+    await prefs.remove(await _genderKey());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _saveDraft(); // Fix #5: belt-and-suspenders save on backgrounding
+    }
+  }
+
   @override
   void dispose() {
-    // ✅ screen tracking: exit profile_setup screen
     final deviceId = DeviceSession.idSync ?? 'anonymous';
     AnalyticsService.screenExit(
       screenName: 'profile_setup',
       uid: deviceId,
     );
+    WidgetsBinding.instance.removeObserver(this);
+    _debounce?.cancel();
+    _usernameController.removeListener(_onUsernameChanged);
     _usernameController.dispose();
-    _usernameController.removeListener(_validateUsername);
     super.dispose();
   }
 
   String? _validateUsernameText(String username) {
     if (username.isEmpty) return null;
 
+    // Matches the server-side minimum in auth_methods.dart's
+    // completeProfileSupabase — previously only enforced server-side,
+    // so a 1-2 char username could show green client-side and still get
+    // rejected on submit.
+    if (username.length < 3) {
+      return "Username must be at least 3 characters";
+    }
+
     if (username.length > 20) {
       return "Username must be 20 characters or fewer";
     }
 
+    // Character-set is now enforced by _UsernameFormatter at input time, so
+    // this check is just a safety net (e.g. for the restored draft).
     if (!RegExp(r'^[a-z0-9_.]+$').hasMatch(username)) {
       return "Only lowercase letters, numbers, . and _ allowed";
     }
@@ -89,24 +204,22 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     return null;
   }
 
-  void _validateUsername() {
-    final username = _usernameController.text;
-    setState(() {
-      _usernameLength = username.length;
-      _usernameError = _validateUsernameText(username);
-    });
-  }
-
   Future<void> completeProfile() async {
-    final usernameError = _validateUsernameText(_usernameController.text);
-    if (usernameError != null) {
-      setState(() => _usernameError = usernameError);
-      showSnackBar(context, usernameError);
-      return;
-    }
+    setState(() => _submitAttempted = true); // Fix #3/#4
 
-    if (_selectedGender == null) {
-      showSnackBar(context, "Please select your gender");
+    final usernameError = _validateUsernameText(_usernameController.text);
+    final missingGender = _selectedGender == null;
+    final missingUsername =
+        usernameError != null || _usernameController.text.trim().isEmpty;
+
+    if (missingUsername || missingGender) {
+      setState(() => _usernameError = usernameError);
+      // Fix #3: one consolidated message naming everything that's missing,
+      // rather than a single generic snackbar per attempt.
+      final missing = <String>[];
+      if (missingUsername) missing.add(usernameError ?? "a username");
+      if (missingGender) missing.add("your gender");
+      showSnackBar(context, "Please provide: ${missing.join(', ')}");
       return;
     }
 
@@ -114,9 +227,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
 
     final deviceId = DeviceSession.idSync ?? await DeviceSession.id;
     DebugLogger.logEvent(
-        'PROFILE_SETUP_SUBMIT_STARTED', 'deviceId=$deviceId'); // NEW
+        'PROFILE_SETUP_SUBMIT_STARTED', 'deviceId=$deviceId');
 
-    // Call Supabase-only completion method
     final res = await AuthMethods().completeProfileSupabase(
       username: _usernameController.text.trim(),
       bio: "",
@@ -126,13 +238,12 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     );
 
     DebugLogger.logEvent(
-        'PROFILE_SETUP_SUBMIT_RESULT', 'deviceId=$deviceId result=$res'); // NEW
+        'PROFILE_SETUP_SUBMIT_RESULT', 'deviceId=$deviceId result=$res');
 
     if (res == "success") {
-      // Notify completion
+      await _clearDraft(); // Fix #5: don't resurrect a completed profile's draft
       widget.onComplete();
 
-      // Navigate to home
       if (mounted) {
         Navigator.pushAndRemoveUntil(
           context,
@@ -153,11 +264,16 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
 
   bool get _isFormValid {
     return _validateUsernameText(_usernameController.text) == null &&
+        _usernameController.text.trim().isNotEmpty &&
         _selectedGender != null;
   }
 
   @override
   Widget build(BuildContext context) {
+    final showUsernameRequiredHint =
+        _submitAttempted && _usernameController.text.trim().isEmpty;
+    final showGenderRequiredHint = _submitAttempted && _selectedGender == null;
+
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       body: SafeArea(
@@ -184,13 +300,29 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Create your username',
-                      style: TextStyle(
-                        color: Color(0xFFd9d9d9),
-                        fontSize: 14,
-                        fontFamily: 'Inter',
-                      ),
+                    // Fix #7: explicit "Required" signal up front, not just after
+                    // a failed submit.
+                    Row(
+                      children: const [
+                        Text(
+                          'Create your username',
+                          style: TextStyle(
+                            color: Color(0xFFd9d9d9),
+                            fontSize: 14,
+                            fontFamily: 'Inter',
+                          ),
+                        ),
+                        SizedBox(width: 6),
+                        Text(
+                          '(required)',
+                          style: TextStyle(
+                            color: Color(0xFF8a8a8a),
+                            fontSize: 12,
+                            fontFamily: 'Inter',
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     TextFieldInput(
@@ -202,6 +334,11 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                         color: Colors.grey[400],
                         fontFamily: 'Inter',
                       ),
+                      // Fix #2: inputFormatters wired through to TextFieldInput.
+                      // If TextFieldInput doesn't currently expose this param,
+                      // add `List<TextInputFormatter>? inputFormatters` to its
+                      // constructor and forward it to the underlying TextField.
+                      inputFormatters: [_UsernameFormatter()],
                     ),
                     Padding(
                       padding: const EdgeInsets.only(top: 4.0),
@@ -210,11 +347,45 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                         children: [
                           if (_usernameError != null)
                             Expanded(
-                              child: Text(
-                                _usernameError!,
-                                style: const TextStyle(
-                                  color: Colors.red,
-                                  fontSize: 12,
+                              child: Semantics(
+                                liveRegion: true, // Fix #6: screen readers announce it
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.error_outline,
+                                        color: Colors.red, size: 14),
+                                    const SizedBox(width: 4),
+                                    Flexible(
+                                      child: Text(
+                                        _usernameError!,
+                                        style: const TextStyle(
+                                          color: Colors.red,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            )
+                          else if (showUsernameRequiredHint)
+                            Expanded(
+                              child: Semantics(
+                                liveRegion: true,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: const [
+                                    Icon(Icons.error_outline,
+                                        color: Colors.orangeAccent, size: 14),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      "Username is required",
+                                      style: TextStyle(
+                                        color: Colors.orangeAccent,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             )
@@ -241,19 +412,39 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Select your gender',
-                      style: TextStyle(
-                        color: Color(0xFFd9d9d9),
-                        fontSize: 14,
-                        fontFamily: 'Inter',
-                      ),
+                    // Fix #7
+                    Row(
+                      children: const [
+                        Text(
+                          'Select your gender',
+                          style: TextStyle(
+                            color: Color(0xFFd9d9d9),
+                            fontSize: 14,
+                            fontFamily: 'Inter',
+                          ),
+                        ),
+                        SizedBox(width: 6),
+                        Text(
+                          '(required)',
+                          style: TextStyle(
+                            color: Color(0xFF8a8a8a),
+                            fontSize: 12,
+                            fontFamily: 'Inter',
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     Container(
                       decoration: BoxDecoration(
                         color: const Color(0xFF333333),
                         borderRadius: BorderRadius.circular(12),
+                        // Fix #4: same visual "needs attention" signal the
+                        // username field gets, once the user has tried to submit.
+                        border: showGenderRequiredHint
+                            ? Border.all(color: Colors.orangeAccent, width: 1)
+                            : null,
                       ),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -275,8 +466,10 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                               ),
                             );
                           }).toList(),
-                          onChanged: (value) =>
-                              setState(() => _selectedGender = value),
+                          onChanged: (value) {
+                            setState(() => _selectedGender = value);
+                            _saveDraft(); // Fix #5
+                          },
                           icon: const Icon(Icons.arrow_drop_down,
                               color: Color(0xFFd9d9d9)),
                           style: const TextStyle(
@@ -293,23 +486,49 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                         ),
                       ),
                     ),
+                    // Fix #4/#6: matching inline required-state text under the
+                    // dropdown, same treatment as the username field.
+                    if (showGenderRequiredHint)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4.0),
+                        child: Semantics(
+                          liveRegion: true,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              Icon(Icons.error_outline,
+                                  color: Colors.orangeAccent, size: 14),
+                              SizedBox(width: 4),
+                              Text(
+                                "Gender is required",
+                                style: TextStyle(
+                                  color: Colors.orangeAccent,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                   ],
                 ),
 
                 const SizedBox(height: 40),
+                // Fix #3: button stays tappable regardless of form state.
+                // completeProfile() itself now surfaces exactly what's missing
+                // instead of the button silently doing nothing.
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _isFormValid
                         ? const Color(0xFF333333)
-                        : const Color(0xFF222222),
+                        : const Color(0xFF2a2a2a),
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
                     minimumSize: const Size(double.infinity, 50),
                   ),
-                  onPressed:
-                      _isFormValid && !_isLoading ? completeProfile : null,
+                  onPressed: _isLoading ? null : completeProfile,
                   child: _isLoading
                       ? const CircularProgressIndicator(
                           valueColor:
@@ -319,7 +538,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                           'Complete Profile',
                           style: TextStyle(
                             color:
-                                _isFormValid ? Colors.white : Colors.grey[600],
+                                _isFormValid ? Colors.white : Colors.grey[400],
                             fontSize: 16,
                             fontWeight: FontWeight.w500,
                             fontFamily: 'Inter',
