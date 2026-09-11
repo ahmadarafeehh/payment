@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:image/image.dart' as img;
 import 'package:photo_manager/photo_manager.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:Ratedly/screens/Profile_page/media_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/add_post_screen.dart';
 import 'package:Ratedly/screens/Profile_page/gallery_picker_screen.dart';
@@ -44,6 +45,12 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   FlashMode _flashMode = FlashMode.off;
   bool _isRecordingVideo = false;
   bool _isCapturing = false;
+
+  // FIX: tracks which permission(s) are missing so _buildPreview() can show
+  // a clear recovery screen instead of spinning forever. Previously a denied
+  // permission was logged but never surfaced to the user at all.
+  bool _cameraDenied = false;
+  bool _microphoneDenied = false;
 
   // Recording timer
   Timer? _recordingTimer;
@@ -145,6 +152,15 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // ===========================================================================
 
   Future<void> _initCamera() async {
+    // Reset any previous denial state on every attempt so a retry after
+    // fixing permissions in Settings actually gets a clean run.
+    if (mounted) {
+      setState(() {
+        _cameraDenied = false;
+        _microphoneDenied = false;
+      });
+    }
+
     await _log('initCamera_start',
         details: 'isFrontCamera=$_isFrontCamera flashMode=${_flashMode.name}');
     try {
@@ -203,6 +219,21 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
               'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
           errorMessage: e.toString());
       await _logError('_initCamera', e);
+
+      // FIX: previously the error was only logged — nothing was shown to
+      // the user, leaving them stuck on an endless loading spinner with no
+      // way forward except force-quitting the app. Now check each
+      // permission individually so the recovery screen can tell the user
+      // exactly what's missing, TikTok-style.
+      final cameraStatus = await Permission.camera.status;
+      final micStatus = await Permission.microphone.status;
+      if (mounted) {
+        setState(() {
+          _isInitialized = false;
+          _cameraDenied = !cameraStatus.isGranted;
+          _microphoneDenied = !micStatus.isGranted;
+        });
+      }
     }
   }
 
@@ -625,6 +656,22 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // ===========================================================================
 
   Widget _buildPreview() {
+    // Nothing has failed yet — genuinely still loading for the first time.
+    if (_controller == null &&
+        !_isInitialized &&
+        !_cameraDenied &&
+        !_microphoneDenied) {
+      return const Center(
+          child: CircularProgressIndicator(color: Colors.white));
+    }
+
+    // FIX: previously a denied permission left _isInitialized false forever
+    // with no recovery path — just an endless spinner. Now show a clear,
+    // TikTok-style screen naming exactly what access is missing.
+    if (!_isInitialized && (_cameraDenied || _microphoneDenied)) {
+      return _buildPermissionGate();
+    }
+
     if (!_isInitialized || _controller == null) {
       return const Center(
           child: CircularProgressIndicator(color: Colors.white));
@@ -643,6 +690,79 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
           width: previewW,
           height: previewH,
           child: CameraPreview(_controller!),
+        ),
+      ),
+    );
+  }
+
+  /// TikTok-style recovery screen shown when camera and/or microphone
+  /// access is missing. Each button opens the phone's Settings directly,
+  /// since re-requesting a permission the user already denied does nothing
+  /// on iOS/Android — the only way forward is Settings.
+  Widget _buildPermissionGate() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Post on Reactly',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 26,
+                fontWeight: FontWeight.w800,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Allow access to your camera and microphone to start recording.',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.6),
+                fontSize: 15,
+                height: 1.4,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 32),
+            if (_cameraDenied)
+              _PermissionPill(
+                icon: Icons.camera_alt_rounded,
+                label: 'Access camera',
+                onTap: () async {
+                  await _log('permissionGate_openSettings',
+                      details: 'trigger=camera');
+                  await openAppSettings();
+                },
+              ),
+            if (_cameraDenied && _microphoneDenied)
+              const SizedBox(height: 14),
+            if (_microphoneDenied)
+              _PermissionPill(
+                icon: Icons.mic_rounded,
+                label: 'Access microphone',
+                onTap: () async {
+                  await _log('permissionGate_openSettings',
+                      details: 'trigger=microphone');
+                  await openAppSettings();
+                },
+              ),
+            const SizedBox(height: 20),
+            GestureDetector(
+              onTap: _openGallery,
+              child: Text(
+                'Upload from Library instead',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.55),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  decoration: TextDecoration.underline,
+                  decorationColor: Colors.white.withOpacity(0.35),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -866,6 +986,49 @@ class _CircleIconButton extends StatelessWidget {
           color: Colors.black.withOpacity(0.35),
         ),
         child: Icon(icon, color: Colors.white, size: size),
+      ),
+    );
+  }
+}
+
+/// TikTok-style pill button used on the permission-recovery screen.
+class _PermissionPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _PermissionPill({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.black, size: 20),
+            const SizedBox(width: 10),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.black,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
