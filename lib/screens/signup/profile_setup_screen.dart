@@ -76,8 +76,10 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
 
     // Fix #2: debounce structural validation instead of validating on every
     // keystroke. Character-set enforcement now happens via the formatter, so
-    // this listener only checks shape rules (leading/trailing/consecutive
-    // punctuation, length) and does so after a short pause in typing.
+    // this listener only checks shape rules (length, consecutive punctuation)
+    // and does so after a short pause in typing — the error text under the
+    // field only appears once the user stops typing for 800ms, not on every
+    // keystroke.
     _usernameController.addListener(_onUsernameChanged);
 
     _restoreDraft(); // Fix #5
@@ -92,7 +94,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
   void _onUsernameChanged() {
     _saveDraft(); // Fix #5: persist on every change, not just on background
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 400), () {
+    _debounce = Timer(const Duration(milliseconds: 800), () {
       if (!mounted) return;
       final username = _usernameController.text;
       setState(() {
@@ -169,10 +171,11 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
   String? _validateUsernameText(String username) {
     if (username.isEmpty) return null;
 
-    // Matches the server-side minimum in auth_methods.dart's
-    // completeProfileSupabase — previously only enforced server-side,
-    // so a 1-2 char username could show green client-side and still get
-    // rejected on submit.
+    // Minimum length: 3 characters. Matches the server-side minimum in
+    // auth_methods.dart's completeProfileSupabase / completeProfile — keep
+    // both in sync, or a username can pass client-side and still fail on
+    // submit (the same class of client/server drift this file's dot-regex
+    // fix already addressed once).
     if (username.length < 3) {
       return "Username must be at least 3 characters";
     }
@@ -187,12 +190,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
       return "Only lowercase letters, numbers, . and _ allowed";
     }
 
-    if (username.startsWith('.') ||
-        username.startsWith('_') ||
-        username.endsWith('.') ||
-        username.endsWith('_')) {
-      return "Cannot start or end with . or _";
-    }
+    // REMOVED (per product decision): the previous startsWith/endsWith '.'
+    // or '_' block. Usernames may now start or end with '.' or '_'.
 
     if (username.contains('..') ||
         username.contains('__') ||
@@ -345,6 +344,9 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
+                          // Debounced: _usernameError is only set 800ms after
+                          // the user stops typing (see _onUsernameChanged), so
+                          // this text never flashes mid-keystroke.
                           if (_usernameError != null)
                             Expanded(
                               child: Semantics(
