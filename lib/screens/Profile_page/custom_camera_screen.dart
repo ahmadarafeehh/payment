@@ -46,16 +46,16 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   bool _isRecordingVideo = false;
   bool _isCapturing = false;
 
-  // FIX: tracks which permission(s) are missing so _buildPreview() can show
-  // a clear recovery screen instead of spinning forever. Previously a denied
+  // Tracks which permission(s) are missing so _buildPreview() can show a
+  // clear recovery screen instead of spinning forever. Previously a denied
   // permission was logged but never surfaced to the user at all.
   bool _cameraDenied = false;
   bool _microphoneDenied = false;
 
-  // FIX (this session): gallery access is checked before navigating to
-  // GalleryPickerScreen. If denied, the same recovery screen is shown with
-  // an "Access gallery" button instead of silently failing to open the
-  // picker (or opening it into an empty/broken state).
+  // Gallery access is checked before navigating to GalleryPickerScreen. If
+  // denied, the same recovery screen is shown with an "Access gallery"
+  // button instead of silently failing to open the picker (or opening it
+  // into an empty/broken state).
   bool _galleryDenied = false;
   bool _checkingGalleryPermission = false;
 
@@ -75,35 +75,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // LOGGING
   // ===========================================================================
 
-  /// Sends a structured log row to the [editprof] table.
-  /// Never throws — all errors are swallowed so logging never breaks the UI.
-  Future<void> _log(
-    String event, {
-    String? details,
-    String? errorMessage,
-  }) async {
-    try {
-      String? userId;
-      try {
-        final user = Provider.of<UserProvider>(context, listen: false).user;
-        userId = user?.uid;
-      } catch (e) {
-        userId = 'provider_unavailable: $e';
-      }
-
-      await Supabase.instance.client.from('editprof').insert({
-        'user_id': userId,
-        'screen': 'CustomCameraScreen',
-        'event': event,
-        'details': details,
-        'error_message': errorMessage,
-      });
-    } catch (e) {
-      // Logging must never crash the app.
-      debugPrint('[editprof] Failed to log "$event": $e');
-    }
-  }
-
   // ===========================================================================
   // LIFECYCLE
   // ===========================================================================
@@ -112,18 +83,12 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _log('initState',
-        details: 'isProfileFlow=$_isProfileFlow '
-            'hasImageResult=${widget.onImageResult != null} '
-            'hasVideoResult=${widget.onVideoResult != null} '
-            'hasPostUploaded=${widget.onPostUploaded != null}');
     _initCamera();
     _loadGalleryThumbnail();
   }
 
   @override
   void dispose() {
-    _log('dispose');
     WidgetsBinding.instance.removeObserver(this);
     _recordingTimer?.cancel();
     _controller?.dispose();
@@ -133,10 +98,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _log('lifecycleChange',
-        details: 'state=${state.name} '
-            'controllerNull=${_controller == null} '
-            'isInitialized=$_isInitialized');
     if (_controller == null || !_isInitialized) return;
     if (state == AppLifecycleState.inactive) {
       // FIX: previously this disposed the controller without clearing
@@ -160,24 +121,24 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
 
   Future<void> _initCamera() async {
     // Reset any previous denial state on every attempt so a retry after
-    // fixing permissions in Settings actually gets a clean run.
+    // fixing permissions in Settings actually gets a clean run. Also clears
+    // _galleryDenied: reaching _initCamera() means we're (re)entering the
+    // camera flow, so any leftover gallery-gate state from earlier in this
+    // screen's lifetime shouldn't linger and combine with a fresh
+    // camera/mic denial.
     if (mounted) {
       setState(() {
         _cameraDenied = false;
         _microphoneDenied = false;
+        _galleryDenied = false;
       });
     }
 
-    await _log('initCamera_start',
-        details: 'isFrontCamera=$_isFrontCamera flashMode=${_flashMode.name}');
     try {
       _cameras = await availableCameras();
-      await _log('initCamera_camerasFound',
-          details: 'count=${_cameras.length} '
-              'directions=${_cameras.map((c) => c.lensDirection.name).join(',')}');
-
+      
       if (_cameras.isEmpty) {
-        await _log('initCamera_noCameras');
+        
         return;
       }
 
@@ -189,10 +150,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
               (c) => c.lensDirection == CameraLensDirection.back,
               orElse: () => _cameras.first);
 
-      await _log('initCamera_selectedCamera',
-          details:
-              'name=${camera.name} direction=${camera.lensDirection.name}');
-
       final controller = CameraController(
         camera,
         ResolutionPreset.high,
@@ -201,31 +158,29 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       );
 
       await controller.initialize();
-      await _log('initCamera_controllerInitialized',
-          details: 'previewSize=${controller.value.previewSize}');
-
+      
       await controller.setFlashMode(_flashMode);
-      await _log('initCamera_flashSet',
-          details: 'flashMode=${_flashMode.name}');
-
+      
       if (mounted) {
         setState(() {
           _controller = controller;
           _isInitialized = true;
         });
-        await _log('initCamera_success');
+        
       } else {
-        await _log('initCamera_notMounted_afterInit');
+        
         // Screen was disposed while initializing — don't leak the session.
         await controller.dispose();
       }
     } catch (e, st) {
       final stStr = st.toString();
-      await _log('initCamera_error',
-          details:
-              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
-          errorMessage: e.toString());
-      await _logError('_initCamera', e);
+      
+      await _logError('_initCamera', e,
+          stackTrace: stStr,
+          additionalData: {
+            'isFrontCamera': _isFrontCamera,
+            'cameraCount': _cameras.length,
+          });
 
       // FIX: previously the error was only logged — nothing was shown to
       // the user, leaving them stuck on an endless loading spinner with no
@@ -245,19 +200,33 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   }
 
   Future<void> _switchCamera() async {
-    await _log('switchCamera_start',
-        details:
-            'currentFront=$_isFrontCamera cameraCount=${_cameras.length}');
+    
     if (_cameras.length < 2) {
-      await _log('switchCamera_skipped', details: 'only one camera available');
+      
       return;
     }
-    setState(() => _isInitialized = false);
-    await _controller?.dispose();
-    _controller = null;
-    _isFrontCamera = !_isFrontCamera;
-    await _log('switchCamera_switching', details: 'newFront=$_isFrontCamera');
-    await _initCamera();
+    try {
+      setState(() => _isInitialized = false);
+      await _controller?.dispose();
+      _controller = null;
+      _isFrontCamera = !_isFrontCamera;
+      
+      await _initCamera();
+    } catch (e, st) {
+      // FIX: previously this method had no error handling at all — if
+      // disposing the old controller or switching lenses failed, nothing
+      // was logged anywhere, and the user could be left on a broken
+      // preview with zero record of it happening. Logged to both tables
+      // since a broken preview can block posting entirely.
+      final stStr = st.toString();
+      
+      await _logError('_switchCamera', e,
+          stackTrace: stStr,
+          additionalData: {'switchingToFront': _isFrontCamera});
+      if (mounted) {
+        setState(() => _isInitialized = false);
+      }
+    }
   }
 
   Future<void> _toggleFlash() async {
@@ -277,9 +246,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     try {
       await _controller!.setFlashMode(next);
       setState(() => _flashMode = next);
-      await _log('toggleFlash', details: 'from=${prev.name} to=${next.name}');
+      
     } catch (e) {
-      await _log('toggleFlash_error', errorMessage: e.toString());
+      
     }
   }
 
@@ -310,9 +279,12 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     if (_controller == null || !_isInitialized) return;
     try {
       await _controller!.pausePreview();
-      await _log('pausePreview_success');
+      
     } catch (e) {
-      await _log('pausePreview_error', errorMessage: e.toString());
+      
+      // FIX: previously only logged for observability, not error-tracked. Doesn't block posting, but now
+      // also recorded in posts_errors for visibility.
+      await _logError('_pausePreview', e);
     }
   }
 
@@ -322,9 +294,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     if (!mounted || _controller == null || !_isInitialized) return;
     try {
       await _controller!.resumePreview();
-      await _log('resumePreview_success');
     } catch (e) {
-      await _log('resumePreview_error', errorMessage: e.toString());
+      // Resume failures are non-fatal (preview just stays paused); no
+      // dedicated error log for this path.
     }
   }
 
@@ -333,51 +305,42 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // ===========================================================================
 
   Future<void> _loadGalleryThumbnail() async {
-    await _log('loadGalleryThumbnail_start');
+    
     try {
       final permission = await PhotoManager.requestPermissionExtend();
-      await _log('loadGalleryThumbnail_permission',
-          details:
-              'isAuth=${permission.isAuth} status=${permission.name}');
+      
       if (!permission.isAuth) return;
 
       final albums = await PhotoManager.getAssetPathList(
         type: RequestType.common,
         onlyAll: true,
       );
-      await _log('loadGalleryThumbnail_albums',
-          details: 'albumCount=${albums.length}');
+      
       if (albums.isEmpty) return;
 
       final assets =
           await albums.first.getAssetListRange(start: 0, end: 1);
-      await _log('loadGalleryThumbnail_assets',
-          details: 'assetCount=${assets.length}');
+      
       if (assets.isEmpty) return;
 
       final asset = assets.first;
       final thumb =
           await asset.thumbnailDataWithSize(const ThumbnailSize(200, 200));
 
-      await _log('loadGalleryThumbnail_thumb',
-          details: 'thumbNull=${thumb == null} '
-              'assetType=${asset.type.name} '
-              'assetId=${asset.id}');
-
       if (mounted && thumb != null) {
         setState(() {
           _galleryThumbnail = thumb;
           _lastGalleryAssetIsVideo = asset.type == AssetType.video;
         });
-        await _log('loadGalleryThumbnail_success',
-            details: 'isVideo=$_lastGalleryAssetIsVideo');
+        
       }
     } catch (e, st) {
       final stStr = st.toString();
-      await _log('loadGalleryThumbnail_error',
-          details:
-              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
-          errorMessage: e.toString());
+      
+      // FIX: previously only logged for observability, not error-tracked. Doesn't block posting (only the
+      // thumbnail preview is affected), but now also recorded in
+      // posts_errors for a single-table view of all posting-flow issues.
+      await _logError('_loadGalleryThumbnail', e, stackTrace: stStr);
     }
   }
 
@@ -386,9 +349,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // ===========================================================================
 
   Future<void> _onShutterTap() async {
-    await _log('shutterTap',
-        details:
-            'isRecordingVideo=$_isRecordingVideo isCapturing=$_isCapturing');
+    
     if (_isRecordingVideo) {
       await _stopVideoRecording();
     } else {
@@ -397,47 +358,38 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   }
 
   Future<void> _capturePhoto() async {
-    await _log('capturePhoto_start',
-        details: 'controllerNull=${_controller == null} '
-            'isInitialized=$_isInitialized '
-            'isCapturing=$_isCapturing '
-            'isProfileFlow=$_isProfileFlow '
-            'hasImageResult=${widget.onImageResult != null}');
-
+    
     if (_controller == null || !_isInitialized || _isCapturing) {
-      await _log('capturePhoto_skipped',
-          details: 'controllerNull=${_controller == null} '
-              'isInitialized=$_isInitialized '
-              'isCapturing=$_isCapturing');
+      
       return;
     }
     setState(() => _isCapturing = true);
 
     try {
       final XFile photo = await _controller!.takePicture();
-      await _log('capturePhoto_taken', details: 'path=${photo.path}');
-
+      
       Uint8List bytes = await photo.readAsBytes();
-      await _log('capturePhoto_bytesRead',
-          details: 'byteLength=${bytes.length} isFront=$_isFrontCamera');
-
+      
       if (_isFrontCamera) {
         final decoded = img.decodeJpg(bytes);
         if (decoded != null) {
           final flipped = img.flipHorizontal(decoded);
           bytes =
               Uint8List.fromList(img.encodeJpg(flipped, quality: 92));
-          await _log('capturePhoto_frontFlipped',
-              details: 'newByteLength=${bytes.length}');
+          
         } else {
-          await _log('capturePhoto_decodeFailedSkippingFlip');
+          // FIX: previously this wasn't logged as an error. The photo still
+          // gets posted (unflipped/mirrored), so this doesn't block
+          // posting outright, but a failed decode can indicate a
+          // corrupted capture, so it's now also recorded in posts_errors
+          // for visibility alongside other posting-flow issues.
+          
+          await _logError(
+              '_capturePhoto_decodeFailedSkippingFlip',
+              'decodeJpg returned null',
+              additionalData: {'byteLength': bytes.length});
         }
       }
-
-      await _log('capturePhoto_navigating',
-          details: 'pushingMediaEditScreen '
-              'hasOnResult=${widget.onImageResult != null} '
-              'hasOnPostUploaded=${widget.onPostUploaded != null}');
 
       if (mounted) {
         // FIX: pause the live camera preview before this screen gets
@@ -460,23 +412,19 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
             ),
           ),
         );
-        await _log('capturePhoto_navigated');
-
+        
         // Only reached if the user backed out without completing a post
         // (on success, postMedia() pops this route away entirely via
         // popUntil('cameraFromProfile') + pop(), so this screen — and this
         // resume call — never comes back into play).
         await _resumePreviewSafely();
       } else {
-        await _log('capturePhoto_notMounted_beforeNavigate');
+        
       }
     } catch (e, st) {
       final stStr = st.toString();
-      await _log('capturePhoto_error',
-          details:
-              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
-          errorMessage: e.toString());
-      await _logError('_capturePhoto', e);
+      
+      await _logError('_capturePhoto', e, stackTrace: stStr);
       if (mounted) _showError('Could not capture photo. Please try again.');
     } finally {
       if (mounted) setState(() => _isCapturing = false);
@@ -484,13 +432,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   }
 
   Future<void> _startVideoRecording() async {
-    await _log('startVideoRecording_start',
-        details: 'controllerNull=${_controller == null} '
-            'isInitialized=$_isInitialized '
-            'isRecording=$_isRecordingVideo');
-
+    
     if (_controller == null || !_isInitialized || _isRecordingVideo) {
-      await _log('startVideoRecording_skipped');
+      
       return;
     }
     try {
@@ -499,49 +443,32 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
         _isRecordingVideo = true;
         _recordingSeconds = 0;
       });
-      await _log('startVideoRecording_started');
+      
       _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() => _recordingSeconds++);
       });
     } catch (e, st) {
       final stStr = st.toString();
-      await _log('startVideoRecording_error',
-          details:
-              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
-          errorMessage: e.toString());
-      await _logError('_startVideoRecording', e);
+      
+      await _logError('_startVideoRecording', e, stackTrace: stStr);
     }
   }
 
   Future<void> _stopVideoRecording() async {
-    await _log('stopVideoRecording_start',
-        details: 'controllerNull=${_controller == null} '
-            'isRecording=$_isRecordingVideo '
-            'elapsedSeconds=$_recordingSeconds '
-            'isProfileFlow=$_isProfileFlow '
-            'hasVideoResult=${widget.onVideoResult != null}');
-
+    
     if (_controller == null || !_isRecordingVideo) {
-      await _log('stopVideoRecording_skipped');
+      
       return;
     }
     try {
       final XFile video = await _controller!.stopVideoRecording();
-      await _log('stopVideoRecording_stopped',
-          details:
-              'path=${video.path} elapsedSeconds=$_recordingSeconds');
-
+      
       _recordingTimer?.cancel();
       _recordingTimer = null;
       setState(() {
         _isRecordingVideo = false;
         _recordingSeconds = 0;
       });
-
-      await _log('stopVideoRecording_navigating',
-          details: 'pushingVideoEditScreen '
-              'hasOnResult=${widget.onVideoResult != null} '
-              'hasOnPostUploaded=${widget.onPostUploaded != null}');
 
       if (mounted) {
         // FIX: same rationale as _capturePhoto() — pause the live preview
@@ -562,12 +489,11 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
             ),
           ),
         );
-        await _log('stopVideoRecording_navigated');
-
+        
         // Only reached if the user backed out without completing a post.
         await _resumePreviewSafely();
       } else {
-        await _log('stopVideoRecording_notMounted_beforeNavigate');
+        
       }
     } catch (e, st) {
       _recordingTimer?.cancel();
@@ -577,11 +503,10 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
         _recordingSeconds = 0;
       });
       final stStr = st.toString();
-      await _log('stopVideoRecording_error',
-          details:
-              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
-          errorMessage: e.toString());
-      await _logError('_stopVideoRecording', e);
+      
+      await _logError('_stopVideoRecording', e,
+          stackTrace: stStr,
+          additionalData: {'elapsedSeconds': _recordingSeconds});
     }
   }
 
@@ -590,41 +515,48 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // ===========================================================================
 
   void _openGallery() async {
-    await _log('openGallery_start',
-        details: 'mounted=$mounted '
-            'isProfileFlow=$_isProfileFlow '
-            'hasImageResult=${widget.onImageResult != null} '
-            'hasVideoResult=${widget.onVideoResult != null} '
-            'hasPostUploaded=${widget.onPostUploaded != null}');
-
+    
     if (!mounted) {
-      await _log('openGallery_notMounted');
+      
       return;
     }
 
-    // FIX (this session): check gallery permission before navigating.
-    // Previously this always pushed GalleryPickerScreen regardless of
-    // permission state, silently failing/looking broken if access was
-    // denied. Now, a denial shows the same "Post on Reactly" recovery
-    // screen used for camera/mic, with an "Access gallery" button.
+    // Check gallery permission before navigating. Previously this always
+    // pushed GalleryPickerScreen regardless of permission state, silently
+    // failing/looking broken if access was denied. A denial shows the same
+    // "Post on Reactly" recovery screen used for camera/mic, with an
+    // "Access gallery" button.
     if (mounted) setState(() => _checkingGalleryPermission = true);
     final permission = await PhotoManager.requestPermissionExtend();
     if (mounted) setState(() => _checkingGalleryPermission = false);
 
-    await _log('openGallery_permissionChecked',
-        details: 'isAuth=${permission.isAuth} status=${permission.name}');
-
     if (!permission.isAuth) {
-      if (mounted) setState(() => _galleryDenied = true);
+      // FIX: previously wasn't logged as an error. This blocks the user's
+      // gallery-posting path entirely, so it's now also recorded in
+      // posts_errors for visibility alongside other posting-flow issues.
+      await _logError('_openGallery_permission_denied', 'Gallery access denied',
+          additionalData: {'permissionStatus': permission.name});
+      if (mounted) {
+        setState(() {
+          _galleryDenied = true;
+          // FIX: previously _cameraDenied/_microphoneDenied were left
+          // untouched here. If the user reached this method via "Upload
+          // from Library instead" on the camera/mic gate (i.e. camera and
+          // mic were already denied), all three flags would end up true
+          // simultaneously, and _buildPermissionGate() would render all
+          // three pills together since each is gated by an independent
+          // `if`, not a mutually exclusive branch. Explicitly clearing the
+          // camera/mic flags here makes the gallery gate show only the
+          // gallery pill, and correctly unlocks the "Back to camera"
+          // escape-hatch link (which requires both flags to be false).
+          _cameraDenied = false;
+          _microphoneDenied = false;
+        });
+      }
       return;
     }
 
     if (mounted) setState(() => _galleryDenied = false);
-
-    await _log('openGallery_navigating',
-        details: 'GalleryPickerScreen '
-            'onImageResult=${widget.onImageResult != null} '
-            'onVideoResult=${widget.onVideoResult != null}');
 
     // FIX: same rationale as the camera-capture paths — this screen (and
     // its live preview) stays mounted underneath the gallery picker and
@@ -645,7 +577,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       ),
     );
 
-    await _log('openGallery_navigated');
     await _resumePreviewSafely();
   }
 
@@ -653,14 +584,25 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // HELPERS
   // ===========================================================================
 
-  /// Legacy error logger kept for backward compatibility.
-  Future<void> _logError(String operation, dynamic error) async {
+  /// Legacy error logger kept for backward compatibility, extended to make
+  /// use of the full posts_errors schema (stack_trace, additional_data)
+  /// instead of only user_id/operation_type/error_message. media_url is
+  /// left null here since this file doesn't have a media URL at the point
+  /// most of these errors occur (they're pre-upload, camera/gallery-side).
+  Future<void> _logError(
+    String operation,
+    dynamic error, {
+    String? stackTrace,
+    Map<String, dynamic>? additionalData,
+  }) async {
     try {
       final user = Provider.of<UserProvider>(context, listen: false).user;
       await Supabase.instance.client.from('posts_errors').insert({
         'user_id': user?.uid,
         'operation_type': 'camera/$operation',
         'error_message': error.toString(),
+        'stack_trace': stackTrace,
+        'additional_data': additionalData,
       });
     } catch (_) {}
   }
@@ -684,6 +626,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   Widget _buildPreview() {
     // Gallery was denied via the gallery button — show the gate regardless
     // of camera state, since the user explicitly tried to use the gallery.
+    // (As of the fix in _openGallery(), _cameraDenied/_microphoneDenied are
+    // guaranteed false whenever _galleryDenied is true, so this always
+    // renders the gallery-only gate.)
     if (_galleryDenied) {
       return _buildPermissionGate();
     }
@@ -731,6 +676,11 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   /// gallery access is missing. Each button opens the phone's Settings
   /// directly, since re-requesting a permission the user already denied
   /// does nothing on iOS/Android — the only way forward is Settings.
+  ///
+  /// _cameraDenied/_microphoneDenied and _galleryDenied are maintained as
+  /// mutually exclusive states (see _openGallery() and _initCamera()), so
+  /// this never renders a mix of the camera/mic pills and the gallery pill
+  /// together.
   Widget _buildPermissionGate() {
     return Center(
       child: Padding(
@@ -765,8 +715,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                 icon: Icons.camera_alt_rounded,
                 label: 'Access camera',
                 onTap: () async {
-                  await _log('permissionGate_openSettings',
-                      details: 'trigger=camera');
+                  
                   await openAppSettings();
                 },
               ),
@@ -777,8 +726,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                 icon: Icons.mic_rounded,
                 label: 'Access microphone',
                 onTap: () async {
-                  await _log('permissionGate_openSettings',
-                      details: 'trigger=microphone');
+                  
                   await openAppSettings();
                 },
               ),
@@ -787,8 +735,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                 icon: Icons.photo_library_rounded,
                 label: 'Access gallery',
                 onTap: () async {
-                  await _log('permissionGate_openSettings',
-                      details: 'trigger=gallery');
+                  
                   await openAppSettings();
                 },
               ),
@@ -857,10 +804,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                   children: [
                     _CircleIconButton(
                       icon: Icons.close,
-                      onTap: () {
-                        _log('closeTapped');
-                        Navigator.pop(context);
-                      },
+                      onTap: () => Navigator.pop(context),
                     ),
                     _CircleIconButton(
                       icon: _flashIcon,
