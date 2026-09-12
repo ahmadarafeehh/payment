@@ -52,6 +52,13 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   bool _cameraDenied = false;
   bool _microphoneDenied = false;
 
+  // FIX (this session): gallery access is checked before navigating to
+  // GalleryPickerScreen. If denied, the same recovery screen is shown with
+  // an "Access gallery" button instead of silently failing to open the
+  // picker (or opening it into an empty/broken state).
+  bool _galleryDenied = false;
+  bool _checkingGalleryPermission = false;
+
   // Recording timer
   Timer? _recordingTimer;
   int _recordingSeconds = 0;
@@ -595,6 +602,25 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       return;
     }
 
+    // FIX (this session): check gallery permission before navigating.
+    // Previously this always pushed GalleryPickerScreen regardless of
+    // permission state, silently failing/looking broken if access was
+    // denied. Now, a denial shows the same "Post on Reactly" recovery
+    // screen used for camera/mic, with an "Access gallery" button.
+    if (mounted) setState(() => _checkingGalleryPermission = true);
+    final permission = await PhotoManager.requestPermissionExtend();
+    if (mounted) setState(() => _checkingGalleryPermission = false);
+
+    await _log('openGallery_permissionChecked',
+        details: 'isAuth=${permission.isAuth} status=${permission.name}');
+
+    if (!permission.isAuth) {
+      if (mounted) setState(() => _galleryDenied = true);
+      return;
+    }
+
+    if (mounted) setState(() => _galleryDenied = false);
+
     await _log('openGallery_navigating',
         details: 'GalleryPickerScreen '
             'onImageResult=${widget.onImageResult != null} '
@@ -656,6 +682,12 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // ===========================================================================
 
   Widget _buildPreview() {
+    // Gallery was denied via the gallery button — show the gate regardless
+    // of camera state, since the user explicitly tried to use the gallery.
+    if (_galleryDenied) {
+      return _buildPermissionGate();
+    }
+
     // Nothing has failed yet — genuinely still loading for the first time.
     if (_controller == null &&
         !_isInitialized &&
@@ -695,10 +727,10 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     );
   }
 
-  /// TikTok-style recovery screen shown when camera and/or microphone
-  /// access is missing. Each button opens the phone's Settings directly,
-  /// since re-requesting a permission the user already denied does nothing
-  /// on iOS/Android — the only way forward is Settings.
+  /// TikTok-style recovery screen shown when camera, microphone, and/or
+  /// gallery access is missing. Each button opens the phone's Settings
+  /// directly, since re-requesting a permission the user already denied
+  /// does nothing on iOS/Android — the only way forward is Settings.
   Widget _buildPermissionGate() {
     return Center(
       child: Padding(
@@ -717,7 +749,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
             ),
             const SizedBox(height: 14),
             Text(
-              'Allow access to your camera and microphone to start recording.',
+              _galleryDenied
+                  ? 'Allow access to your photos to choose something to post.'
+                  : 'Allow access to your camera and microphone to start recording.',
               style: TextStyle(
                 color: Colors.white.withOpacity(0.6),
                 fontSize: 15,
@@ -726,7 +760,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),
-            if (_cameraDenied)
+            if (_cameraDenied) ...[
               _PermissionPill(
                 icon: Icons.camera_alt_rounded,
                 label: 'Access camera',
@@ -736,8 +770,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                   await openAppSettings();
                 },
               ),
-            if (_cameraDenied && _microphoneDenied)
-              const SizedBox(height: 14),
+              if (_microphoneDenied) const SizedBox(height: 14),
+            ],
             if (_microphoneDenied)
               _PermissionPill(
                 icon: Icons.mic_rounded,
@@ -748,20 +782,49 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                   await openAppSettings();
                 },
               ),
+            if (_galleryDenied)
+              _PermissionPill(
+                icon: Icons.photo_library_rounded,
+                label: 'Access gallery',
+                onTap: () async {
+                  await _log('permissionGate_openSettings',
+                      details: 'trigger=gallery');
+                  await openAppSettings();
+                },
+              ),
             const SizedBox(height: 20),
-            GestureDetector(
-              onTap: _openGallery,
-              child: Text(
-                'Upload from Library instead',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.55),
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  decoration: TextDecoration.underline,
-                  decorationColor: Colors.white.withOpacity(0.35),
+            // A single, context-appropriate escape hatch: offer the gallery
+            // as an alternative when camera/mic is the problem, or offer a
+            // way back to camera when gallery is the problem (and camera
+            // itself is fine).
+            if (!_galleryDenied)
+              GestureDetector(
+                onTap: _openGallery,
+                child: Text(
+                  'Upload from Library instead',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.55),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    decoration: TextDecoration.underline,
+                    decorationColor: Colors.white.withOpacity(0.35),
+                  ),
+                ),
+              )
+            else if (!_cameraDenied && !_microphoneDenied)
+              GestureDetector(
+                onTap: () => setState(() => _galleryDenied = false),
+                child: Text(
+                  'Back to camera',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.55),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    decoration: TextDecoration.underline,
+                    decorationColor: Colors.white.withOpacity(0.35),
+                  ),
                 ),
               ),
-            ),
           ],
         ),
       ),
@@ -860,7 +923,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                   children: [
                     // Gallery thumbnail
                     GestureDetector(
-                      onTap: _openGallery,
+                      onTap: _checkingGalleryPermission ? null : _openGallery,
                       child: Container(
                         width: 56,
                         height: 56,
@@ -877,20 +940,31 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                                 )
                               : null,
                         ),
-                        child: _galleryThumbnail == null
-                            ? Icon(Icons.photo_library_rounded,
-                                color: Colors.white.withOpacity(0.6),
-                                size: 22)
-                            : _lastGalleryAssetIsVideo
-                                ? const Align(
-                                    alignment: Alignment.topRight,
-                                    child: Padding(
-                                      padding: EdgeInsets.all(3),
-                                      child: Icon(Icons.play_circle_fill,
-                                          color: Colors.white, size: 14),
-                                    ),
-                                  )
-                                : null,
+                        child: _checkingGalleryPermission
+                            ? const Center(
+                                child: SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                              )
+                            : _galleryThumbnail == null
+                                ? Icon(Icons.photo_library_rounded,
+                                    color: Colors.white.withOpacity(0.6),
+                                    size: 22)
+                                : _lastGalleryAssetIsVideo
+                                    ? const Align(
+                                        alignment: Alignment.topRight,
+                                        child: Padding(
+                                          padding: EdgeInsets.all(3),
+                                          child: Icon(Icons.play_circle_fill,
+                                              color: Colors.white, size: 14),
+                                        ),
+                                      )
+                                    : null,
                       ),
                     ),
 
