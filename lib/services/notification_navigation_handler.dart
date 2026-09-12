@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/screens/Profile_page/other_user_profile.dart';
 // ⚠️ Adjust this path if FeedMessages lives in a different directory.
@@ -50,12 +52,53 @@ class NotificationNavigationHandler {
     'streak_expiring',
   };
 
+  // Event types that represent a real problem (missed navigation, missing
+  // data, thrown exception) rather than a normal informational breadcrumb.
+  // These get mirrored into `notification_errors` with severity 'error',
+  // in addition to the existing `notification_tap_logs` write, so they show
+  // up in one place alongside the notification-service-side errors.
+  static const _errorEventTypes = {
+    'prefetch_post_not_found',
+    'prefetch_owner_uid_empty',
+    'prefetch_user_not_found',
+    'prefetch_error',
+    'type_not_handled',
+    'post_id_missing',
+    'follower_uid_missing',
+    'navigator_not_ready',
+    'navigator_lost_after_fetch',
+    'post_not_found',
+    'post_owner_uid_empty',
+    'user_not_found',
+    'error',
+    'log_write_failed',
+  };
+
   // ── Overlay control ──────────────────────────────────────────────────────
   static final isNavigatingToPost = ValueNotifier<bool>(false);
 
   // ── Cold/warm-start support ──────────────────────────────────────────────
   static Map<String, dynamic>? _pendingData;
   static _PreFetchedPostData? _prefetchedPostData;
+
+  // ── Platform helpers (mirrors NotificationService) ───────────────────────
+  static String get _platformName {
+    try {
+      if (Platform.isIOS) return 'ios';
+      if (Platform.isAndroid) return 'android';
+      return Platform.operatingSystem;
+    } catch (_) {
+      return 'unknown';
+    }
+  }
+
+  static String? get _osVersion {
+    try {
+      return Platform.operatingSystemVersion;
+    } catch (_) {
+      return null;
+    }
+  }
 
   // ── Wait for Supabase session ────────────────────────────────────────────
   static Future<void> _waitForSupabaseSession() async {
@@ -642,6 +685,12 @@ class NotificationNavigationHandler {
       );
 
   // ── Logging helper ────────────────────────────────────────────────────────
+  // Writes to notification_tap_logs as before (unchanged behavior), and
+  // additionally mirrors error-worthy events into `notification_errors` —
+  // the same table NotificationService writes to — so navigation-side
+  // failures show up alongside init/send/display failures in one place,
+  // with platform + OS version attached (which notification_tap_logs never
+  // captured).
   static Future<void> _log({
     required String eventType,
     String? notificationType,
@@ -670,6 +719,69 @@ class NotificationNavigationHandler {
     } catch (e, st) {
       debugPrint(
           '[NotifLog] ⚠️ Failed to write log (event=$eventType): $e\n$st');
+      // The write to notification_tap_logs itself failed — still worth a
+      // best-effort attempt at notification_errors, since it's a distinct
+      // table/write and may succeed even if this one didn't.
+      await _logToErrorsTable(
+        eventType: 'log_write_failed',
+        notificationType: notificationType,
+        errorMessage: e.toString(),
+        stackTrace: st.toString(),
+        additionalData: {
+          'original_event_type': eventType,
+          'original_post_id': postId,
+        },
+      );
+    }
+
+    if (_errorEventTypes.contains(eventType)) {
+      await _logToErrorsTable(
+        eventType: eventType,
+        notificationType: notificationType,
+        errorMessage: errorMessage,
+        stackTrace: stackTrace,
+        additionalData: {
+          if (postId != null) 'post_id': postId,
+          if (navigatorReady != null) 'navigator_ready': navigatorReady,
+          if (navigatorAttempts != null) 'navigator_attempts': navigatorAttempts,
+          if (rawData != null) 'raw_data': rawData,
+          ...?additionalData,
+        },
+      );
+    }
+  }
+
+  // ── notification_errors writer ───────────────────────────────────────────
+  static Future<void> _logToErrorsTable({
+    required String eventType,
+    String? notificationType,
+    String? errorMessage,
+    String? stackTrace,
+    Map<String, dynamic>? additionalData,
+  }) async {
+    try {
+      String? targetUserId;
+      try {
+        targetUserId = firebase_auth.FirebaseAuth.instance.currentUser?.uid ??
+            Supabase.instance.client.auth.currentUser?.id;
+      } catch (_) {
+        // ignore — targetUserId stays null
+      }
+
+      await Supabase.instance.client.from('notification_errors').insert({
+        'target_user_id': targetUserId,
+        'platform': _platformName,
+        'os_version': _osVersion,
+        'app_stage': 'navigation',
+        'event_type': eventType,
+        'severity': 'error',
+        'error_message': errorMessage,
+        'stack_trace': stackTrace,
+        'notification_type': notificationType,
+        'additional_data': additionalData ?? {},
+      });
+    } catch (e) {
+      debugPrint('[NotifErrorLog] failed to write notification_errors: $e');
     }
   }
 
