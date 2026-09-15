@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:Ratedly/screens/login.dart';
+import 'package:Ratedly/screens/first_time/welcome_screen.dart';
 import 'package:Ratedly/screens/signup/age_screen.dart';
 import 'package:Ratedly/screens/signup/profile_setup_screen.dart';
 import 'package:Ratedly/responsive/mobile_screen_layout.dart';
@@ -124,7 +124,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         _userId = supabaseSession.user.id;
       } else {
         DebugLogger.logEvent(
-            'ONBOARDING_FLOW: no user found — will redirect to login');
+            'ONBOARDING_FLOW: no user found — will redirect to WelcomeScreen');
         if (mounted) setState(() => _backgroundCheckDone = true);
         return;
       }
@@ -238,13 +238,13 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     final firebaseUser = _auth.currentUser;
     final supabaseSession = _supabase.auth.currentSession;
 
-    // No auth session at all — send to login
+    // No auth session at all — send to the single Google/Apple entry screen
     if (firebaseUser == null &&
         supabaseSession == null &&
         _backgroundCheckDone) {
       DebugLogger.logEvent(
-          'ONBOARDING_FLOW: build() — no auth session, redirecting to LoginScreen');
-      return const LoginScreen();
+          'ONBOARDING_FLOW: build() — no auth session, redirecting to WelcomeScreen');
+      return const WelcomeScreen();
     }
 
     // Background check confirmed onboarding is done — show home
