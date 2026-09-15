@@ -61,11 +61,6 @@ class AuthMethods {
   // =============================================
   // DEVICE-ID LINK-BACK
   // =============================================
-  // Once a real uid exists (new account created), retroactively attach that
-  // uid to every pre-signup log row that was tagged with this device's
-  // anonymous session id. This makes a user's full journey — from the very
-  // first GetStartedPage view through signup — traceable after the fact.
-  // Safe to call multiple times; a no-op if there are no matching rows.
   Future<void> _linkDeviceLogsToUid(String realUid) async {
     try {
       final deviceId = DeviceSession.idSync ?? await DeviceSession.id;
@@ -86,7 +81,6 @@ class AuthMethods {
       DebugLogger.logEvent(
           'DEVICE_LOGS_LINKED', 'deviceId=$deviceId realUid=$realUid');
     } catch (e) {
-      // Linking is best-effort — never let it block signup.
       DebugLogger.logError('LINK_DEVICE_LOGS', e);
     }
   }
@@ -275,20 +269,9 @@ class AuthMethods {
           .eq('supabase_uid', session.user.id)
           .limit(1);
 
-      // FIX-PHANTOM: before assuming "not found under supabase_uid" means
-      // this is a brand new user, check whether a real account already
-      // exists for this person under their Firebase uid or email — mirrors
-      // the fallback lookups auth_wrapper.dart's _handleSupabaseSession
-      // already does correctly (Steps 1-2). Without this, a migrated user
-      // whose real row is still keyed by their old Firebase uid (because
-      // supabase_uid hasn't been linked onto it yet) gets a brand new,
-      // blank, orphaned row created here instead — confirmed in production
-      // as accounts with uid == supabase_uid, onboardingComplete=false,
-      // permanently blank, on both Android and iOS.
       if (userRecords.isEmpty) {
         final firebaseUser = _auth.currentUser;
 
-        // Fallback 1: match by Firebase uid (the migration path).
         if (firebaseUser != null) {
           final byFirebaseUid = await _supabase
               .from('users')
@@ -311,7 +294,6 @@ class AuthMethods {
           }
         }
 
-        // Fallback 2: match by email, for an unmigrated record.
         if (userRecords.isEmpty && session.user.email != null) {
           final byEmail = await _supabase
               .from('users')
@@ -338,8 +320,6 @@ class AuthMethods {
       }
 
       if (userRecords.isEmpty) {
-        // Genuinely no existing record under supabase_uid, Firebase uid, or
-        // email — this really is a brand new user.
         DebugLogger.logEvent('CHECK_ONBOARDING_CREATING_NEW_USER',
             'supabaseUid=${session.user.id}');
         try {
@@ -362,12 +342,8 @@ class AuthMethods {
             'test': Random().nextBool(),
           }, onConflict: 'uid');
 
-          // NEW: link this device's anonymous pre-signup logs to the
-          // real uid now that the account exists.
           await _linkDeviceLogsToUid(session.user.id);
         } catch (e) {
-          // FIX: previously silently ignored. Now logged so a failed
-          // account-creation upsert is actually visible.
           DebugLogger.log(
             eventName: 'CHECK_ONBOARDING_USER_CREATE_ERROR',
             errorDetails: e.toString(),
@@ -390,7 +366,6 @@ class AuthMethods {
 
       return hasCompletedOnboarding ? "success" : "onboarding_required";
     } catch (e) {
-      // FIX: previously silently swallowed. Now logged.
       DebugLogger.log(
         eventName: 'CHECK_ONBOARDING_UNEXPECTED_ERROR',
         errorDetails: e.toString(),
@@ -420,14 +395,6 @@ class AuthMethods {
         return "Username must be at least 3 characters";
       if (processedUsername.length > 20)
         return "Username cannot exceed 20 characters";
-      // FIX: this regex previously excluded '.', contradicting the client
-      // (profile_setup_screen.dart), which explicitly allows and documents
-      // '.' as a valid username character. A username like "john.doe" would
-      // pass client-side validation (button green) and then fail here with
-      // a message that flatly disagreed with what the input screen just
-      // told the user was fine — a likely contributor to repeated,
-      // unexplained submission failures. Now uses the same allowed-char set
-      // as the client instead of a second, silently-diverging regex.
       if (!_usernameAllowedChars.hasMatch(processedUsername)) {
         return "Username can only contain letters, numbers, '.', and underscores";
       }
@@ -456,7 +423,6 @@ class AuthMethods {
         );
       }
 
-      // ── Fetch FCM token to save alongside profile ─────────────────────────
       String? fcmToken;
       try {
         final messaging = firebase_messaging.FirebaseMessaging.instance;
@@ -653,82 +619,14 @@ class AuthMethods {
   }
 
   // =============================================
-  // EMAIL/PASSWORD SIGNUP (Firebase)
-  // =============================================
-  Future<String> signUpUser({
-    required String email,
-    required String password,
-  }) async {
-    try {
-      if (email.isEmpty || password.isEmpty) {
-        return "Please fill all required fields";
-      }
-
-      final List<dynamic> existingUsers = await _supabase
-          .from('users')
-          .select('uid')
-          .eq('email', email)
-          .limit(1);
-
-      if (existingUsers.isNotEmpty) {
-        return "User with this email already exists. Please log in instead.";
-      }
-
-      final firebase_auth.UserCredential cred =
-          await _auth.createUserWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-
-      if (cred.user == null) return "Registration failed - please try again";
-
-      await cred.user!.sendEmailVerification();
-
-      try {
-        await _supabase.from('users').upsert({
-          'uid': cred.user!.uid,
-          'email': cred.user!.email,
-          'username': '',
-          'bio': '',
-          'photoUrl': 'default',
-          'isPrivate': false,
-          'onboardingComplete': false,
-          'createdAt': DateTime.now().toIso8601String(),
-          'dateOfBirth': null,
-          'gender': null,
-          'isVerified': false,
-          'blockedUsers': <dynamic>[],
-          'country': null,
-          'migrated': false,
-        });
-
-        // NEW: link this device's anonymous pre-signup logs to the
-        // real uid now that the account exists.
-        await _linkDeviceLogsToUid(cred.user!.uid);
-      } catch (e) {
-        // FIX: previously silently ignored.
-        DebugLogger.log(
-          eventName: 'SIGNUP_USER_CREATE_ROW_ERROR',
-          errorDetails: e.toString(),
-          message: 'uid=${cred.user!.uid}',
-        );
-      }
-
-      return "success";
-    } on firebase_auth.FirebaseAuthException catch (e) {
-      if (e.code == 'email-already-in-use') {
-        return "Email already registered. Please log in instead.";
-      }
-      return e.message ?? "Registration failed";
-    } catch (err) {
-      DebugLogger.logError('SIGNUP_USER', err);
-      return err.toString();
-    }
-  }
-
-  // =============================================
   // COMPLETE PROFILE (Firebase user)
   // =============================================
+  // NOTE: kept — this serves Firebase-native social (Google/Apple) users,
+  // not email/password. It is not currently called by profile_setup_screen
+  // per the auth doc (which only calls completeProfileSupabase), so it may
+  // already be dead code independent of the email/password removal. Left
+  // in place since removing it wasn't part of this change; flag if you
+  // want it audited separately.
   Future<String> completeProfile({
     required String username,
     required String bio,
@@ -752,9 +650,6 @@ class AuthMethods {
         return "Username must be at least 3 characters";
       if (processedUsername.length > 20)
         return "Username cannot exceed 20 characters";
-      // FIX: same reconciliation as completeProfileSupabase above — this
-      // legacy Firebase path had the identical dot-excluding mismatch
-      // against the client's allowed character set.
       if (!_usernameAllowedChars.hasMatch(processedUsername)) {
         return "Username can only contain letters, numbers, '.', and underscores";
       }
@@ -821,124 +716,6 @@ class AuthMethods {
     }
   }
 
-  // =============================================
-  // UNIFIED LOGIN
-  // =============================================
-  Future<String> loginUser({
-    required String email,
-    required String password,
-  }) async {
-    try {
-      final List<dynamic> userRecords = await _supabase
-          .from('users')
-          .select('uid, migrated, "supabase_uid", "createdAt"')
-          .eq('email', email);
-
-      if (userRecords.isEmpty) {
-        return await _loginWithFirebase(email, password, null);
-      }
-
-      userRecords.sort((a, b) {
-        final aTime = DateTime.parse(a['createdAt'] ?? '2000-01-01');
-        final bTime = DateTime.parse(b['createdAt'] ?? '2000-01-01');
-        return bTime.compareTo(aTime);
-      });
-
-      final Map<String, dynamic> userRecord = userRecords[0];
-      final bool isMigrated = userRecord['migrated'] == true;
-      final String firebaseUid = userRecord['uid'] as String;
-      final String? supabaseUid = userRecord['supabase_uid'] as String?;
-
-      if (isMigrated && supabaseUid != null) {
-        try {
-          final AuthResponse supabaseResponse =
-              await _supabase.auth.signInWithPassword(
-            email: email,
-            password: password,
-          );
-
-          if (supabaseResponse.user != null) {
-            return await _checkOnboardingStatus(firebaseUid);
-          }
-        } on AuthException catch (_) {
-          return await _loginWithFirebase(email, password, firebaseUid);
-        }
-      } else {
-        return await _loginWithFirebase(email, password, firebaseUid);
-      }
-
-      return "Incorrect email or password";
-    } catch (e) {
-      DebugLogger.logError('LOGIN_USER', e);
-      return "An unexpected error occurred";
-    }
-  }
-
-  Future<String> _loginWithFirebase(
-    String email,
-    String password,
-    String? expectedUid,
-  ) async {
-    try {
-      final firebaseCred = await _auth.signInWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-
-      if (firebaseCred.user == null) return "Login failed";
-
-      final firebaseUid = firebaseCred.user!.uid;
-
-      if (expectedUid != null && firebaseUid != expectedUid) {
-        return "Account mismatch. Please contact support.";
-      }
-
-      final needsMigration = await this.needsMigration(firebaseUid);
-      if (needsMigration) return "needs_migration";
-
-      return await _checkOnboardingStatus(firebaseUid);
-    } on firebase_auth.FirebaseAuthException catch (e) {
-      if (e.code == 'invalid-email') {
-        return "Please enter a valid email address";
-      } else if (e.code == 'wrong-password' || e.code == 'user-not-found') {
-        return "Incorrect email or password";
-      } else if (e.code == 'user-disabled') {
-        return "Account disabled";
-      } else if (e.code == 'too-many-requests') {
-        return "Too many attempts. Try again later";
-      } else {
-        return "Incorrect email or password";
-      }
-    } catch (e) {
-      DebugLogger.logError('LOGIN_WITH_FIREBASE', e);
-      return "An unexpected error occurred";
-    }
-  }
-
-  Future<String> _checkOnboardingStatus(String uid) async {
-    try {
-      final List<dynamic> userRecords = await _supabase
-          .from('users')
-          .select('username, "dateOfBirth", gender, "onboardingComplete"')
-          .eq('uid', uid)
-          .limit(1);
-
-      if (userRecords.isEmpty) return "onboarding_required";
-
-      final Map<String, dynamic> data = userRecords[0];
-      final hasCompletedOnboarding = data['onboardingComplete'] == true ||
-          (data['username'] != null &&
-              data['username'].toString().isNotEmpty &&
-              data['dateOfBirth'] != null &&
-              data['gender'] != null &&
-              data['gender'].toString().isNotEmpty);
-
-      return hasCompletedOnboarding ? "success" : "onboarding_required";
-    } catch (e) {
-      return "onboarding_required";
-    }
-  }
-
   String _handleFirebaseAuthError(firebase_auth.FirebaseAuthException e) {
     switch (e.code) {
       case 'account-exists-with-different-credential':
@@ -959,8 +736,16 @@ class AuthMethods {
   }
 
   // =============================================
-  // GOOGLE SIGN-IN (Firebase + Supabase)
+  // GOOGLE SIGN-IN (Firebase + Supabase) — LEGACY
   // =============================================
+  // NOTE: this is the pre-native, Firebase-credential-based Google sign-in.
+  // It is not email/password, so it was left in place, but it was only
+  // ever called from the old LoginScreen (login.dart), which has been
+  // deleted as part of the single-screen consolidation. Unless something
+  // else in the app still calls signInWithGoogle() (as opposed to
+  // signInWithGoogleNative(), which WelcomeScreen uses), this method — and
+  // signInWithApple() below — are now dead code and safe to remove in a
+  // follow-up cleanup once confirmed unused.
   Future<String> signInWithGoogle() async {
     String? email;
     try {
@@ -1086,8 +871,11 @@ class AuthMethods {
   }
 
   // =============================================
-  // APPLE SIGN-IN (Firebase)
+  // APPLE SIGN-IN (Firebase) — LEGACY
   // =============================================
+  // NOTE: same status as signInWithGoogle() above — only ever called from
+  // the now-deleted LoginScreen. Left in place, flagged as a dead-code
+  // cleanup candidate rather than removed as part of this change.
   Future<String> signInWithApple() async {
     String? rawNonce;
     String? hashedNonce;
@@ -1368,63 +1156,6 @@ class AuthMethods {
       return [];
     } catch (e) {
       return [];
-    }
-  }
-
-  // =============================================
-  // MIGRATION METHOD (email/password)
-  // =============================================
-  Future<String> migrateUser({
-    required String email,
-    required String newPassword,
-    required String firebaseUid,
-  }) async {
-    try {
-      final firebaseUser = _auth.currentUser;
-      if (firebaseUser == null)
-        return "User not logged in. Please log in first.";
-      if (firebaseUser.uid != firebaseUid)
-        return "UID mismatch. Please log in with the correct account.";
-      if (firebaseUser.email != email)
-        return "Email mismatch. Please log in with the correct account.";
-
-      final AuthResponse response = await _supabase.auth.signUp(
-        email: email,
-        password: newPassword,
-        data: {'firebase_uid': firebaseUid},
-      );
-
-      if (response.user == null) return "Failed to create Supabase account";
-
-      await _supabase.from('users').update({
-        'migrated': true,
-        'supabase_uid': response.user!.id,
-      }).eq('uid', firebaseUid);
-
-      return "success";
-    } on AuthException catch (e) {
-      if (e.message?.contains('User already registered') ?? false) {
-        try {
-          final signInResponse = await _supabase.auth.signInWithPassword(
-            email: email,
-            password: newPassword,
-          );
-
-          if (signInResponse.user != null) {
-            await _supabase.from('users').update({
-              'migrated': true,
-              'supabase_uid': signInResponse.user!.id,
-            }).eq('uid', firebaseUid);
-            return "success";
-          }
-          return "Account exists but could not sign in. Please try a different password.";
-        } catch (signInError) {
-          return "Account exists but could not sign in. Please try a different password or contact support.";
-        }
-      }
-      return "Migration failed: ${e.message}";
-    } catch (e) {
-      return "Migration failed: $e";
     }
   }
 }
