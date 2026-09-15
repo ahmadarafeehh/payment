@@ -11,7 +11,7 @@ class NumberParticle {
   double fontSize;
   double sway;
   double swaySpeed;
-  Color color; // NEW: Added color property
+  Color color;
 
   NumberParticle({
     required this.x,
@@ -24,6 +24,6 @@ class NumberParticle {
     required this.fontSize,
     required this.sway,
     required this.swaySpeed,
-    required this.color, // NEW: Added color parameter
+    required this.color,
   });
 }
