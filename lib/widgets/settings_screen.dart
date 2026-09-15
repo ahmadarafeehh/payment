@@ -8,7 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:Ratedly/resources/auth_methods.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
-import 'package:Ratedly/screens/login.dart';
+import 'package:Ratedly/screens/first_time/welcome_screen.dart';
 import 'package:Ratedly/screens/Profile_page/blocked_profile_screen.dart';
 import 'package:Ratedly/resources/block_firestore_methods.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -174,7 +174,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await _authMethods.signOut();
     if (mounted) {
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
+        MaterialPageRoute(builder: (context) => const WelcomeScreen()),
       );
     }
   }
@@ -679,7 +679,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       const SnackBar(content: Text('Account deleted successfully')),
     );
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
     );
   }
 
