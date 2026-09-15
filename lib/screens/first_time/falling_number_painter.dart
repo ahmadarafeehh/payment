@@ -1,4 +1,4 @@
-import 'dart:math'; // ADD THIS IMPORT
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'number_particle.dart';
 
