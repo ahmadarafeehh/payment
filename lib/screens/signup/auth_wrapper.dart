@@ -9,11 +9,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:Ratedly/responsive/mobile_screen_layout.dart';
 import 'package:Ratedly/responsive/responsive_layout.dart';
-import 'package:Ratedly/screens/first_time/get_started_page.dart';
+import 'package:Ratedly/screens/first_time/welcome_screen.dart';
 import 'package:Ratedly/screens/signup/onboarding_flow.dart';
 import 'package:Ratedly/services/country_service.dart';
 import 'package:Ratedly/resources/auth_methods.dart';
-import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
 import 'package:Ratedly/services/device_session.dart';
@@ -98,28 +97,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   Completer<void>? _initCompleter;
 
   // FIX-BOUNCE: Once the user has been handed off to OnboardingFlow, a
-  // later signedIn event firing (confirmed in production logs happening
-  // repeatedly, ~30-90s apart, on some Android sessions even though
-  // AuthWrapper never remounts and _authSubscription is never cancelled)
-  // must NOT re-run _initializeAuth() and rebuild a fresh OnboardingFlow.
-  // Doing so was the confirmed root cause of users being silently bounced
-  // from profile_setup back to age_verification, losing in-progress state
-  // — ONBOARDING_FLOW_DISPOSE logs showed the old OnboardingFlow (with
-  // step=profile_setup) being torn down and replaced by a brand new one
-  // every time this fired. The session is already resolved once onboarding
-  // has started; there is nothing left to (re)do.
-  //
-  // UPDATED (this session): now set synchronously inside
-  // _handleSupabaseSession, right after the onboarding-vs-home-screen
-  // outcome is known, rather than in build(). The previous build()-only
-  // assignment left a real gap: between session resolution finishing and
-  // the next build() running, a re-fired signedIn event could still find
-  // this flag false and re-enter _initializeAuth(). Moving it here is
-  // guarded on !_onboardingComplete so it is set true only when the user
-  // is actually being routed to onboarding — a fully onboarded/returning
-  // user is never marked "handed off" here, matching the original
-  // semantics of the flag (mirrors the `hasUser` gate that used to wrap
-  // this assignment in build()).
+  // later signedIn event firing must NOT re-run _initializeAuth() and
+  // rebuild a fresh OnboardingFlow. See original comments in git history —
+  // unchanged from before this refactor.
   bool _onboardingHandedOff = false;
 
   String? _firebaseUid;
@@ -145,32 +125,13 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    // NEW: crash-proof marker — AuthWrapper itself started initializing.
     DebugLogger.logEvent('AUTH_WRAPPER_INIT_STARTED');
 
-    // FIX: previously this called _initializeAuth() directly, unguarded,
-    // while the onAuthStateChange listener below guarded ITS OWN call with
-    // _initLock. That meant a fresh signup — where initState() runs
-    // immediately AND the auth listener fires `signedIn` moments later once
-    // the sign-in actually completes — could trigger _handleSupabaseSession()
-    // TWICE, concurrently. Confirmed in production logs: two
-    // HANDLE_SUPABASE_SESSION_STARTED events 13ms apart for the same user,
-    // duplicate device-log linking, duplicate onboarding checks, and two
-    // separate OnboardingFlow/AgeVerificationScreen builds. Routing both
-    // call sites through the same guarded helper closes that race.
-    //
-    // isFromAuthEvent: false — this call site has no independent knowledge
-    // that a session exists; it's just the app starting up.
     _guardedInitializeAuth(isFromAuthEvent: false);
 
     _authSubscription = _supabase.auth.onAuthStateChange.listen((data) async {
       if (data.event == AuthChangeEvent.signedIn) {
         DebugLogger.logEvent('AUTH_EVENT: signedIn — triggering init');
-        // isFromAuthEvent: true — this call site DOES know a session now
-        // genuinely exists (Supabase just told us so). If it arrives while
-        // initState()'s call is still in flight, it must not be silently
-        // dropped in case that first call resolves "no session" and would
-        // otherwise leave the user permanently stuck on GetStartedPage.
         await _guardedInitializeAuth(isFromAuthEvent: true);
       } else if (data.event == AuthChangeEvent.tokenRefreshed) {
         DebugLogger.logEvent(
@@ -182,37 +143,13 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           _supabaseUid = null;
           _isLoading = false;
           _onboardingComplete = false;
-          _onboardingHandedOff = false; // FIX-BOUNCE: allow a real future sign-in to proceed normally
+          _onboardingHandedOff = false;
         });
       }
     });
   }
 
-  /// Serializes every call to _initializeAuth() behind a single lock,
-  /// regardless of which call site triggers it (initState()'s direct call,
-  /// or the onAuthStateChange listener's signedIn event).
-  ///
-  /// Outcome-aware behavior:
-  /// - If no call is in flight, this runs _initializeAuth() normally.
-  /// - If a call IS in flight and this caller has no special knowledge
-  ///   (isFromAuthEvent=false), it skips immediately — same as before.
-  /// - If a call IS in flight and this caller is the signedIn listener
-  ///   (isFromAuthEvent=true), it waits for the in-flight call to finish,
-  ///   then checks what that call resolved:
-  ///     - resolvedWithSession  -> the work is already done; skip.
-  ///     - resolvedNoSession    -> the first call ran before the session
-  ///       existed and bailed out early. Since we now KNOW a session
-  ///       exists, re-run _initializeAuth() for real instead of leaving
-  ///       the user stuck.
-  ///
-  /// The lock is always released in `finally`, including on normal
-  /// completion, so this can never deadlock — a later, genuinely new
-  /// signedIn event (e.g. after a sign-out/sign-in cycle) always gets a
-  /// fresh attempt once the current call exits.
   Future<void> _guardedInitializeAuth({required bool isFromAuthEvent}) async {
-    // FIX-BOUNCE: if onboarding is already underway, a redundant signedIn
-    // event must not re-run _initializeAuth() and rebuild OnboardingFlow
-    // from scratch. This is the primary fix — see field doc comment above.
     if (_onboardingHandedOff && isFromAuthEvent) {
       DebugLogger.logEvent(
           'INIT_AUTH: skipped — onboarding already handed off, ignoring redundant signedIn');
@@ -241,7 +178,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
       DebugLogger.logEvent(
           'INIT_AUTH: in-flight call found no session, but signedIn confirms one exists — re-running');
-      // Fall through and run it for real below.
     }
 
     _initLock = true;
@@ -273,8 +209,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       DebugLogger.logEvent(
           'ONBOARDING_APP_BACKGROUNDED [$userId] at step=$step after ${elapsed}s — possible abandon');
     }
-    // NEW: also capture resume, so we can tell "backgrounded and came back"
-    // apart from "backgrounded and never returned".
     if (state == AppLifecycleState.resumed &&
         (_firebaseUid != null || _supabaseUid != null) &&
         !_onboardingComplete) {
@@ -308,7 +242,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
     _lastInitOutcome = _InitOutcome.resolvedNoSession;
     DebugLogger.logEvent(
-        'INIT_AUTH: no session found — showing GetStartedPage');
+        'INIT_AUTH: no session found — showing WelcomeScreen');
     if (mounted) setState(() => _isLoading = false);
   }
 
@@ -319,10 +253,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     Map<String, dynamic>? userData;
     final firebaseUser = _auth.currentUser;
 
-    // NEW: crash-proof marker at the very start of this function — the
-    // single most important line we added. This is the function our 5
-    // stuck users entered but never finished; now we know for certain
-    // whether they got this far.
     DebugLogger.logEvent(
         'HANDLE_SUPABASE_SESSION_STARTED', 'supabaseUid=${session.user.id}');
 
@@ -472,8 +402,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         await _supabase.from('users').upsert(newUser, onConflict: 'uid');
         userData = newUser;
 
-        // NEW: link this device's anonymous pre-signup logs (GetStartedPage,
-        // SignupScreen, etc.) to the real uid, now that it exists.
         try {
           final deviceId = DeviceSession.idSync ?? await DeviceSession.id;
           if (deviceId != session.user.id) {
@@ -530,24 +458,10 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final hasCompletedOnboarding =
           await _checkOnboardingStatus(_firebaseUid!);
 
-      // FIX-BOUNCE: set the moment the onboarding-vs-home outcome is known,
-      // instead of waiting for build() to run on the next frame. This is
-      // the actual gap the 2026-09-01 signup_debug_logs pull points to: a
-      // signedIn re-fire arriving after this point but before the next
-      // build() previously found _onboardingHandedOff still false and
-      // re-entered _initializeAuth(), tearing down the in-progress
-      // OnboardingFlow. Guarded on !hasCompletedOnboarding to preserve the
-      // original semantics — a fully onboarded/returning user (routed to
-      // the home screen, not OnboardingFlow) is never marked "handed off"
-      // here, matching the `hasUser` guard that used to wrap this
-      // assignment in build().
       if (!hasCompletedOnboarding) {
         _onboardingHandedOff = true;
       }
 
-      // NEW: crash-proof marker right before the mounted check, which is
-      // exactly the line most likely to silently skip if the widget has
-      // been disposed while we were awaiting the DB call above.
       DebugLogger.logEvent(
           'REACHED_SETSTATE_CHECK [${_firebaseUid}] mounted=$mounted hasCompletedOnboarding=$hasCompletedOnboarding');
 
@@ -558,14 +472,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           }
           _isLoading = false;
         });
-        // NEW: confirms the loading screen has actually been dismissed.
         DebugLogger.logEvent(
             'LOADING_COMPLETE [${_firebaseUid}] isLoading=false onboardingComplete=$_onboardingComplete');
       } else {
-        // NEW: this is the single most important new log line in the whole
-        // fix. If this ever fires, it proves definitively that a user got
-        // stuck because the widget was disposed mid-flow — not because of
-        // a thrown error, a network failure, or abandonment.
         DebugLogger.logEvent(
             'LOADING_SKIPPED_UNMOUNTED [${_firebaseUid}] — widget was disposed before setState could run');
       }
@@ -842,15 +751,20 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     }
   }
 
+  // Previously routed to the email/password LoginScreen for migration.
+  // Now routes to WelcomeScreen (Google/Apple only) with isMigration:true
+  // so the UI shows a short explanatory message but the sign-in buttons
+  // are the same ones as the normal entry flow.
   void _showMigrationScreen() {
     if (_firebaseUid == null) return;
     DebugLogger.logEvent(
-        'MIGRATION: redirecting uid=$_firebaseUid to migration screen');
+        'MIGRATION: redirecting uid=$_firebaseUid to WelcomeScreen (migration mode)');
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
-        builder: (context) => LoginScreen(
-          migrationEmail: _userEmail ?? '',
-          migrationUid: _firebaseUid!,
+        builder: (context) => WelcomeScreen(
+          isMigration: true,
+          migrationEmail: _userEmail,
+          migrationUid: _firebaseUid,
         ),
       ),
     );
@@ -861,7 +775,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     DebugLogger.logEvent(
         'ONBOARDING_COMPLETE: uid=${_firebaseUid ?? _supabaseUid} totalTime=${elapsed}s');
     _tracker?.step('completed');
-    _onboardingHandedOff = false; // FIX-BOUNCE: onboarding is done, not "in progress" anymore
+    _onboardingHandedOff = false;
     if (mounted) setState(() => _onboardingComplete = true);
     _updateAuthCache(true);
   }
@@ -878,13 +792,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
     if (hasUser) {
       return OnboardingFlow(
-        // FIX-BOUNCE: stable key so Flutter treats this as the SAME widget
-        // instance across any AuthWrapper rebuild, instead of tearing down
-        // and recreating OnboardingFlow (and losing its internal state /
-        // the pushed ProfileSetupScreen route) every time. This is a
-        // defensive second layer — the _onboardingHandedOff guard above is
-        // the primary fix, since it stops the wasteful rebuild from
-        // happening in the first place.
         key: ValueKey(_supabaseUid ?? _firebaseUid),
         onComplete: _handleOnboardingComplete,
         onError: (error) async {
@@ -903,16 +810,13 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       );
     }
 
-    return const GetStartedPage();
+    return const WelcomeScreen();
   }
 
   Widget _buildLoadingScreen() {
     final hasPersistedUser =
         FeedCacheService.getLastUserIdSync()?.isNotEmpty == true;
 
-    // NEW: this screen previously had zero logging at all. This is the
-    // exact screen our 5 stuck users were frozen on, with no way to tell.
-    // Fire-and-forget is intentional here — build() must stay synchronous.
     DebugLogger.logEvent(
         'LOADING_SCREEN_SHOWN firebaseUid=$_firebaseUid supabaseUid=$_supabaseUid hasPersistedUser=$hasPersistedUser');
 
