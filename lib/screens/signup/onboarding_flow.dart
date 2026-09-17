@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/screens/first_time/welcome_screen.dart';
 import 'package:Ratedly/screens/signup/age_screen.dart';
@@ -58,6 +60,13 @@ class _OnboardingFlowState extends State<OnboardingFlow>
   // Tracks whether the background check has finished
   bool _backgroundCheckDone = false;
 
+  // NEW: step-resume state. If a saved marker says the user already got
+  // past age_verification (on THIS device) before the app was closed, we
+  // skip straight to profile_setup instead of always restarting at
+  // age_verification — this is the actual fix for FIX-BOUNCE-ON-RELAUNCH.
+  bool _resumeAtProfileSetup = false;
+  DateTime? _resumeDateOfBirth;
+
   String? _userId;
 
   // Step timing — local only, never hits Supabase
@@ -74,6 +83,57 @@ class _OnboardingFlowState extends State<OnboardingFlow>
   }
 
   int get _totalElapsed => DateTime.now().difference(_flowStart).inSeconds;
+
+  // ── NEW: step-progress persistence ──────────────────────────────────────
+  // Keyed by the real userId (firebase_uid/supabase_uid), NOT DeviceSession.id
+  // — by the time age_verification completes we have a real uid, and keying
+  // on it means resume works even if the device-session id were to change.
+  // Deliberately a separate SharedPreferences key from ProfileSetupScreen's
+  // own `profile_setup_draft_v1_*` (username/gender draft, keyed by
+  // DeviceSession.id) — that one persists form *input*, this one persists
+  // which *screen* the user should land on.
+  static String _progressKey(String userId) => 'onboarding_progress_v1_$userId';
+
+  Future<void> _saveProgress(String step, {DateTime? dateOfBirth}) async {
+    if (_userId == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _progressKey(_userId!),
+        jsonEncode({
+          'step': step,
+          'dateOfBirth': dateOfBirth?.toIso8601String(),
+        }),
+      );
+      DebugLogger.logEvent(
+          'ONBOARDING_PROGRESS_SAVED [$_userId] step=$step');
+    } catch (e) {
+      // Best-effort — never let progress persistence crash onboarding.
+      DebugLogger.logError('ONBOARDING_PROGRESS_SAVE', e);
+    }
+  }
+
+  Future<Map<String, dynamic>?> _loadProgress(String userId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_progressKey(userId));
+      if (raw == null) return null;
+      return jsonDecode(raw) as Map<String, dynamic>;
+    } catch (e) {
+      DebugLogger.logError('ONBOARDING_PROGRESS_LOAD', e);
+      return null;
+    }
+  }
+
+  Future<void> _clearProgress(String userId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_progressKey(userId));
+    } catch (_) {
+      // Non-fatal — a stale leftover key just gets overwritten next time.
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -110,7 +170,8 @@ class _OnboardingFlowState extends State<OnboardingFlow>
   }
 
   /// Runs the DB check entirely in the background.
-  /// The age screen is already visible while this executes.
+  /// The age screen is already visible while this executes — UNLESS a saved
+  /// resume marker is found, in which case profile_setup is shown instead.
   Future<void> _checkUserStatusInBackground() async {
     try {
       _advanceStep('resolving_user');
@@ -144,10 +205,33 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       final alreadyComplete =
           response != null && _hasCompletedOnboarding(response);
 
+      // NEW: if not already complete server-side, check for a locally saved
+      // "user already passed age_verification on this device" marker.
+      Map<String, dynamic>? savedProgress;
+      if (!alreadyComplete) {
+        savedProgress = await _loadProgress(_userId!);
+      } else {
+        // Onboarding is done some other way (e.g. completed on another
+        // device) — the local marker is stale, clear it.
+        await _clearProgress(_userId!);
+      }
+
+      final resumeDob = savedProgress != null &&
+              savedProgress['step'] == 'profile_setup' &&
+              savedProgress['dateOfBirth'] != null
+          ? DateTime.tryParse(savedProgress['dateOfBirth'] as String)
+          : null;
+
+      if (!mounted) return;
+
       setState(() {
         _userData = response;
         _backgroundCheckDone = true;
         _hasRequiredFields = alreadyComplete;
+        if (!alreadyComplete && resumeDob != null) {
+          _resumeAtProfileSetup = true;
+          _resumeDateOfBirth = resumeDob;
+        }
       });
 
       if (alreadyComplete) {
@@ -161,6 +245,11 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         await Future.delayed(const Duration(milliseconds: 150));
 
         if (mounted) widget.onComplete();
+      } else if (resumeDob != null) {
+        _advanceStep('profile_setup_resumed');
+        DebugLogger.logEvent(
+            'ONBOARDING_FLOW [$_userId]: resuming at profile_setup — '
+            'saved progress found (dateOfBirth=$resumeDob), skipping age_verification');
       } else {
         _advanceStep('age_screen');
         DebugLogger.logEvent(
@@ -217,6 +306,11 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     DebugLogger.logEvent(
         'ONBOARDING_FLOW [$_userId]: age verified — moving to profile setup');
 
+    // NEW: persist that this user has reached profile_setup, so a relaunch
+    // (or any future OnboardingFlow rebuild) resumes here instead of
+    // restarting at age_verification.
+    _saveProgress('profile_setup', dateOfBirth: dateOfBirth);
+
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -226,10 +320,26 @@ class _OnboardingFlowState extends State<OnboardingFlow>
             _advanceStep('completed');
             DebugLogger.logEvent(
                 'ONBOARDING_FLOW [$_userId]: profile setup complete — totalTime=${_totalElapsed}s');
+            if (_userId != null) _clearProgress(_userId!);
             widget.onComplete();
           },
         ),
       ),
+    );
+  }
+
+  // NEW: shared builder so the resume path and the normal
+  // age-verification-complete path build ProfileSetupScreen identically.
+  Widget _buildProfileSetup(DateTime dateOfBirth) {
+    return ProfileSetupScreen(
+      dateOfBirth: dateOfBirth,
+      onComplete: () {
+        _advanceStep('completed');
+        DebugLogger.logEvent(
+            'ONBOARDING_FLOW [$_userId]: profile setup complete — totalTime=${_totalElapsed}s');
+        if (_userId != null) _clearProgress(_userId!);
+        widget.onComplete();
+      },
     );
   }
 
@@ -254,6 +364,12 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       return const ResponsiveLayout(
         mobileScreenLayout: MobileScreenLayout(),
       );
+    }
+
+    // NEW: a saved marker says this user already passed age_verification on
+    // this device — resume at profile_setup instead of restarting.
+    if (_resumeAtProfileSetup && _resumeDateOfBirth != null) {
+      return _buildProfileSetup(_resumeDateOfBirth!);
     }
 
     // Show the age screen immediately — background check runs in parallel
