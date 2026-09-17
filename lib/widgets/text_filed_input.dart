@@ -8,7 +8,8 @@ class TextFieldInput extends StatelessWidget {
   final TextInputType textInputType;
   final TextStyle? hintStyle;
   final Color? fillColor;
-  final List<TextInputFormatter>? inputFormatters; // Add this line
+  final List<TextInputFormatter>? inputFormatters;
+  final FocusNode? focusNode; // ADD THIS
 
   const TextFieldInput({
     Key? key,
@@ -18,13 +19,15 @@ class TextFieldInput extends StatelessWidget {
     required this.textInputType,
     this.hintStyle,
     this.fillColor,
-    this.inputFormatters, // Add this line
+    this.inputFormatters,
+    this.focusNode, // ADD THIS
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return TextField(
       controller: textEditingController,
+      focusNode: focusNode, // ADD THIS
       decoration: InputDecoration(
         hintText: hintText,
         hintStyle: hintStyle,
@@ -42,7 +45,7 @@ class TextFieldInput extends StatelessWidget {
         color: Colors.white,
         fontFamily: 'Inter',
       ),
-      inputFormatters: inputFormatters, // Add this line
+      inputFormatters: inputFormatters,
     );
   }
 }
