@@ -1,6 +1,5 @@
 // lib/screens/Profile_page/other_user_profile_screen.dart
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -17,7 +16,6 @@ import 'package:video_player/video_player.dart';
 import 'package:flutter/gestures.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:country_flags/country_flags.dart';
-import 'package:Ratedly/screens/Profile_page/gallery_post_view_screen.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/services/analytics_service.dart';
@@ -28,8 +26,6 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 import 'package:Ratedly/utils/colors.dart'; // shared colours
 import 'package:Ratedly/utils/video_utils.dart'; // shared video helpers + service
-
-// (rest of the file unchanged – the imports above fix the missing types)
 
 // -----------------------------------------------------------------------------
 // Reusable widgets
@@ -150,9 +146,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = false;
-
-  List<dynamic> _galleries = [];
-  int _selectedTabIndex = 0;
 
   List<dynamic> _displayedPosts = [];
   int _postsOffset = 0;
@@ -393,8 +386,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     if (_scrollController.position.pixels >=
             _scrollController.position.maxScrollExtent - 50 &&
         !_isLoadingMore &&
-        _hasMorePosts &&
-        _selectedTabIndex == 0) {
+        _hasMorePosts) {
       Future.delayed(const Duration(milliseconds: 15), () {
         if (mounted) _loadMorePosts();
       });
@@ -410,7 +402,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       await Future.wait([
         _loadUserData(),
         _loadPostsCountAndFirstBatch(),
-        _loadGalleriesData(),
         _loadBlockStatus(),
         _loadTestStatus(),
       ]);
@@ -471,39 +462,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         stack: stack,
         additionalData: {'uid': widget.uid},
       );
-    }
-  }
-
-  Future<void> _loadGalleriesData() async {
-    try {
-      final galleriesResponse = await _supabase.from('galleries').select('''
-            *,
-            gallery_posts(count),
-            posts!cover_post_id(postUrl, video_edit_metadata)
-          ''').eq('uid', widget.uid).order('created_at', ascending: false);
-
-      // Preload media for gallery covers
-      for (final g in galleriesResponse) {
-        final url = g['posts'] != null ? g['posts']['postUrl'] ?? '' : '';
-        if (isVideoFile(url)) {
-          final postId =
-              g['posts'] != null ? g['posts']['postId']?.toString() ?? '' : '';
-          if (shouldShowVideoLoop(postId)) {
-            _mediaService.initializeController(url);
-          } else {
-            _mediaService.getThumbnailFuture(url);
-          }
-        }
-      }
-      if (mounted) setState(() => _galleries = galleriesResponse);
-    } catch (e, stack) {
-      await _logProfileError(
-        operation: 'loadGalleriesData',
-        error: e,
-        stack: stack,
-        additionalData: {'uid': widget.uid},
-      );
-      if (mounted) setState(() => _galleries = []);
     }
   }
 
@@ -994,7 +952,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             const SizedBox(height: 20),
             _buildOtherBioSectionSkeleton(colors),
             const SizedBox(height: 16),
-            _buildTabButtonsSkeleton(colors),
             Divider(color: colors.dividerColor),
             _buildOtherPostsGridSkeleton(colors),
           ],
@@ -1091,24 +1048,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  Widget _buildTabButtonsSkeleton(AppColorSet colors) {
-    return Row(children: [
-      Expanded(
-          child: Container(
-              height: 50,
-              decoration: BoxDecoration(
-                  color: colors.skeletonColor,
-                  borderRadius: BorderRadius.circular(8)))),
-      const SizedBox(width: 8),
-      Expanded(
-          child: Container(
-              height: 50,
-              decoration: BoxDecoration(
-                  color: colors.skeletonColor,
-                  borderRadius: BorderRadius.circular(8)))),
-    ]);
-  }
-
   Widget _buildOtherPostsGridSkeleton(AppColorSet colors) {
     return GridView.builder(
       shrinkWrap: true,
@@ -1135,73 +1074,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         decoration: BoxDecoration(
             color: colors.skeletonColor,
             borderRadius: BorderRadius.circular(4)));
-  }
-
-  Widget _buildTabButtons(AppColorSet colors) {
-    return Row(children: [
-      Expanded(
-        child: GestureDetector(
-          onTap: () => setState(() => _selectedTabIndex = 0),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-                border: Border(
-                    bottom: BorderSide(
-                        color: _selectedTabIndex == 0
-                            ? colors.textColor
-                            : colors.dividerColor,
-                        width: 2))),
-            child: Column(children: [
-              Icon(Icons.grid_on,
-                  color: _selectedTabIndex == 0
-                      ? colors.textColor
-                      : colors.textColor.withOpacity(0.5)),
-              const SizedBox(height: 4),
-              Text('POSTS',
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: _selectedTabIndex == 0
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                      color: _selectedTabIndex == 0
-                          ? colors.textColor
-                          : colors.textColor.withOpacity(0.5))),
-            ]),
-          ),
-        ),
-      ),
-      Expanded(
-        child: GestureDetector(
-          onTap: () => setState(() => _selectedTabIndex = 1),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-                border: Border(
-                    bottom: BorderSide(
-                        color: _selectedTabIndex == 1
-                            ? colors.textColor
-                            : colors.dividerColor,
-                        width: 2))),
-            child: Column(children: [
-              Icon(Icons.collections,
-                  color: _selectedTabIndex == 1
-                      ? colors.textColor
-                      : colors.textColor.withOpacity(0.5)),
-              const SizedBox(height: 4),
-              Text('GALLERIES',
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: _selectedTabIndex == 1
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                      color: _selectedTabIndex == 1
-                          ? colors.textColor
-                          : colors.textColor.withOpacity(0.5))),
-            ]),
-          ),
-        ),
-      ),
-    ]);
   }
 
   Widget _buildOtherProfileHeader(AppColorSet colors) {
@@ -1347,7 +1219,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
               fontWeight: FontWeight.bold,
               color: colors.textColor)),
       const SizedBox(height: 10),
-      Text('Follow to see their galleries',
+      Text('Follow to see their posts',
           style: TextStyle(fontSize: 14, color: colors.textColor)),
     ]);
   }
@@ -1378,9 +1250,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       return SizedBox(height: 200, child: _buildPrivateAccountMessage(colors));
     }
     if (_displayedPosts.isEmpty) {
-      // Empty-state for "no posts": mirrors the galleries tab's empty state
-      // for visual consistency — icon + bold title + soft subtitle, using
-      // textColor (not errorColor, since an empty list isn't an error).
       return Padding(
           padding: const EdgeInsets.all(40.0),
           child: Column(children: [
@@ -1410,64 +1279,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
           childAspectRatio: 0.8),
       itemBuilder: (context, index) =>
           _buildOtherPostItem(_displayedPosts[index], colors),
-    );
-  }
-
-  Widget _buildOtherGalleriesGrid(AppColorSet colors) {
-    final userProvider = Provider.of<UserProvider>(context, listen: false);
-    final String? currentUserId =
-        userProvider.firebaseUid ?? userProvider.supabaseUid;
-    final bool isCurrentUser = currentUserId == widget.uid;
-    final bool isPrivate = userData['isPrivate'] ?? false;
-    final bool shouldHideGalleries =
-        isPrivate && !isFollowing && !isCurrentUser;
-    final bool isMutuallyBlocked = _isBlockedByMe || _isBlockedByThem;
-
-    if (isMutuallyBlocked) {
-      return SizedBox(
-          height: 200,
-          child: Center(
-              child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                const Icon(Icons.block, size: 50, color: Colors.red),
-                const SizedBox(height: 10),
-                Text('Galleries unavailable due to blocking',
-                    style: TextStyle(color: colors.errorColor)),
-              ])));
-    }
-    if (shouldHideGalleries) {
-      return SizedBox(height: 200, child: _buildPrivateAccountMessage(colors));
-    }
-    if (_galleries.isEmpty) {
-      return Padding(
-          padding: const EdgeInsets.all(40.0),
-          child: Column(children: [
-            Icon(Icons.collections, size: 64, color: colors.errorColor),
-            const SizedBox(height: 16),
-            Text('No Galleries Yet',
-                style: TextStyle(
-                    color: colors.textColor,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Text('This user hasn\'t created any galleries',
-                style: TextStyle(color: colors.textColor.withOpacity(0.7)),
-                textAlign: TextAlign.center),
-          ]));
-    }
-
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: _galleries.length,
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 2,
-          crossAxisSpacing: 8,
-          mainAxisSpacing: 8,
-          childAspectRatio: 1),
-      itemBuilder: (context, index) =>
-          _buildGalleryItem(_galleries[index], colors),
     );
   }
 
@@ -1718,282 +1529,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ── Gallery builders (adapted) ─────────────────────────────────
-
-  Widget _buildGalleryItem(Map<String, dynamic> gallery, AppColorSet colors) {
-    final postCount =
-        gallery['gallery_posts'] != null && gallery['gallery_posts'].isNotEmpty
-            ? gallery['gallery_posts'][0]['count'] ?? 0
-            : 0;
-    final coverPost = gallery['posts'] != null
-        ? gallery['posts'] as Map<String, dynamic>
-        : null;
-    final coverImageUrl = coverPost != null ? coverPost['postUrl'] ?? '' : '';
-    final isVideoCover = isVideoFile(coverImageUrl);
-    final coverPostId = coverPost?['postId']?.toString() ?? '';
-
-    VideoEditResult? coverEditResult;
-    if (coverPost != null) {
-      final coverMeta = extractEditMetadata(coverPost['video_edit_metadata']);
-      if (coverMeta != null) {
-        try {
-          coverEditResult = VideoEditResult.fromJson(coverMeta, File(''));
-        } catch (e, stack) {
-          _logProfileError(
-            operation: 'buildGalleryItem_parseEditResult',
-            error: e,
-            stack: stack,
-            additionalData: {'galleryId': gallery['id']},
-          );
-        }
-      }
-    }
-
-    return GestureDetector(
-      onTap: () async {
-        _mediaService.pauseAll();
-        _muteProfileVideo();
-        try {
-          final galleryPostsResponse =
-              await _supabase.from('gallery_posts').select('''
-            post_id,
-            posts!inner(postId, postUrl, description, datePublished, uid, username, profImage)
-          ''').eq('gallery_id', gallery['id']);
-
-          final List<Map<String, dynamic>> posts =
-              (galleryPostsResponse as List).map<Map<String, dynamic>>((item) {
-            final p = item['posts'];
-            return {
-              'postId': p['postId']?.toString() ?? '',
-              'postUrl': p['postUrl']?.toString() ?? '',
-              'description': p['description']?.toString() ?? '',
-              'uid': p['uid']?.toString() ?? '',
-              'datePublished': p['datePublished']?.toString() ?? '',
-              'username': p['username']?.toString() ?? '',
-              'profImage': p['profImage']?.toString() ?? '',
-            };
-          }).toList();
-
-          if (mounted) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => GalleryPostViewScreen(
-                  posts: posts,
-                  initialIndex: 0,
-                  galleryName: gallery['name'] ?? 'Unnamed Gallery',
-                ),
-              ),
-            ).then((_) {
-              Future.delayed(const Duration(milliseconds: 300), () {
-                if (mounted) {
-                  _mediaService.resumeAll();
-                  _unmuteProfileVideo();
-                }
-              });
-            });
-          }
-        } catch (e, stack) {
-          await _logProfileError(
-            operation: 'galleryItem_onTap',
-            error: e,
-            stack: stack,
-            additionalData: {'galleryId': gallery['id']},
-          );
-          if (mounted) {
-            showSnackBar(context, 'Failed to load gallery posts: $e');
-          }
-        }
-      },
-      child: Container(
-        decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            color: colors.avatarBackgroundColor),
-        child: Stack(fit: StackFit.expand, children: [
-          if (coverImageUrl.isNotEmpty)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: isVideoCover
-                  ? (shouldShowVideoLoop(coverPostId)
-                      ? _buildGalleryVideoPlayer(
-                          coverImageUrl, colors, coverEditResult)
-                      : _buildGalleryVideoThumbnail(
-                          coverImageUrl, colors, coverEditResult))
-                  : _buildGalleryCoverImage(
-                      coverImageUrl, colors, coverEditResult),
-            )
-          else
-            Container(
-              decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  color: colors.avatarBackgroundColor.withOpacity(0.5)),
-              child:
-                  Icon(Icons.collections, size: 40, color: colors.errorColor),
-            ),
-          Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              gradient: LinearGradient(
-                begin: Alignment.bottomCenter,
-                end: Alignment.topCenter,
-                colors: [
-                  Colors.black.withOpacity(0.7),
-                  Colors.transparent,
-                ],
-              ),
-            ),
-            child: Align(
-              alignment: Alignment.bottomLeft,
-              child: Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(gallery['name'] ?? 'Unnamed Gallery',
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis),
-                      Text('$postCount ${postCount == 1 ? 'post' : 'posts'}',
-                          style: TextStyle(
-                              color: Colors.white.withOpacity(0.8),
-                              fontSize: 12)),
-                    ]),
-              ),
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-
-  Widget _buildGalleryVideoPlayer(
-      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final controller = _mediaService.getController(videoUrl);
-    final isInitialized = _mediaService.isControllerInitialized(videoUrl);
-
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.avatarBackgroundColor,
-          child: Center(
-              child: CircularProgressIndicator(
-                  color: colors.progressIndicatorColor)));
-    }
-
-    final List<double> matrix = buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: controller.value.size.width,
-                  height: controller.value.size.height,
-                  child: VideoPlayer(controller),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildGalleryVideoThumbnail(
-      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return FutureBuilder<Uint8List?>(
-      future: _mediaService.getThumbnailFuture(videoUrl),
-      builder: (context, snapshot) {
-        final haveImage = snapshot.connectionState == ConnectionState.done &&
-            snapshot.data != null;
-
-        Widget imageLayer = haveImage
-            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
-            : Container(color: colors.avatarBackgroundColor);
-
-        imageLayer = ColorFiltered(
-          colorFilter: ColorFilter.matrix(matrix),
-          child: Transform.rotate(
-            angle: quarters * math.pi / 2,
-            child: imageLayer,
-          ),
-        );
-
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Stack(fit: StackFit.expand, children: [
-            Positioned.fill(child: imageLayer),
-            Positioned(
-              top: 6,
-              right: 6,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.55),
-                  shape: BoxShape.circle,
-                ),
-                padding: const EdgeInsets.all(3),
-                child: const Icon(
-                  Icons.play_arrow,
-                  color: Colors.white,
-                  size: 18,
-                ),
-              ),
-            ),
-          ]),
-        );
-      },
-    );
-  }
-
-  Widget _buildGalleryCoverImage(
-      String url, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    if (editResult == null) {
-      return Image.network(
-        url,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => Container(
-          decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              color: colors.avatarBackgroundColor.withOpacity(0.5)),
-          child: Icon(Icons.collections, size: 40, color: colors.errorColor),
-        ),
-      );
-    }
-
-    return ColorFiltered(
-      colorFilter: ColorFilter.matrix(matrix),
-      child: Transform.rotate(
-        angle: quarters * math.pi / 2,
-        child: Image.network(
-          url,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                color: colors.avatarBackgroundColor.withOpacity(0.5)),
-            child: Icon(Icons.collections, size: 40, color: colors.errorColor),
-          ),
-        ),
-      ),
-    );
-  }
-
   // --------------------------------------------------------------
   // Build
   // --------------------------------------------------------------
@@ -2135,8 +1670,7 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             if (scrollInfo.metrics.pixels >=
                     scrollInfo.metrics.maxScrollExtent - 100 &&
                 !_isLoadingMore &&
-                _hasMorePosts &&
-                _selectedTabIndex == 0) {
+                _hasMorePosts) {
               _loadMorePosts();
             }
           }
@@ -2154,12 +1688,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
               ]),
             ),
             const SizedBox(height: 16),
-            _buildTabButtons(colors),
-            const SizedBox(height: 8),
-            _selectedTabIndex == 0
-                ? _buildOtherPostsGrid(colors)
-                : _buildOtherGalleriesGrid(colors),
-            if (_isLoadingMore && _selectedTabIndex == 0)
+            _buildOtherPostsGrid(colors),
+            if (_isLoadingMore)
               Padding(
                 padding: const EdgeInsets.all(16.0),
                 child: CircularProgressIndicator(color: colors.textColor),
