@@ -57,6 +57,16 @@ class _SearchScreenState extends State<SearchScreen>
 
   final Map<String, Map<String, dynamic>> _userDataCache = {};
 
+  // ── Grid layout constants (kept in sync with the SliverGrid delegate) ──
+  static const int _gridCrossAxisCount = 3;
+  static const double _gridSpacing = 8.0;
+  static const double _gridPadding = 8.0;
+  static const double _gridChildAspectRatio = 0.75;
+
+  /// Track which image URLs we've already asked `precacheImage` for, so the
+  /// scroll listener doesn't repeatedly issue the same precache requests.
+  final Set<String> _precachedImageUrls = {};
+
   // ── Shared media service (replaces all thumbnail caches & loop controllers) ──
   late final VideoMediaService _mediaService = VideoMediaService()
     ..onRebuild = () {
@@ -152,16 +162,24 @@ class _SearchScreenState extends State<SearchScreen>
     super.initState();
     AnalyticsService.screenEnter('search');
     WidgetsBinding.instance.addObserver(this);
-    _scrollController.addListener(() {
-      final position = _scrollController.position;
-      final trigger = position.maxScrollExtent * 0.70;
-      if (position.pixels >= trigger &&
-          !_isLoadingMore &&
-          _hasMorePosts &&
-          !isShowUsers) {
-        _loadMorePosts();
-      }
-    });
+    _scrollController.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+
+    // ── Pagination: load more when 70% through current content ──
+    final trigger = position.maxScrollExtent * 0.70;
+    if (position.pixels >= trigger &&
+        !_isLoadingMore &&
+        _hasMorePosts &&
+        !isShowUsers) {
+      _loadMorePosts();
+    }
+
+    // ── Precache only the next few items ahead of the viewport ──
+    _precacheAhead(position.pixels);
   }
 
   @override
@@ -203,6 +221,7 @@ class _SearchScreenState extends State<SearchScreen>
     _debounceTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     searchController.dispose();
+    _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     for (final c in _avatarVideoControllers.values) {
       c.dispose();
@@ -230,6 +249,7 @@ class _SearchScreenState extends State<SearchScreen>
     _isFirstLoad = true;
     _offset = 0;
     _allPosts = [];
+    _precachedImageUrls.clear();
 
     await Future.wait([_loadBlockedUsers(), _fetchPosts()]);
     setState(() => _isLoading = false);
@@ -290,9 +310,9 @@ class _SearchScreenState extends State<SearchScreen>
 
         await _enrichPostsWithUserData(newPosts);
         if (!mounted) return;
-        _precacheImages(newPosts);
 
-        _mediaService.preloadMedia(newPosts);
+        // NOTE: we no longer bulk-precache the whole batch.
+        // Precache is now viewport-driven via _precacheAhead().
 
         setState(() {
           _allPosts = newPosts;
@@ -300,6 +320,11 @@ class _SearchScreenState extends State<SearchScreen>
           _hasMorePosts = _allPosts.length == postsLimit;
           _isFirstLoad = false;
           _hasLoadError = false;
+        });
+
+        // Precache the first screenful so the top of the grid is instant.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _precacheAhead(0);
         });
       } else {
         setState(() {
@@ -344,9 +369,6 @@ class _SearchScreenState extends State<SearchScreen>
 
         await _enrichPostsWithUserData(newPosts);
         if (!mounted) return;
-        _precacheImages(newPosts);
-
-        _mediaService.preloadMedia(newPosts);
 
         setState(() {
           _allPosts.addAll(newPosts);
@@ -404,9 +426,6 @@ class _SearchScreenState extends State<SearchScreen>
             response.map<Map<String, dynamic>>(_normalisePost).toList();
         await _enrichPostsWithUserData(newPosts);
         if (!mounted) return [];
-        _precacheImages(newPosts);
-
-        _mediaService.preloadMedia(newPosts);
 
         if (mounted) {
           setState(() {
@@ -477,13 +496,32 @@ class _SearchScreenState extends State<SearchScreen>
     }
   }
 
-  // ── Image caching (unchanged) ─────────────────────────────────────
-  void _precacheImages(List<Map<String, dynamic>> posts) {
-    for (final post in posts) {
-      final url = post['postUrl']?.toString() ?? '';
-      if (url.isNotEmpty && !isVideoFile(url)) {
-        precacheImage(CachedNetworkImageProvider(url), context);
-      }
+  // ── Viewport-driven image precache (replaces bulk _precacheImages) ──
+  //
+  // Precache only the next few images ahead of the current scroll position.
+  // This keeps decoded-bitmap memory bounded as the grid grows.
+  void _precacheAhead(double pixelOffset) {
+    if (!mounted || _allPosts.isEmpty) return;
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final cellWidth = (screenWidth -
+            _gridPadding * 2 -
+            _gridSpacing * (_gridCrossAxisCount - 1)) /
+        _gridCrossAxisCount;
+    final rowHeight = cellWidth / _gridChildAspectRatio + _gridSpacing;
+
+    final firstRow = (pixelOffset / rowHeight).floor();
+    final startIndex =
+        (firstRow * _gridCrossAxisCount).clamp(0, _allPosts.length);
+    // ~3 rows ahead of the top of the viewport = 9 items.
+    final endIndex = (startIndex + 9).clamp(0, _allPosts.length);
+
+    for (int i = startIndex; i < endIndex; i++) {
+      final url = _allPosts[i]['postUrl']?.toString() ?? '';
+      if (url.isEmpty || isVideoFile(url)) continue;
+      if (_precachedImageUrls.contains(url)) continue;
+      _precachedImageUrls.add(url);
+      precacheImage(CachedNetworkImageProvider(url), context);
     }
   }
 
@@ -742,6 +780,11 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
+  // ── Posts grid ──────────────────────────────────────────────────────
+  //
+  // CHANGED: uses a single lazy CustomScrollView + SliverGrid instead of a
+  // shrinkWrapped GridView inside a ListView. The old approach laid out and
+  // kept every item resident, which is what caused the lag as _allPosts grew.
   Widget _buildPostsGrid(AppColorSet colors) {
     if (_hasLoadError) {
       return Center(
@@ -781,25 +824,36 @@ class _SearchScreenState extends State<SearchScreen>
       },
       child: Stack(
         children: [
-          ListView(
+          CustomScrollView(
             controller: _scrollController,
-            padding: const EdgeInsets.all(8.0),
-            children: [
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  childAspectRatio: 0.75,
-                  crossAxisSpacing: 8.0,
-                  mainAxisSpacing: 8.0,
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.all(_gridPadding),
+                sliver: SliverGrid(
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: _gridCrossAxisCount,
+                    childAspectRatio: _gridChildAspectRatio,
+                    crossAxisSpacing: _gridSpacing,
+                    mainAxisSpacing: _gridSpacing,
+                  ),
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      final post = _allPosts[index];
+                      return _buildPostItem(
+                        post,
+                        post['postUrl']?.toString() ?? '',
+                        index,
+                        colors,
+                      );
+                    },
+                    childCount: _allPosts.length,
+                    // Don't keep offscreen cell widgets alive — the media
+                    // service handles any persistent state.
+                    addAutomaticKeepAlives: false,
+                    addRepaintBoundaries: true,
+                  ),
                 ),
-                itemCount: _allPosts.length,
-                itemBuilder: (context, index) {
-                  final post = _allPosts[index];
-                  return _buildPostItem(
-                      post, post['postUrl']?.toString() ?? '', index, colors);
-                },
               ),
             ],
           ),
@@ -831,7 +885,10 @@ class _SearchScreenState extends State<SearchScreen>
     final postId = post['postId']?.toString() ?? '';
     final editResult = parseEditResult(post);
 
-    // Ensure media is loaded (service takes care of loop vs thumbnail)
+    // Ensure media is loaded (service takes care of loop vs thumbnail).
+    // NOTE: because this now runs only for cells the sliver actually builds
+    // (viewport + small cacheExtent), the service sees far fewer init calls
+    // than with the previous eager grid.
     if (isVideo) {
       if (shouldShowVideoLoop(postId)) {
         _mediaService.initializeController(postUrl);
@@ -901,7 +958,7 @@ class _SearchScreenState extends State<SearchScreen>
     final int quarters = editResult?.rotationQuarters ?? 0;
 
     return AspectRatio(
-      aspectRatio: 0.75,
+      aspectRatio: _gridChildAspectRatio,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: Container(
@@ -947,7 +1004,7 @@ class _SearchScreenState extends State<SearchScreen>
     final int quarters = editResult?.rotationQuarters ?? 0;
 
     return AspectRatio(
-      aspectRatio: 0.75,
+      aspectRatio: _gridChildAspectRatio,
       child: FutureBuilder<Uint8List?>(
         future: _mediaService.getThumbnailFuture(videoUrl),
         builder: (context, snapshot) {
@@ -1010,9 +1067,21 @@ class _SearchScreenState extends State<SearchScreen>
     final List<double> matrix = buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
+    // Decode at the cell's pixel width, not the source's. This alone can cut
+    // decoded-bitmap memory by 4–9x for typical phone photos.
+    final screenWidth = MediaQuery.of(context).size.width;
+    final dpr = MediaQuery.of(context).devicePixelRatio;
+    final cellPixelWidth = ((screenWidth -
+                _gridPadding * 2 -
+                _gridSpacing * (_gridCrossAxisCount - 1)) /
+            _gridCrossAxisCount *
+            dpr)
+        .round();
+
     Widget networkImage = CachedNetworkImage(
       imageUrl: imageUrl,
       fit: BoxFit.cover,
+      memCacheWidth: cellPixelWidth,
       placeholder: (_, __) => Container(color: colors.skeletonColor),
       errorWidget: (_, __, ___) => Container(
         color: colors.gridItemBackgroundColor,
@@ -1036,11 +1105,11 @@ class _SearchScreenState extends State<SearchScreen>
     );
 
     if (editResult == null) {
-      return AspectRatio(aspectRatio: 0.75, child: baseImage);
+      return AspectRatio(aspectRatio: _gridChildAspectRatio, child: baseImage);
     }
 
     return AspectRatio(
-      aspectRatio: 0.75,
+      aspectRatio: _gridChildAspectRatio,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: Stack(fit: StackFit.expand, children: [
