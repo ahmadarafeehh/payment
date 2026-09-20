@@ -573,6 +573,7 @@ class _FeedPostPageState extends State<_FeedPostPage>
     );
   }
 
+  // ⭐ Now open to everyone (matches PostCard feed behavior)
   void _openRatingsPanel() {
     _pauseVideo();
     RatingListScreen.show(
@@ -742,8 +743,10 @@ class _FeedPostPageState extends State<_FeedPostPage>
                 },
               ),
               const Spacer(),
+              // ⭐ CHANGED: voter count is now tappable by everyone
+              // (matches PostCard feed behavior)
               GestureDetector(
-                onTap: isOwner ? () => _openRatingsPanel() : null,
+                onTap: _openRatingsPanel,
                 child: Container(
                   decoration: BoxDecoration(
                       color: colors.cardColor,
