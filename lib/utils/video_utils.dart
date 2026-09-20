@@ -167,6 +167,11 @@ class ScaledDrawingPainter extends CustomPainter {
 /// service.onRebuild = () { if (mounted) setState(() {}); };
 /// service.preloadMedia(posts);
 /// ```
+///
+/// **Audio safety:** every controller managed by this service is guaranteed
+/// to be muted *before* `play()` is ever invoked. This prevents the audible
+/// "flash" that occurs on iOS/Android when a preview video starts playing
+/// for a handful of milliseconds at full volume during initialization.
 class VideoMediaService {
   // ── Thumbnail cache ─────────────────────────────────────────────
   final Map<String, Uint8List?> _thumbnailCache = {};
@@ -213,6 +218,12 @@ class VideoMediaService {
   // ── Looping controller methods ─────────────────────────────────
 
   /// Initialises a looping video controller for [videoUrl].
+  ///
+  /// The controller is guaranteed to be muted BEFORE `play()` is ever called,
+  /// so no audible frame can escape during initialization. A defensive
+  /// listener also re-asserts volume=0 if the platform ever reports a
+  /// non-zero volume mid-stream (this happens on some Android builds when
+  /// the player is re-created after being backgrounded).
   Future<void> initializeController(String videoUrl) async {
     if (_controllers.containsKey(videoUrl) &&
         _controllersInitialized[videoUrl] == true) {
@@ -226,13 +237,29 @@ class VideoMediaService {
       _controllers[videoUrl] = controller;
       _controllersInitialized[videoUrl] = false;
 
+      // Defensive listener: the moment the platform reports the controller
+      // is initialized, force volume to 0. This closes the tiny window
+      // between initialize() resolving and our explicit setVolume call
+      // below, which on iOS/Android can emit a few ms of audio.
+      controller.addListener(() {
+        if (controller.value.isInitialized && controller.value.volume > 0.0) {
+          controller.setVolume(0.0);
+        }
+      });
+
       await controller.initialize();
-      if (!_controllers.containsKey(videoUrl))
-        return; // disposed in the meantime
+      if (!_controllers.containsKey(videoUrl)) {
+        // Disposed while we were awaiting — bail without touching state.
+        return;
+      }
+
+      // Mute BEFORE any play() call. This ordering is the actual fix:
+      // previously _configureLoop() (which calls play()) ran first, so
+      // the first ~1 frame played at volume 1.0.
+      await controller.setVolume(0.0);
 
       _controllersInitialized[videoUrl] = true;
       _configureLoop(controller);
-      await controller.setVolume(0.0);
 
       _initDebounce?.cancel();
       _initDebounce = Timer(const Duration(milliseconds: 80), () {
@@ -254,6 +281,11 @@ class VideoMediaService {
         }
       }
     });
+
+    // Belt-and-braces: the caller has already set volume to 0.0, but we
+    // re-assert here in case a future refactor reorders the calls. A
+    // no-op setVolume on an already-muted controller costs nothing.
+    controller.setVolume(0.0);
     controller.play();
   }
 
@@ -279,17 +311,24 @@ class VideoMediaService {
     }
   }
 
-  /// Pauses every looping controller.
+  /// Pauses every looping controller. Mutes first so that if a controller
+  /// was somehow left at a non-zero volume, the pause cannot coincide with
+  /// an audible frame.
   void pauseAll() {
     for (final c in _controllers.values) {
+      if (c.value.volume > 0.0) c.setVolume(0.0);
       if (c.value.isPlaying) c.pause();
     }
   }
 
   /// Resumes every looping controller that was previously playing.
+  /// Re-asserts mute before each play() so a resume can never produce
+  /// an audible frame — these are previews, they should always be silent.
   void resumeAll() {
     for (final c in _controllers.values) {
-      if (c.value.isInitialized && !c.value.isPlaying) c.play();
+      if (!c.value.isInitialized || c.value.isPlaying) continue;
+      c.setVolume(0.0);
+      c.play();
     }
   }
 
