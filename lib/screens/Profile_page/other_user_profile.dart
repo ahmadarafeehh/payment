@@ -952,7 +952,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             const SizedBox(height: 20),
             _buildOtherBioSectionSkeleton(colors),
             const SizedBox(height: 16),
-            Divider(color: colors.dividerColor),
+            _buildPostsHeaderStrip(colors),
+            const SizedBox(height: 16),
             _buildOtherPostsGridSkeleton(colors),
           ],
         ),
@@ -1074,6 +1075,36 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         decoration: BoxDecoration(
             color: colors.skeletonColor,
             borderRadius: BorderRadius.circular(4)));
+  }
+
+  /// X-style tab strip — two hairlines with a centered "grid + POSTS" label.
+  /// Mirrors the strip on the current-user profile so both screens match.
+  Widget _buildPostsHeaderStrip(AppColorSet colors) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: colors.cardColor, width: 1),
+          bottom: BorderSide(color: colors.cardColor, width: 1),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.grid_on, size: 16, color: colors.textColor),
+          const SizedBox(width: 6),
+          Text(
+            'POSTS',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+              color: colors.textColor,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildOtherProfileHeader(AppColorSet colors) {
@@ -1687,6 +1718,8 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
                 _buildOtherBioSection(colors),
               ]),
             ),
+            const SizedBox(height: 16),
+            _buildPostsHeaderStrip(colors),
             const SizedBox(height: 16),
             _buildOtherPostsGrid(colors),
             if (_isLoadingMore)
