@@ -2,7 +2,6 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/services/notification_service.dart';
@@ -16,7 +15,6 @@ import 'package:provider/provider.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:flutter/gestures.dart';
-import 'package:Ratedly/screens/Profile_page/gallery_detail_screen.dart';
 import 'package:country_flags/country_flags.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
 import 'package:Ratedly/services/analytics_service.dart';
@@ -132,9 +130,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   Timer? _noPostNudgeTimer;
   bool _nudgeSent = false;
-
-  List<dynamic> _galleries = [];
-  int _selectedTabIndex = 0;
 
   // ── Profile-picture video (separate) ─────────────────────────────────
   VideoPlayerController? _profileVideoController;
@@ -369,8 +364,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     if (_scrollController.position.pixels >=
             _scrollController.position.maxScrollExtent - 50 &&
         !_isLoadingMore &&
-        _hasMorePosts &&
-        _selectedTabIndex == 0) {
+        _hasMorePosts) {
       Future.delayed(const Duration(milliseconds: 15), () {
         if (mounted) _loadMorePosts();
       });
@@ -439,26 +433,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         return <dynamic>[];
       });
 
-      final galleriesFuture = _supabase
-          .from('galleries')
-          .select('''
- *,
- gallery_posts(count),
- posts!cover_post_id(postUrl, video_edit_metadata)
- ''')
-          .eq('uid', widget.uid)
-          .order('created_at', ascending: false)
-          .then<List>((v) => v)
-          .catchError((e, stack) {
-            _logProfileError(
-              operation: 'getData_galleries',
-              error: e,
-              stack: stack,
-              additionalData: {'uid': widget.uid},
-            );
-            return <dynamic>[];
-          });
-
       final countResponse = await countFuture;
       final totalPostCount = countResponse.count;
 
@@ -469,8 +443,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       final followersResponse = await followersFuture;
 
       final followingResponse = await followingFuture;
-
-      final galleriesResponse = await galleriesFuture;
 
       if (userResponse == null) {
         if (mounted) {
@@ -505,7 +477,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           following = followingResponse.length;
           _followersList = processedData[0];
           _followingList = processedData[1];
-          _galleries = galleriesResponse;
           _displayedPosts = initialPosts;
           _postsOffset = initialPosts.length;
           _hasMorePosts = totalPostCount > initialPosts.length;
@@ -743,21 +714,13 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               _buildProfileHeader(colors),
               const SizedBox(height: 20),
               _buildBioSection(colors),
-              const SizedBox(height: 16),
-              _buildTabButtons(colors),
             ]),
           ),
         ),
-        ..._buildTabSliverContent(colors),
+        ..._buildPostsSliverContent(colors),
         const SliverToBoxAdapter(child: SizedBox(height: 20)),
       ],
     );
-  }
-
-  List<Widget> _buildTabSliverContent(AppColorSet colors) {
-    return _selectedTabIndex == 0
-        ? _buildPostsSliverContent(colors)
-        : _buildGalleriesSliverContent(colors);
   }
 
   List<Widget> _buildPostsSliverContent(AppColorSet colors) {
@@ -797,35 +760,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
                 child: CircularProgressIndicator(color: colors.textColor)),
           ),
         ),
-    ];
-  }
-
-  List<Widget> _buildGalleriesSliverContent(AppColorSet colors) {
-    if (_galleries.isEmpty) {
-      return [SliverToBoxAdapter(child: _buildEmptyGalleriesWidget(colors))];
-    }
-
-    return [
-      SliverPadding(
-        padding: const EdgeInsets.all(16),
-        sliver: SliverGrid(
-          delegate: SliverChildBuilderDelegate(
-            (context, index) {
-              if (index == 0) return _buildAddGalleryButton(colors);
-              final i = index - 1;
-              if (i >= _galleries.length) return const SizedBox.shrink();
-              return _buildGalleryItem(_galleries[i], colors);
-            },
-            childCount: _galleries.length + 1,
-          ),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
-            crossAxisSpacing: 8,
-            mainAxisSpacing: 8,
-            childAspectRatio: 1,
-          ),
-        ),
-      ),
     ];
   }
 
@@ -894,34 +828,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildEmptyGalleriesWidget(AppColorSet colors) {
-    return Padding(
-      padding: const EdgeInsets.all(40.0),
-      child: Column(children: [
-        Icon(Icons.collections,
-            size: 64, color: colors.textColor.withOpacity(0.5)),
-        const SizedBox(height: 16),
-        Text('No Galleries Yet',
-            style: TextStyle(
-                color: colors.textColor,
-                fontSize: 18,
-                fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        Text('Create your first gallery to organize your posts',
-            style: TextStyle(color: colors.textColor.withOpacity(0.7)),
-            textAlign: TextAlign.center),
-        const SizedBox(height: 16),
-        ElevatedButton(
-          onPressed: _createNewGallery,
-          style: ElevatedButton.styleFrom(
-              backgroundColor: colors.cardColor,
-              foregroundColor: colors.textColor),
-          child: const Text('Create Gallery'),
-        ),
-      ]),
     );
   }
 
@@ -1061,68 +967,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             style: TextStyle(color: colors.textColor),
             expandColor: colors.textColor.withOpacity(0.8),
           ),
-      ]),
-    );
-  }
-
-  Widget _buildTabButtons(AppColorSet colors) {
-    return Container(
-      decoration: BoxDecoration(
-          border:
-              Border(bottom: BorderSide(color: colors.cardColor, width: 1))),
-      child: Row(children: [
-        Expanded(
-          child: TextButton(
-            onPressed: () => setState(() => _selectedTabIndex = 0),
-            style: TextButton.styleFrom(
-              foregroundColor: _selectedTabIndex == 0
-                  ? colors.textColor
-                  : colors.textColor.withOpacity(0.5),
-              shape:
-                  const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
-            ),
-            child: Column(children: [
-              Icon(Icons.grid_on,
-                  color: _selectedTabIndex == 0
-                      ? colors.textColor
-                      : colors.textColor.withOpacity(0.5)),
-              Text('POSTS',
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: _selectedTabIndex == 0
-                          ? FontWeight.bold
-                          : FontWeight.normal)),
-              if (_selectedTabIndex == 0)
-                Container(height: 1, color: colors.textColor),
-            ]),
-          ),
-        ),
-        Expanded(
-          child: TextButton(
-            onPressed: () => setState(() => _selectedTabIndex = 1),
-            style: TextButton.styleFrom(
-              foregroundColor: _selectedTabIndex == 1
-                  ? colors.textColor
-                  : colors.textColor.withOpacity(0.5),
-              shape:
-                  const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
-            ),
-            child: Column(children: [
-              Icon(Icons.collections,
-                  color: _selectedTabIndex == 1
-                      ? colors.textColor
-                      : colors.textColor.withOpacity(0.5)),
-              Text('GALLERIES',
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: _selectedTabIndex == 1
-                          ? FontWeight.bold
-                          : FontWeight.normal)),
-              if (_selectedTabIndex == 1)
-                Container(height: 1, color: colors.textColor),
-            ]),
-          ),
-        ),
       ]),
     );
   }
@@ -1390,358 +1234,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         ),
       ]),
     );
-  }
-
-  // ========== GALLERY BUILDERS (using shared helpers & service) ==========
-
-  Widget _buildAddGalleryButton(AppColorSet colors) {
-    return GestureDetector(
-      onTap: _createNewGallery,
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          color: colors.cardColor,
-          border: Border.all(color: colors.textColor.withOpacity(0.3)),
-        ),
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(Icons.add_photo_alternate,
-              size: 40, color: colors.textColor.withOpacity(0.7)),
-          const SizedBox(height: 8),
-          Text('New Gallery',
-              style: TextStyle(
-                  color: colors.textColor.withOpacity(0.7), fontSize: 12)),
-        ]),
-      ),
-    );
-  }
-
-  Widget _buildGalleryItem(Map<String, dynamic> gallery, AppColorSet colors) {
-    final postCount =
-        gallery['gallery_posts'] != null && gallery['gallery_posts'].isNotEmpty
-            ? gallery['gallery_posts'][0]['count'] ?? 0
-            : 0;
-    final coverPost = gallery['posts'] != null
-        ? gallery['posts'] as Map<String, dynamic>
-        : null;
-    final coverImageUrl = coverPost != null ? coverPost['postUrl'] ?? '' : '';
-    final isVideoCover = isVideoFile(coverImageUrl);
-    final coverPostId = coverPost?['postId']?.toString() ?? '';
-
-    VideoEditResult? coverEditResult;
-    if (coverPost != null && !isVideoCover) {
-      final coverMeta =
-          extractEditMetadata(coverPost['video_edit_metadata']); // shared
-      if (coverMeta != null) {
-        try {
-          coverEditResult = VideoEditResult.fromJson(coverMeta, File(''));
-        } catch (e, stack) {
-          _logProfileError(
-            operation: 'buildGalleryItem_parseEditResult',
-            error: e,
-            stack: stack,
-            additionalData: {'galleryId': gallery['id']},
-          );
-        }
-      }
-    }
-
-    return GestureDetector(
-      onTap: () {
-        _mediaService.pauseAll();
-        _muteProfileVideo();
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => GalleryDetailScreen(
-              galleryId: gallery['id'],
-              galleryName: gallery['name'] ?? 'Unnamed Gallery',
-              uid: widget.uid,
-            ),
-          ),
-        ).then((_) {
-          Future.delayed(const Duration(milliseconds: 300), () {
-            if (mounted) {
-              _mediaService.resumeAll();
-              _unmuteProfileVideo();
-            }
-          });
-          getData();
-        });
-      },
-      child: Container(
-        decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8), color: colors.cardColor),
-        child: Stack(fit: StackFit.expand, children: [
-          if (coverImageUrl.isNotEmpty)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: isVideoCover
-                  ? (shouldShowVideoLoop(coverPostId)
-                      ? _buildGalleryVideoPlayer(
-                          coverImageUrl, colors, coverEditResult)
-                      : _buildGalleryVideoThumbnail(
-                          coverImageUrl, colors, coverEditResult))
-                  : _buildGalleryCoverImage(
-                      coverImageUrl, colors, coverEditResult),
-            )
-          else
-            Container(
-              decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  color: colors.cardColor.withOpacity(0.5)),
-              child: Icon(Icons.collections,
-                  size: 40, color: colors.textColor.withOpacity(0.5)),
-            ),
-          Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              gradient: LinearGradient(
-                begin: Alignment.bottomCenter,
-                end: Alignment.topCenter,
-                colors: [
-                  Colors.black.withOpacity(0.7),
-                  Colors.transparent,
-                ],
-              ),
-            ),
-            child: Align(
-              alignment: Alignment.bottomLeft,
-              child: Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(gallery['name'] ?? 'Unnamed Gallery',
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis),
-                      Text('$postCount ${postCount == 1 ? 'post' : 'posts'}',
-                          style: TextStyle(
-                              color: Colors.white.withOpacity(0.8),
-                              fontSize: 12)),
-                    ]),
-              ),
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-
-  Widget _buildGalleryVideoPlayer(
-      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final controller = _mediaService.getController(videoUrl);
-    final isInitialized = _mediaService.isControllerInitialized(videoUrl);
-
-    if (!isInitialized || controller == null) {
-      return Container(
-          color: colors.cardColor,
-          child: Center(
-              child: CircularProgressIndicator(color: colors.textColor)));
-    }
-
-    final List<double> matrix = buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Stack(fit: StackFit.expand, children: [
-        Positioned.fill(
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix(matrix),
-            child: Transform.rotate(
-              angle: quarters * math.pi / 2,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: controller.value.size.width,
-                  height: controller.value.size.height,
-                  child: VideoPlayer(controller),
-                ),
-              ),
-            ),
-          ),
-        ),
-        if (editResult != null)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: LayoutBuilder(
-                builder: (context, constraints) => buildEditOverlayLayer(
-                  editResult: editResult,
-                  constraints: constraints,
-                  screenSize: MediaQuery.of(context).size,
-                ),
-              ),
-            ),
-          ),
-      ]),
-    );
-  }
-
-  Widget _buildGalleryVideoThumbnail(
-      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    return FutureBuilder<Uint8List?>(
-      future: _mediaService.getThumbnailFuture(videoUrl),
-      builder: (context, snapshot) {
-        final haveImage = snapshot.connectionState == ConnectionState.done &&
-            snapshot.data != null;
-
-        Widget imageLayer = haveImage
-            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
-            : Container(color: colors.cardColor);
-
-        imageLayer = ColorFiltered(
-          colorFilter: ColorFilter.matrix(matrix),
-          child: Transform.rotate(
-            angle: quarters * math.pi / 2,
-            child: imageLayer,
-          ),
-        );
-
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Stack(fit: StackFit.expand, children: [
-            Positioned.fill(child: imageLayer),
-            if (editResult != null)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) => buildEditOverlayLayer(
-                      editResult: editResult,
-                      constraints: constraints,
-                      screenSize: MediaQuery.of(context).size,
-                    ),
-                  ),
-                ),
-              ),
-            Positioned(
-              top: 6,
-              right: 6,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.55),
-                  shape: BoxShape.circle,
-                ),
-                padding: const EdgeInsets.all(3),
-                child: const Icon(
-                  Icons.play_arrow,
-                  color: Colors.white,
-                  size: 18,
-                ),
-              ),
-            ),
-          ]),
-        );
-      },
-    );
-  }
-
-  Widget _buildGalleryCoverImage(
-      String url, AppColorSet colors, VideoEditResult? editResult) {
-    final List<double> matrix = buildColorMatrix(editResult);
-    final int quarters = editResult?.rotationQuarters ?? 0;
-
-    if (editResult == null) {
-      return Image.network(
-        url,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => Container(
-          decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              color: colors.cardColor.withOpacity(0.5)),
-          child: Icon(Icons.collections,
-              size: 40, color: colors.textColor.withOpacity(0.5)),
-        ),
-      );
-    }
-
-    return ColorFiltered(
-      colorFilter: ColorFilter.matrix(matrix),
-      child: Transform.rotate(
-        angle: quarters * math.pi / 2,
-        child: Image.network(
-          url,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                color: colors.cardColor.withOpacity(0.5)),
-            child: Icon(Icons.collections,
-                size: 40, color: colors.textColor.withOpacity(0.5)),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ========== GALLERY MANAGEMENT =========================================
-
-  void _createNewGallery() {
-    final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
-    final colors = _getColors(themeProvider);
-    showDialog(
-      context: context,
-      builder: (context) {
-        final nameController = TextEditingController();
-        return AlertDialog(
-          title: Text('Create New Gallery',
-              style: TextStyle(color: colors.textColor)),
-          backgroundColor: colors.backgroundColor,
-          content: TextField(
-            controller: nameController,
-            decoration: InputDecoration(
-              hintText: 'Gallery name',
-              hintStyle: TextStyle(color: colors.textColor.withOpacity(0.5)),
-              border: const OutlineInputBorder(),
-            ),
-            style: TextStyle(color: colors.textColor),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child:
-                    Text('Cancel', style: TextStyle(color: colors.textColor))),
-            TextButton(
-              onPressed: () async {
-                final name = nameController.text.trim();
-                if (name.isNotEmpty) {
-                  Navigator.of(context).pop();
-                  await _createGallery(name);
-                }
-              },
-              child: Text('Create', style: TextStyle(color: colors.textColor)),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _createGallery(String name) async {
-    try {
-      final response = await _supabase.from('galleries').insert({
-        'uid': widget.uid,
-        'name': name,
-      }).select();
-      if (mounted) {
-        setState(() => _galleries = [response.first, ..._galleries]);
-      }
-    } catch (e, stack) {
-      await _logProfileError(
-        operation: 'createGallery',
-        error: e,
-        stack: stack,
-        additionalData: {'uid': widget.uid, 'name': name},
-      );
-      if (mounted) showSnackBar(context, 'Failed to create gallery: $e');
-    }
   }
 
   // ========== LOADING SKELETON ===========================================
