@@ -714,12 +714,45 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               _buildProfileHeader(colors),
               const SizedBox(height: 20),
               _buildBioSection(colors),
+              const SizedBox(height: 16),
+              _buildPostsHeaderStrip(colors),
             ]),
           ),
         ),
         ..._buildPostsSliverContent(colors),
         const SliverToBoxAdapter(child: SizedBox(height: 20)),
       ],
+    );
+  }
+
+  /// X-style tab strip — two hairlines with a centered "grid + POSTS" label.
+  /// Replaces the old two-tab buttons (POSTS | GALLERIES) now that galleries
+  /// are gone.
+  Widget _buildPostsHeaderStrip(AppColorSet colors) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: colors.cardColor, width: 1),
+          bottom: BorderSide(color: colors.cardColor, width: 1),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.grid_on, size: 16, color: colors.textColor),
+          const SizedBox(width: 6),
+          Text(
+            'POSTS',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+              color: colors.textColor,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1249,7 +1282,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           Column(children: [
             _buildBioSectionSkeleton(colors),
             const SizedBox(height: 16),
-            Divider(color: colors.dividerColor), // ← use dividerColor from set
+            _buildPostsHeaderStrip(colors),
+            const SizedBox(height: 16),
             _buildPostsGridSkeleton(colors),
           ]),
         ]),
