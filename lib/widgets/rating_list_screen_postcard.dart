@@ -6,6 +6,8 @@ import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/widgets/agree_disagree_widget.dart'; // NEW
+import 'package:Ratedly/resources/agree_disagree_methods.dart'; // NEW
+import 'package:Ratedly/utils/utils.dart'; // NEW (showSnackBar)
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 import 'package:provider/provider.dart';                   // ✅ for Provider.of
@@ -167,8 +169,13 @@ class _RatingListScreenState extends State<RatingListScreen> {
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
 
-  // NEW: userId -> 'agree' | 'disagree' for this post
-  final Map<String, String> _agreeDisagreeChoices = {};
+  // NEW: agree/disagree methods + per-reaction vote state
+  final SupabaseAgreeDisagreeMethods _agreeDisagreeMethods =
+      SupabaseAgreeDisagreeMethods();
+  // targetUserId -> { 'agree': int, 'disagree': int, 'viewerChoice': String? }
+  final Map<String, Map<String, dynamic>> _reactionVotes = {};
+  final Set<String> _submittingVoteFor = {}; // targetUserIds mid-submit
+  String? _viewerUserId;
 
   String _reactionEmoji = '❤️';
   bool _emojiLoaded = false;
@@ -189,7 +196,9 @@ class _RatingListScreenState extends State<RatingListScreen> {
       final user = userProvider.user;
       if (user != null) {
         _currentUserId = user.uid;
+        _viewerUserId = user.uid; // NEW
         AnalyticsService.screenEnter('reactions');
+        _fetchReactionVotes(); // NEW: needs viewerUserId, so fetch after we have it
       }
     });
 
@@ -224,10 +233,7 @@ class _RatingListScreenState extends State<RatingListScreen> {
     _setupRealtime();
     _fetchReactionEmoji();
     _fetchInitialRatings();
-
-    // NEW: agree/disagree choices for every user on this post
-    _fetchAgreeDisagreeChoices();
-    _setupAgreeDisagreeRealtime();
+    _setupAgreeDisagreeRealtime(); // NEW
 
     _scrollController.addListener(() {
       if (_scrollController.position.pixels >=
@@ -284,45 +290,104 @@ class _RatingListScreenState extends State<RatingListScreen> {
         .subscribe();
   }
 
-  // NEW: keep the per-user agree/disagree badges live
+  // NEW: keep every row's agree/disagree counts + viewer choice live
   void _setupAgreeDisagreeRealtime() {
     _agreeDisagreeChannel = Supabase.instance.client
-        .channel('post_agree_disagree_list_${widget.postId}');
+        .channel('reaction_agree_disagree_${widget.postId}');
     _agreeDisagreeChannel
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
-          table: 'post_agree_disagree',
+          table: 'reaction_agree_disagree',
           filter: PostgresChangeFilter(
             type: PostgresChangeFilterType.eq,
             column: 'postid',
             value: widget.postId,
           ),
-          callback: (_) => _fetchAgreeDisagreeChoices(),
+          callback: (_) => _fetchReactionVotes(),
         )
         .subscribe();
   }
 
-  // NEW: fetch every user's agree/disagree choice for this post in one query
-  Future<void> _fetchAgreeDisagreeChoices() async {
-    try {
-      final rows = await Supabase.instance.client
-          .from('post_agree_disagree')
-          .select('userid, choice')
-          .eq('postid', widget.postId);
-      if (!mounted) return;
+  // NEW: fetch agree/disagree state for every reaction on this post
+  Future<void> _fetchReactionVotes() async {
+    final viewerId = _viewerUserId;
+    if (viewerId == null || viewerId.isEmpty) return;
+    final votes = await _agreeDisagreeMethods.getReactionVotesForPost(
+        widget.postId, viewerId);
+    if (!mounted) return;
+    setState(() {
+      _reactionVotes
+        ..clear()
+        ..addAll(votes);
+    });
+  }
+
+  // NEW: handle a tap on Agree/Disagree for a specific reaction row
+  Future<void> _handleVoteTap(String targetUserId, String choice) async {
+    final viewerId = _viewerUserId;
+    if (viewerId == null || viewerId.isEmpty) return;
+    if (_submittingVoteFor.contains(targetUserId)) return;
+
+    final previous = _reactionVotes[targetUserId] ??
+        {'agree': 0, 'disagree': 0, 'viewerChoice': null};
+    final String? previousChoice = previous['viewerChoice'] as String?;
+    final int previousAgree = previous['agree'] as int;
+    final int previousDisagree = previous['disagree'] as int;
+
+    int newAgree = previousAgree;
+    int newDisagree = previousDisagree;
+    String? newChoice;
+
+    if (previousChoice == choice) {
+      // un-voting
+      if (choice == 'agree') {
+        newAgree = (newAgree - 1).clamp(0, 1 << 30);
+      } else {
+        newDisagree = (newDisagree - 1).clamp(0, 1 << 30);
+      }
+      newChoice = null;
+    } else {
+      if (previousChoice == 'agree') {
+        newAgree = (newAgree - 1).clamp(0, 1 << 30);
+      } else if (previousChoice == 'disagree') {
+        newDisagree = (newDisagree - 1).clamp(0, 1 << 30);
+      }
+      if (choice == 'agree') {
+        newAgree += 1;
+      } else {
+        newDisagree += 1;
+      }
+      newChoice = choice;
+    }
+
+    setState(() {
+      _submittingVoteFor.add(targetUserId);
+      _reactionVotes[targetUserId] = {
+        'agree': newAgree,
+        'disagree': newDisagree,
+        'viewerChoice': newChoice,
+      };
+    });
+
+    final String response = await _agreeDisagreeMethods.voteOnReaction(
+      postId: widget.postId,
+      targetUserId: targetUserId,
+      voterUserId: viewerId,
+      choice: choice,
+    );
+
+    if (!mounted) return;
+
+    if (response != 'success') {
+      // Roll back on failure
       setState(() {
-        _agreeDisagreeChoices.clear();
-        for (final r in (rows as List).cast<Map<String, dynamic>>()) {
-          final uid = r['userid']?.toString();
-          final choice = r['choice']?.toString();
-          if (uid != null && choice != null) {
-            _agreeDisagreeChoices[uid] = choice;
-          }
-        }
+        _reactionVotes[targetUserId] = previous;
+        _submittingVoteFor.remove(targetUserId);
       });
-    } catch (e) {
-      // Non-critical: badges simply won't show if this fails.
+      showSnackBar(context, response);
+    } else {
+      setState(() => _submittingVoteFor.remove(targetUserId));
     }
   }
 
@@ -539,7 +604,14 @@ class _RatingListScreenState extends State<RatingListScreen> {
     final userData = _userCache[userId] ?? {};
     final photoUrl = userData['photoUrl'] as String? ?? '';
     final username = userData['username'] as String? ?? 'Deleted user';
-    final agreeDisagreeChoice = _agreeDisagreeChoices[userId]; // NEW
+
+    // NEW: this reaction's agree/disagree vote state
+    final voteData = _reactionVotes[userId] ??
+        const {'agree': 0, 'disagree': 0, 'viewerChoice': null};
+    final int agreeCount = voteData['agree'] as int? ?? 0;
+    final int disagreeCount = voteData['disagree'] as int? ?? 0;
+    final String? viewerChoice = voteData['viewerChoice'] as String?;
+    final bool isSubmitting = _submittingVoteFor.contains(userId);
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -547,94 +619,108 @@ class _RatingListScreenState extends State<RatingListScreen> {
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: GestureDetector(
-        onTap: username == 'Deleted user'
-            ? null
-            : () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => ProfileScreen(uid: userId)),
-                ),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(12),
-            border:
-                Border.all(color: Colors.white.withOpacity(0.05), width: 0.3),
-          ),
-          child: Row(
-            children: [
-              GestureDetector(
-                onTap: username == 'Deleted user'
-                    ? null
-                    : () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => ProfileScreen(uid: userId)),
-                        ),
-                child: _buildUserAvatar(userId, photoUrl),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    VerifiedUsernameWidget(
-                      username: username,
-                      uid: userId,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: _textColor,
-                        shadows: [
-                          Shadow(
-                            color: Colors.black87,
-                            blurRadius: 4,
-                            offset: Offset(1, 1),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(12),
+          border:
+              Border.all(color: Colors.white.withOpacity(0.05), width: 0.3),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                GestureDetector(
+                  onTap: username == 'Deleted user'
+                      ? null
+                      : () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => ProfileScreen(uid: userId)),
                           ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      timeText,
-                      style: TextStyle(
-                        color: _textColor.withOpacity(0.6),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
+                  child: _buildUserAvatar(userId, photoUrl),
                 ),
-              ),
-              // NEW: this user's agree/disagree choice, read-only badge
-              if (agreeDisagreeChoice != null) ...[
-                AgreeDisagreeBadge(choice: agreeDisagreeChoice),
-                const SizedBox(width: 10),
-              ],
-              if (_emojiLoaded)
-                ReadOnlyRatingDisplay(
-                  rating: userRating,
-                  reactionEmoji: _reactionEmoji,
-                  width: 80,
-                  emojiSize: 24,
-                  trackHeight: 3,
-                )
-              else
-                SizedBox(
-                  width: 80,
-                  child: Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: _textColor.withOpacity(0.6),
-                        strokeWidth: 2,
-                      ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: username == 'Deleted user'
+                        ? null
+                        : () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (_) => ProfileScreen(uid: userId)),
+                            ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        VerifiedUsernameWidget(
+                          username: username,
+                          uid: userId,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: _textColor,
+                            shadows: [
+                              Shadow(
+                                color: Colors.black87,
+                                blurRadius: 4,
+                                offset: Offset(1, 1),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          timeText,
+                          style: TextStyle(
+                            color: _textColor.withOpacity(0.6),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
-            ],
-          ),
+                if (_emojiLoaded)
+                  ReadOnlyRatingDisplay(
+                    rating: userRating,
+                    reactionEmoji: _reactionEmoji,
+                    width: 80,
+                    emojiSize: 24,
+                    trackHeight: 3,
+                  )
+                else
+                  SizedBox(
+                    width: 80,
+                    child: Center(
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: _textColor.withOpacity(0.6),
+                          strokeWidth: 2,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            // NEW: tappable Agree/Disagree for this specific reaction
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.only(left: 54.0), // aligns under username
+              child: AgreeDisagreeButtons(
+                agreeCount: agreeCount,
+                disagreeCount: disagreeCount,
+                viewerChoice: viewerChoice,
+                isLoading: isSubmitting,
+                compact: true,
+                onChoice: (choice) => _handleVoteTap(userId, choice),
+              ),
+            ),
+          ],
         ),
       ),
     );
