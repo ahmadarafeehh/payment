@@ -45,28 +45,11 @@ Future<void> _logLoginEvent({
 
 /// Single entry point for both new and returning users.
 ///
-/// Replaces GetStartedPage, SignupScreen, and LoginScreen. There is no
-/// email/password path anymore — Google and Apple are the only ways in.
-/// Account migration (the old "needs_migration" flow) still happens, but
-/// silently: if a Google/Apple attempt comes back as needing migration,
-/// we just re-run the migration call in the background instead of routing
-/// to a separate screen.
-///
-/// [isMigration]/[migrationEmail]/[migrationUid] are kept only so
-/// AuthWrapper can still redirect an already-signed-in-but-unmigrated user
-/// here and show a short explanatory message. They are optional and the
-/// screen works fine without them.
+/// Google and Apple are the only ways in — there is no email/password path
+/// and no Firebase migration flow anymore. Every sign-in resolves directly
+/// against Supabase.
 class WelcomeScreen extends StatefulWidget {
-  final bool isMigration;
-  final String? migrationEmail;
-  final String? migrationUid;
-
-  const WelcomeScreen({
-    Key? key,
-    this.isMigration = false,
-    this.migrationEmail,
-    this.migrationUid,
-  }) : super(key: key);
+  const WelcomeScreen({Key? key}) : super(key: key);
 
   @override
   State<WelcomeScreen> createState() => _WelcomeScreenState();
@@ -107,7 +90,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         hasSupabaseSession: session != null,
         additionalData: {
           'timestamp': DateTime.now().toIso8601String(),
-          'isMigration': widget.isMigration,
         },
       );
     });
@@ -170,38 +152,11 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     );
   }
 
-  // Silent migration: no separate screen, just re-runs the Google-linked
-  // migration call in the background and routes on success/failure exactly
-  // like a normal sign-in attempt would.
-  Future<void> _migrateWithGoogle() async {
-    setState(() => _isLoading = true);
-    final result = await AuthMethods().migrateGoogleUserNative();
-    if (!mounted) return;
-    setState(() => _isLoading = false);
-
-    if (result == 'success' || result == 'onboarding_required') {
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const AuthWrapper()),
-        (route) => false,
-      );
-    } else if (result == 'cancelled') {
-      _showSnackBarSafe('Google sign-in cancelled', isError: true);
-    } else {
-      _showSnackBarSafe(result, isError: true);
-    }
-  }
-
   Future<void> _continueWithGoogle() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
 
     try {
-      // NOTE: verify against your AuthMethods implementation — signup used
-      // signInWithGoogleNative() while login used signInWithGoogle(). This
-      // unified screen uses the native variant; if it does not surface
-      // "needs_migration" for existing unmigrated accounts the way the old
-      // LoginScreen's signInWithGoogle() did, route that check through
-      // signInWithGoogle() instead (or have AuthMethods normalize both).
       final String result = await AuthMethods().signInWithGoogleNative();
 
       if (!mounted) return;
@@ -212,8 +167,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
           MaterialPageRoute(builder: (_) => const AuthWrapper()),
           (route) => false,
         );
-      } else if (result == 'needs_migration') {
-        await _migrateWithGoogle();
       } else if (result == 'cancelled') {
         _showSnackBarSafe('Google sign-in cancelled', isError: true);
       } else {
@@ -242,8 +195,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
           MaterialPageRoute(builder: (_) => const AuthWrapper()),
           (route) => false,
         );
-      } else if (result == 'needs_migration') {
-        await _migrateWithGoogle();
       } else if (result == 'cancelled') {
         _showSnackBarSafe('Apple sign-in cancelled', isError: true);
       } else {
@@ -301,11 +252,9 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                             height: 100,
                           ),
                           const SizedBox(height: 8),
-                          Text(
-                            widget.isMigration
-                                ? 'Please continue to keep\nusing your account'
-                                : 'Discover Your Rating',
-                            style: const TextStyle(
+                          const Text(
+                            'Discover Your Rating',
+                            style: TextStyle(
                               color: Color(0xFFd9d9d9),
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
