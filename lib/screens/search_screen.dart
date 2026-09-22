@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'dart:math' as math; // ← ADD THIS LINE
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -67,6 +68,23 @@ class _SearchScreenState extends State<SearchScreen>
   /// scroll listener doesn't repeatedly issue the same precache requests.
   final Set<String> _precachedImageUrls = {};
 
+  // ── Media pruning (keeps activeControllers/pendingControllers bounded) ──
+  //
+  // Without this, every VideoPlayerController ever created for a scrolled-
+  // through post lives until the screen is disposed — they just pile up
+  // (confirmed via search_perf_logs: activeControllers climbing to 32+ with
+  // pendingControllers stuck around 27, well past any reasonable "near the
+  // viewport" count). Those stuck-pending controllers are all doing network
+  // fetch + decode work simultaneously, which is what was causing the
+  // scroll lag. This periodically disposes controllers/thumbnails whose
+  // post has scrolled well outside the current viewport window.
+  DateTime? _lastPruneAt;
+  static const Duration _pruneThrottle = Duration(milliseconds: 400);
+  // Rows of buffer above/below the first visible row to keep alive.
+  // Wider than the precache lookahead so we don't dispose something the
+  // user is likely to scroll straight back onto.
+  static const int _pruneWindowRows = 6;
+
   // ── Perf/diagnostic logging state ───────────────────────────────────
   //
   // TEMPORARY instrumentation added to diagnose scroll-lag reports.
@@ -79,6 +97,18 @@ class _SearchScreenState extends State<SearchScreen>
   DateTime? _lastMediaWarningLoggedAt;
   static const Duration _mediaWarningThrottle = Duration(seconds: 2);
   static const int _pendingMediaWarningThreshold = 3;
+
+  // ── Frame timing capture (actual jank signal) ───────────────────────
+  //
+  // Everything else in this file logs proxy signals (controller counts,
+  // RPC durations). This is the direct measurement: real build+raster
+  // time per frame, straight from the engine via SchedulerBinding. A
+  // frame budget is ~16ms (60fps); anything over that is a dropped/janky
+  // frame the user actually sees as lag. Flushed periodically as an
+  // aggregate so we're not writing one row per frame.
+  final List<FrameTiming> _frameTimingsBuffer = [];
+  DateTime? _lastFrameLogAt;
+  static const Duration _frameLogInterval = Duration(seconds: 2);
 
   // ── Shared media service (replaces all thumbnail caches & loop controllers) ──
   late final VideoMediaService _mediaService = VideoMediaService()
@@ -217,6 +247,56 @@ class _SearchScreenState extends State<SearchScreen>
     AnalyticsService.screenEnter('search');
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScroll);
+    SchedulerBinding.instance.addTimingsCallback(_onFrameTimings);
+  }
+
+  /// Engine callback firing with real per-frame build/raster durations.
+  /// Buffers them and flushes an aggregated row every [_frameLogInterval],
+  /// tagged with the media-service snapshot at flush time so a jank spike
+  /// can be directly correlated with e.g. a burst of pending controllers.
+  void _onFrameTimings(List<FrameTiming> timings) {
+    _frameTimingsBuffer.addAll(timings);
+
+    final now = DateTime.now();
+    if (_lastFrameLogAt != null &&
+        now.difference(_lastFrameLogAt!) < _frameLogInterval) {
+      return;
+    }
+    if (_frameTimingsBuffer.isEmpty) return;
+    _lastFrameLogAt = now;
+
+    final buffer = List<FrameTiming>.from(_frameTimingsBuffer);
+    _frameTimingsBuffer.clear();
+
+    double totalBuildMs = 0;
+    double totalRasterMs = 0;
+    double worstFrameMs = 0;
+    int jankFrames = 0; // frames over the ~16ms (60fps) budget
+
+    for (final t in buffer) {
+      final buildMs = t.buildDuration.inMicroseconds / 1000.0;
+      final rasterMs = t.rasterDuration.inMicroseconds / 1000.0;
+      final totalMs = buildMs + rasterMs;
+      totalBuildMs += buildMs;
+      totalRasterMs += rasterMs;
+      if (totalMs > worstFrameMs) worstFrameMs = totalMs;
+      if (totalMs > 16.0) jankFrames++;
+    }
+
+    final frameCount = buffer.length;
+    _logPerf(
+      operationType: 'scroll_frame_timing',
+      pageOffset: _offset,
+      mediaSnapshot: _mediaService.diagnosticsSnapshot(),
+      additionalData: {
+        'frameCount': frameCount,
+        'avgBuildMs': (totalBuildMs / frameCount).round(),
+        'avgRasterMs': (totalRasterMs / frameCount).round(),
+        'worstFrameMs': worstFrameMs.round(),
+        'jankFrames': jankFrames,
+        'totalPostsLoaded': _allPosts.length,
+      },
+    );
   }
 
   void _onScroll() {
@@ -235,6 +315,11 @@ class _SearchScreenState extends State<SearchScreen>
     // ── Precache only the next few items ahead of the viewport ──
     _precacheAhead(position.pixels);
 
+    // ── Prune video controllers/thumbnails outside the viewport window ──
+    // This is what keeps activeControllers/pendingControllers bounded as
+    // the grid grows instead of climbing forever (see note above _mediaService).
+    _maybePruneMedia(position.pixels);
+
     // ── Diagnostic: catch "video/thumbnail not showing" during scroll ──
     // This checks media state on every scroll tick (cheap: just two map
     // scans on the media service), independent of whether a network call
@@ -245,6 +330,45 @@ class _SearchScreenState extends State<SearchScreen>
     // from RPC/enrich latency, which only explains a stalled *load*, not
     // a stalled *render* of already-loaded posts.
     _maybeLogPendingMediaWarning(position.pixels);
+  }
+
+  /// Disposes video controllers/thumbnails for posts that have scrolled
+  /// well outside the current viewport, throttled so it doesn't run on
+  /// every scroll frame. Reuses the same row/index math as
+  /// `_precacheAhead`, just with a wider buffer.
+  void _maybePruneMedia(double pixelOffset) {
+    final now = DateTime.now();
+    if (_lastPruneAt != null &&
+        now.difference(_lastPruneAt!) < _pruneThrottle) {
+      return;
+    }
+    _lastPruneAt = now;
+
+    if (!mounted || _allPosts.isEmpty) return;
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final cellWidth = (screenWidth -
+            _gridPadding * 2 -
+            _gridSpacing * (_gridCrossAxisCount - 1)) /
+        _gridCrossAxisCount;
+    final rowHeight = cellWidth / _gridChildAspectRatio + _gridSpacing;
+
+    final firstRow = (pixelOffset / rowHeight).floor();
+    final windowStartRow = math.max(0, firstRow - _pruneWindowRows);
+    final windowEndRow = firstRow + _pruneWindowRows;
+
+    final startIndex =
+        (windowStartRow * _gridCrossAxisCount).clamp(0, _allPosts.length);
+    final endIndex =
+        (windowEndRow * _gridCrossAxisCount).clamp(0, _allPosts.length);
+
+    final keepUrls = <String>{};
+    for (int i = startIndex; i < endIndex; i++) {
+      final url = _allPosts[i]['postUrl']?.toString() ?? '';
+      if (url.isNotEmpty) keepUrls.add(url);
+    }
+
+    _mediaService.pruneOutsideWindow(keepUrls);
   }
 
   void _maybeLogPendingMediaWarning(double pixelOffset) {
@@ -309,6 +433,7 @@ class _SearchScreenState extends State<SearchScreen>
     }
     _debounceTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
+    SchedulerBinding.instance.removeTimingsCallback(_onFrameTimings);
     searchController.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
