@@ -346,6 +346,36 @@ class VideoMediaService {
     }
   }
 
+  /// Disposes any controller/thumbnail-future whose url is not in
+  /// [keepUrls]. Call this periodically (throttled) as the user scrolls,
+  /// passing the set of post urls currently near the viewport.
+  ///
+  /// This is what keeps activeControllers/pendingControllers bounded as
+  /// the grid grows — without it, every controller ever created lives
+  /// until the screen is disposed, which is what caused the scroll lag
+  /// (controllers stuck mid-initialize() piling up and contending for
+  /// network/decoder resources with whatever's actually on screen).
+  void pruneOutsideWindow(Set<String> keepUrls) {
+    final controllersToRemove =
+        _controllers.keys.where((u) => !keepUrls.contains(u)).toList();
+    for (final url in controllersToRemove) {
+      _controllers.remove(url)?.dispose();
+      _controllersInitialized.remove(url);
+    }
+
+    // Thumbnails are cheap (just bytes), so we don't need to be as
+    // aggressive — but still cap them so long scroll sessions don't
+    // accumulate hundreds of decoded images.
+    if (_thumbnailCache.length > 150) {
+      final thumbsToRemove =
+          _thumbnailCache.keys.where((u) => !keepUrls.contains(u)).toList();
+      for (final url in thumbsToRemove) {
+        _thumbnailCache.remove(url);
+        _thumbnailFutures.remove(url);
+      }
+    }
+  }
+
   /// Pauses every looping controller. Mutes first so that if a controller
   /// was somehow left at a non-zero volume, the pause cannot coincide with
   /// an audible frame.
