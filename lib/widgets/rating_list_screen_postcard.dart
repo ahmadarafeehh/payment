@@ -5,6 +5,7 @@ import 'package:timeago/timeago.dart' as timeago;
 import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
+import 'package:Ratedly/widgets/agree_disagree_widget.dart'; // NEW
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/services/analytics_service.dart'; // ✅ screen tracking
 import 'package:provider/provider.dart';                   // ✅ for Provider.of
@@ -153,6 +154,7 @@ class RatingListScreen extends StatefulWidget {
 
 class _RatingListScreenState extends State<RatingListScreen> {
   late final RealtimeChannel _ratingsChannel;
+  late final RealtimeChannel _agreeDisagreeChannel; // NEW
   List<Map<String, dynamic>> _ratings = [];
   int _page = 0;
   final int _limit = 20;
@@ -164,6 +166,9 @@ class _RatingListScreenState extends State<RatingListScreen> {
 
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
+
+  // NEW: userId -> 'agree' | 'disagree' for this post
+  final Map<String, String> _agreeDisagreeChoices = {};
 
   String _reactionEmoji = '❤️';
   bool _emojiLoaded = false;
@@ -220,6 +225,10 @@ class _RatingListScreenState extends State<RatingListScreen> {
     _fetchReactionEmoji();
     _fetchInitialRatings();
 
+    // NEW: agree/disagree choices for every user on this post
+    _fetchAgreeDisagreeChoices();
+    _setupAgreeDisagreeRealtime();
+
     _scrollController.addListener(() {
       if (_scrollController.position.pixels >=
           _scrollController.position.maxScrollExtent - 100) {
@@ -239,6 +248,7 @@ class _RatingListScreenState extends State<RatingListScreen> {
     }
 
     _ratingsChannel.unsubscribe();
+    _agreeDisagreeChannel.unsubscribe(); // NEW
     _scrollController.dispose();
     for (final c in _videoControllers.values) {
       c.dispose();
@@ -272,6 +282,48 @@ class _RatingListScreenState extends State<RatingListScreen> {
           callback: _handleRealtimeUpdate,
         )
         .subscribe();
+  }
+
+  // NEW: keep the per-user agree/disagree badges live
+  void _setupAgreeDisagreeRealtime() {
+    _agreeDisagreeChannel = Supabase.instance.client
+        .channel('post_agree_disagree_list_${widget.postId}');
+    _agreeDisagreeChannel
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'post_agree_disagree',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'postid',
+            value: widget.postId,
+          ),
+          callback: (_) => _fetchAgreeDisagreeChoices(),
+        )
+        .subscribe();
+  }
+
+  // NEW: fetch every user's agree/disagree choice for this post in one query
+  Future<void> _fetchAgreeDisagreeChoices() async {
+    try {
+      final rows = await Supabase.instance.client
+          .from('post_agree_disagree')
+          .select('userid, choice')
+          .eq('postid', widget.postId);
+      if (!mounted) return;
+      setState(() {
+        _agreeDisagreeChoices.clear();
+        for (final r in (rows as List).cast<Map<String, dynamic>>()) {
+          final uid = r['userid']?.toString();
+          final choice = r['choice']?.toString();
+          if (uid != null && choice != null) {
+            _agreeDisagreeChoices[uid] = choice;
+          }
+        }
+      });
+    } catch (e) {
+      // Non-critical: badges simply won't show if this fails.
+    }
   }
 
   Future<void> _fetchReactionEmoji() async {
@@ -487,6 +539,7 @@ class _RatingListScreenState extends State<RatingListScreen> {
     final userData = _userCache[userId] ?? {};
     final photoUrl = userData['photoUrl'] as String? ?? '';
     final username = userData['username'] as String? ?? 'Deleted user';
+    final agreeDisagreeChoice = _agreeDisagreeChoices[userId]; // NEW
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -553,6 +606,11 @@ class _RatingListScreenState extends State<RatingListScreen> {
                   ],
                 ),
               ),
+              // NEW: this user's agree/disagree choice, read-only badge
+              if (agreeDisagreeChoice != null) ...[
+                AgreeDisagreeBadge(choice: agreeDisagreeChoice),
+                const SizedBox(width: 10),
+              ],
               if (_emojiLoaded)
                 ReadOnlyRatingDisplay(
                   rating: userRating,
