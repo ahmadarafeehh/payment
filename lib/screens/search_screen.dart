@@ -67,6 +67,19 @@ class _SearchScreenState extends State<SearchScreen>
   /// scroll listener doesn't repeatedly issue the same precache requests.
   final Set<String> _precachedImageUrls = {};
 
+  // ── Perf/diagnostic logging state ───────────────────────────────────
+  //
+  // TEMPORARY instrumentation added to diagnose scroll-lag reports.
+  // Writes to `search_perf_logs` (see migration run 2026-09). Safe to leave
+  // enabled (cheap, fire-and-forget, matches DebugLogger's non-throwing
+  // pattern) but intended to be stripped once the cause is confirmed.
+  //
+  // Throttles the pending-media warning log so a long stutter doesn't spam
+  // one row per frame/scroll-tick.
+  DateTime? _lastMediaWarningLoggedAt;
+  static const Duration _mediaWarningThrottle = Duration(seconds: 2);
+  static const int _pendingMediaWarningThreshold = 3;
+
   // ── Shared media service (replaces all thumbnail caches & loop controllers) ──
   late final VideoMediaService _mediaService = VideoMediaService()
     ..onRebuild = () {
@@ -105,6 +118,47 @@ class _SearchScreenState extends State<SearchScreen>
         },
       });
     } catch (_) {}
+  }
+
+  // ── Perf/diagnostic logging (writes to search_perf_logs) ───────────────
+  //
+  // Fire-and-forget, never throws, never awaited by callers — mirrors the
+  // DebugLogger pattern already used elsewhere in the app so logging can
+  // never itself cause jank or a crash.
+  //
+  // `mediaSnapshot` should be a `VideoMediaService.diagnosticsSnapshot()`
+  // taken at (as close as possible to) the same moment as the timing, so a
+  // slow page load and a pile-up of un-initialized video controllers show
+  // up together on one row.
+  void _logPerf({
+    required String operationType,
+    int? durationMs,
+    int? enrichDurationMs,
+    int? pageOffset,
+    int? rowsReturned,
+    bool? isFirstLoad,
+    Map<String, int>? mediaSnapshot,
+    Map<String, dynamic>? additionalData,
+  }) {
+    Future(() async {
+      try {
+        await _supabase.from('search_perf_logs').insert({
+          'user_id': currentUserId,
+          'operation_type': operationType,
+          'duration_ms': durationMs,
+          'enrich_duration_ms': enrichDurationMs,
+          'page_offset': pageOffset,
+          'rows_returned': rowsReturned,
+          'is_first_load': isFirstLoad,
+          'additional_data': {
+            ...?mediaSnapshot,
+            ...?additionalData,
+          },
+        });
+      } catch (_) {
+        // Logging must never crash the app or surface an error of its own.
+      }
+    });
   }
 
   // ── Avatar video controller (unchanged) ─────────────────────────────
@@ -180,6 +234,41 @@ class _SearchScreenState extends State<SearchScreen>
 
     // ── Precache only the next few items ahead of the viewport ──
     _precacheAhead(position.pixels);
+
+    // ── Diagnostic: catch "video/thumbnail not showing" during scroll ──
+    // This checks media state on every scroll tick (cheap: just two map
+    // scans on the media service), independent of whether a network call
+    // is in flight. If a meaningful number of the currently-visible-ish
+    // items still have controllers stuck in the "instantiated but not
+    // initialized" state, or thumbnails still pending, that's the direct
+    // signature of "user scrolls past it and it never shows" — separate
+    // from RPC/enrich latency, which only explains a stalled *load*, not
+    // a stalled *render* of already-loaded posts.
+    _maybeLogPendingMediaWarning(position.pixels);
+  }
+
+  void _maybeLogPendingMediaWarning(double pixelOffset) {
+    final snapshot = _mediaService.diagnosticsSnapshot();
+    final pending =
+        (snapshot['pendingControllers'] ?? 0) + (snapshot['pendingThumbnailFetches'] ?? 0);
+    if (pending < _pendingMediaWarningThreshold) return;
+
+    final now = DateTime.now();
+    if (_lastMediaWarningLoggedAt != null &&
+        now.difference(_lastMediaWarningLoggedAt!) < _mediaWarningThrottle) {
+      return;
+    }
+    _lastMediaWarningLoggedAt = now;
+
+    _logPerf(
+      operationType: 'scroll_media_pending',
+      pageOffset: _offset,
+      mediaSnapshot: snapshot,
+      additionalData: {
+        'scrollPixels': pixelOffset.round(),
+        'totalPostsLoaded': _allPosts.length,
+      },
+    );
   }
 
   @override
@@ -292,23 +381,33 @@ class _SearchScreenState extends State<SearchScreen>
       _isFirstLoad = false;
       return;
     }
+
+    final overallStopwatch = Stopwatch()..start();
+    final rpcStopwatch = Stopwatch();
+    final enrichStopwatch = Stopwatch();
+    final wasFirstLoad = _isFirstLoad;
+
     try {
       final excludedUsers = [...blockedUsersSet, currentUserId!];
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
 
+      rpcStopwatch.start();
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
         'page_offset': _offset,
         'page_limit': postsLimit,
       });
+      rpcStopwatch.stop();
 
       if (response is List) {
         final newPosts =
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
+        enrichStopwatch.start();
         await _enrichPostsWithUserData(newPosts);
+        enrichStopwatch.stop();
         if (!mounted) return;
 
         // NOTE: we no longer bulk-precache the whole batch.
@@ -326,6 +425,21 @@ class _SearchScreenState extends State<SearchScreen>
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _precacheAhead(0);
         });
+
+        overallStopwatch.stop();
+        _logPerf(
+          operationType: 'fetch_posts_perf',
+          durationMs: rpcStopwatch.elapsedMilliseconds,
+          enrichDurationMs: enrichStopwatch.elapsedMilliseconds,
+          pageOffset: _offset - newPosts.length,
+          rowsReturned: newPosts.length,
+          isFirstLoad: wasFirstLoad,
+          mediaSnapshot: _mediaService.diagnosticsSnapshot(),
+          additionalData: {
+            'totalDurationMs': overallStopwatch.elapsedMilliseconds,
+            'requestedLimit': postsLimit,
+          },
+        );
       } else {
         setState(() {
           _allPosts = [];
@@ -333,13 +447,36 @@ class _SearchScreenState extends State<SearchScreen>
           _isFirstLoad = false;
           _hasLoadError = true;
         });
+        overallStopwatch.stop();
+        _logPerf(
+          operationType: 'fetch_posts_perf',
+          durationMs: rpcStopwatch.elapsedMilliseconds,
+          pageOffset: _offset,
+          rowsReturned: 0,
+          isFirstLoad: wasFirstLoad,
+          additionalData: {
+            'totalDurationMs': overallStopwatch.elapsedMilliseconds,
+            'nonListResponse': true,
+          },
+        );
       }
     } catch (e, st) {
+      overallStopwatch.stop();
       await _logSearchError(
         operationType: 'fetch_posts',
         additionalData: {'offset': _offset, 'isFirstLoad': _isFirstLoad},
         error: e,
         stackTrace: st,
+      );
+      _logPerf(
+        operationType: 'fetch_posts_perf',
+        durationMs: rpcStopwatch.elapsedMilliseconds,
+        pageOffset: _offset,
+        isFirstLoad: wasFirstLoad,
+        additionalData: {
+          'totalDurationMs': overallStopwatch.elapsedMilliseconds,
+          'threw': true,
+        },
       );
       setState(() {
         _allPosts = [];
@@ -353,21 +490,36 @@ class _SearchScreenState extends State<SearchScreen>
   Future<void> _loadMorePosts() async {
     if (!_hasMorePosts || _isLoadingMore) return;
     setState(() => _isLoadingMore = true);
+
+    final overallStopwatch = Stopwatch()..start();
+    final rpcStopwatch = Stopwatch();
+    final enrichStopwatch = Stopwatch();
+    final offsetAtRequest = _offset;
+    // Snapshot media state BEFORE the load, so we can see whether the
+    // previous page's videos/thumbnails had even finished by the time the
+    // user scrolled far enough to trigger the next page — i.e. whether
+    // pagination is outrunning media loading.
+    final mediaSnapshotBefore = _mediaService.diagnosticsSnapshot();
+
     try {
       final excludedUsers = [...blockedUsersSet, currentUserId!];
 
+      rpcStopwatch.start();
       final response = await _supabase.rpc('get_search_feed', params: {
         'current_user_id': currentUserId!,
         'excluded_users': excludedUsers,
         'page_offset': _offset,
         'page_limit': _subsequentPostsLimit,
       });
+      rpcStopwatch.stop();
 
       if (response is List && response.isNotEmpty) {
         final newPosts =
             response.map<Map<String, dynamic>>(_normalisePost).toList();
 
+        enrichStopwatch.start();
         await _enrichPostsWithUserData(newPosts);
+        enrichStopwatch.stop();
         if (!mounted) return;
 
         setState(() {
@@ -375,15 +527,56 @@ class _SearchScreenState extends State<SearchScreen>
           _offset += newPosts.length;
           _hasMorePosts = newPosts.length == _subsequentPostsLimit;
         });
+
+        overallStopwatch.stop();
+        _logPerf(
+          operationType: 'load_more_posts_perf',
+          durationMs: rpcStopwatch.elapsedMilliseconds,
+          enrichDurationMs: enrichStopwatch.elapsedMilliseconds,
+          pageOffset: offsetAtRequest,
+          rowsReturned: newPosts.length,
+          isFirstLoad: false,
+          mediaSnapshot: _mediaService.diagnosticsSnapshot(),
+          additionalData: {
+            'totalDurationMs': overallStopwatch.elapsedMilliseconds,
+            'pendingControllersBeforeLoad':
+                mediaSnapshotBefore['pendingControllers'],
+            'pendingThumbnailFetchesBeforeLoad':
+                mediaSnapshotBefore['pendingThumbnailFetches'],
+          },
+        );
       } else {
         setState(() => _hasMorePosts = false);
+        overallStopwatch.stop();
+        _logPerf(
+          operationType: 'load_more_posts_perf',
+          durationMs: rpcStopwatch.elapsedMilliseconds,
+          pageOffset: offsetAtRequest,
+          rowsReturned: 0,
+          isFirstLoad: false,
+          additionalData: {
+            'totalDurationMs': overallStopwatch.elapsedMilliseconds,
+            'emptyOrNonList': true,
+          },
+        );
       }
     } catch (e, st) {
+      overallStopwatch.stop();
       await _logSearchError(
         operationType: 'load_more_posts',
         additionalData: {'offset': _offset},
         error: e,
         stackTrace: st,
+      );
+      _logPerf(
+        operationType: 'load_more_posts_perf',
+        durationMs: rpcStopwatch.elapsedMilliseconds,
+        pageOffset: offsetAtRequest,
+        isFirstLoad: false,
+        additionalData: {
+          'totalDurationMs': overallStopwatch.elapsedMilliseconds,
+          'threw': true,
+        },
       );
       setState(() => _hasMorePosts = false);
     } finally {
