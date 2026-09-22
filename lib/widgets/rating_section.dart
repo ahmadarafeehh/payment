@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/resources/reactions_methods.dart';
+import 'package:Ratedly/resources/agree_disagree_methods.dart'; // NEW
+import 'package:Ratedly/widgets/agree_disagree_widget.dart'; // NEW
 import 'package:Ratedly/utils/utils.dart';
 import 'package:Ratedly/widgets/flutter_rating_bar.dart';
 
@@ -32,11 +34,23 @@ class _RatingSectionState extends State<RatingSection> {
   bool _isLoading = true;
   bool _hasUserRated = false; // whether current user has rated
 
+  // ---- Agree / Disagree state ----
+  final SupabaseAgreeDisagreeMethods _agreeDisagreeMethods =
+      SupabaseAgreeDisagreeMethods();
+  late final RealtimeChannel _agreeDisagreeChannel;
+  int _agreeCount = 0;
+  int _disagreeCount = 0;
+  String? _userChoice; // 'agree' | 'disagree' | null
+  bool _agreeDisagreeLoading = true;
+  bool _isSubmittingChoice = false;
+
   @override
   void initState() {
     super.initState();
     _computeAverageRatingAndUserRating();
     _fetchReactionEmoji();
+    _fetchAgreeDisagreeState();
+    _setupAgreeDisagreeRealtime();
   }
 
   // Keep internal state in sync whenever the parent passes a new ratings list
@@ -49,6 +63,15 @@ class _RatingSectionState extends State<RatingSection> {
         oldWidget.userId != widget.userId) {
       _computeAverageRatingAndUserRating();
     }
+    if (oldWidget.postId != widget.postId) {
+      _fetchAgreeDisagreeState();
+    }
+  }
+
+  @override
+  void dispose() {
+    _agreeDisagreeChannel.unsubscribe();
+    super.dispose();
   }
 
   // --------------------------------------------------------------------------
@@ -125,6 +148,111 @@ class _RatingSectionState extends State<RatingSection> {
     if (mounted) setState(() => _isLoading = false);
   }
 
+  // ---- Agree / Disagree: fetch + realtime + submit ----
+
+  Future<void> _fetchAgreeDisagreeState() async {
+    if (mounted) setState(() => _agreeDisagreeLoading = true);
+    try {
+      final rows = await Supabase.instance.client
+          .from('post_agree_disagree')
+          .select('userid, choice')
+          .eq('postid', widget.postId);
+      final list = (rows as List).cast<Map<String, dynamic>>();
+      final int agree = list.where((r) => r['choice'] == 'agree').length;
+      final int disagree =
+          list.where((r) => r['choice'] == 'disagree').length;
+      final ownRow = list.firstWhere(
+        (r) => r['userid']?.toString() == widget.userId,
+        orElse: () => const {},
+      );
+      if (mounted) {
+        setState(() {
+          _agreeCount = agree;
+          _disagreeCount = disagree;
+          _userChoice = ownRow['choice']?.toString();
+          _agreeDisagreeLoading = false;
+        });
+      }
+    } catch (e) {
+      await _logReactionError(
+        operationType: 'fetch_agree_disagree_state',
+        additionalData: {'postId': widget.postId},
+        error: e,
+      );
+      if (mounted) setState(() => _agreeDisagreeLoading = false);
+    }
+  }
+
+  void _setupAgreeDisagreeRealtime() {
+    _agreeDisagreeChannel = Supabase.instance.client
+        .channel('post_agree_disagree_${widget.postId}');
+    _agreeDisagreeChannel
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'post_agree_disagree',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'postid',
+            value: widget.postId,
+          ),
+          callback: (_) => _fetchAgreeDisagreeState(),
+        )
+        .subscribe();
+  }
+
+  Future<void> _handleAgreeDisagreeTap(String choice) async {
+    if (_isSubmittingChoice) return;
+
+    // Optimistic UI update
+    final previousChoice = _userChoice;
+    final previousAgree = _agreeCount;
+    final previousDisagree = _disagreeCount;
+
+    setState(() {
+      _isSubmittingChoice = true;
+      if (previousChoice == choice) {
+        // un-voting
+        if (choice == 'agree') {
+          _agreeCount = (_agreeCount - 1).clamp(0, 1 << 30);
+        } else {
+          _disagreeCount = (_disagreeCount - 1).clamp(0, 1 << 30);
+        }
+        _userChoice = null;
+      } else {
+        if (previousChoice == 'agree') {
+          _agreeCount = (_agreeCount - 1).clamp(0, 1 << 30);
+        } else if (previousChoice == 'disagree') {
+          _disagreeCount = (_disagreeCount - 1).clamp(0, 1 << 30);
+        }
+        if (choice == 'agree') {
+          _agreeCount += 1;
+        } else {
+          _disagreeCount += 1;
+        }
+        _userChoice = choice;
+      }
+    });
+
+    final String response = await _agreeDisagreeMethods
+        .reactToPostAgreeDisagree(widget.postId, widget.userId, choice);
+
+    if (!mounted) return;
+
+    if (response != 'success') {
+      // Roll back on failure
+      setState(() {
+        _userChoice = previousChoice;
+        _agreeCount = previousAgree;
+        _disagreeCount = previousDisagree;
+        _isSubmittingChoice = false;
+      });
+      showSnackBar(context, response);
+    } else {
+      setState(() => _isSubmittingChoice = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // If user has already rated, start thumb at community average.
@@ -148,7 +276,7 @@ class _RatingSectionState extends State<RatingSection> {
                   reactionEmoji: _reactionEmoji,
                   initialThumbPosition: initialPos,
                   onRatingEnd: (rating) async {
-                    // SupabaseReactionsMethods.reactToPost already logs its own errors
+                    // SupabaseReactionsMethods already logs its own errors
                     final String response =
                         await SupabaseReactionsMethods().reactToPost(
                       widget.postId,
@@ -166,6 +294,18 @@ class _RatingSectionState extends State<RatingSection> {
                   userRating: widget.userRating,
                   userProfilePhoto: widget.userProfilePhoto,
                 ),
+        ),
+        const SizedBox(height: 8.0),
+        // ---- Agree / Disagree row ----
+        Padding(
+          padding: const EdgeInsets.only(left: 4.0),
+          child: AgreeDisagreeButtons(
+            agreeCount: _agreeCount,
+            disagreeCount: _disagreeCount,
+            userChoice: _userChoice,
+            isLoading: _agreeDisagreeLoading || _isSubmittingChoice,
+            onChoice: _handleAgreeDisagreeTap,
+          ),
         ),
       ],
     );
