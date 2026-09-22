@@ -172,6 +172,28 @@ class ScaledDrawingPainter extends CustomPainter {
 /// to be muted *before* `play()` is ever invoked. This prevents the audible
 /// "flash" that occurs on iOS/Android when a preview video starts playing
 /// for a handful of milliseconds at full volume during initialization.
+///
+/// **Freeze fix (2026-09):** `search_perf_logs` showed sessions where the
+/// UI dropped to ~1 frame/second and never recovered — `totalPostsLoaded`
+/// frozen, `pendingControllers` stuck at 1 for 70+ seconds. Root cause:
+/// `controller.initialize()` has no built-in timeout, so a single
+/// unreachable/corrupt video file would hang that await forever, while the
+/// native player kept retrying in the background and stealing UI-thread
+/// time roughly once a second. Because the freeze also stops scroll events,
+/// the existing `pruneOutsideWindow` (only triggered from scroll) never got
+/// a chance to clean up the stuck controller — a self-reinforcing hang.
+///
+/// Three defenses were added to close this off:
+///  1. `initialize()` is now wrapped in a hard timeout (see
+///     [_initTimeout]) so a stalled load always fails fast into the
+///     existing catch/cleanup path instead of hanging indefinitely.
+///  2. A periodic watchdog (see [_watchdogInterval]) independently reaps
+///     any controller that has been pending past [_watchdogStaleAfter],
+///     so cleanup doesn't depend on scroll events still firing.
+///  3. A concurrency cap (see [_maxConcurrentInits]) limits how many
+///     controllers can be mid-`initialize()` at once, so a handful of
+///     slow/stuck videos landing in the same prune window can't each spin
+///     up a competing native decoder instance simultaneously.
 class VideoMediaService {
   // ── Thumbnail cache ─────────────────────────────────────────────
   final Map<String, Uint8List?> _thumbnailCache = {};
@@ -181,6 +203,51 @@ class VideoMediaService {
   final Map<String, VideoPlayerController> _controllers = {};
   final Map<String, bool> _controllersInitialized = {};
   Timer? _initDebounce;
+
+  // ── Freeze-fix state ─────────────────────────────────────────────
+
+  /// How long we allow a single `controller.initialize()` call to run
+  /// before we give up on it and treat it as failed. This is the primary
+  /// fix: without this, a stalled network read or a bad video file hangs
+  /// this await forever.
+  static const Duration _initTimeout = Duration(seconds: 5);
+
+  /// How often the watchdog checks for stuck controllers. Independent of
+  /// scroll — this is what guarantees cleanup even if the UI thread has
+  /// already stalled and scroll events have stopped firing.
+  static const Duration _watchdogInterval = Duration(seconds: 3);
+
+  /// A controller pending longer than this is considered stuck and force
+  /// -disposed by the watchdog, even if its own timeout hasn't fired yet
+  /// (belt-and-braces in case a future edit changes _initTimeout without
+  /// updating this).
+  static const Duration _watchdogStaleAfter = Duration(seconds: 8);
+
+  /// Maximum number of controllers allowed to be mid-`initialize()` at the
+  /// same time. Keeps a burst of slow/stuck videos from each spinning up
+  /// a competing native decoder instance simultaneously.
+  static const int _maxConcurrentInits = 2;
+
+  /// When a controller's `initialize()` call started, keyed by url. Used
+  /// by the watchdog to find stale entries. An entry is removed as soon
+  /// as its initialize() call resolves (success, timeout, or error).
+  final Map<String, DateTime> _initStartTimes = {};
+
+  /// URLs whose `initializeController` call is currently running (i.e.
+  /// between the call starting and `initialize()` resolving/throwing).
+  /// Used to enforce [_maxConcurrentInits] and to de-duplicate concurrent
+  /// calls for the same url.
+  final Set<String> _initInFlight = {};
+
+  /// Urls that were requested while already at the concurrency cap. They
+  /// are drained (in request order) as in-flight slots free up.
+  final List<String> _initQueue = [];
+
+  Timer? _watchdogTimer;
+
+  VideoMediaService() {
+    _watchdogTimer = Timer.periodic(_watchdogInterval, (_) => _runWatchdog());
+  }
 
   /// Assign a callback that the service calls when a controller
   /// initialisation finishes (via a small debounce). You can wire it
@@ -206,6 +273,11 @@ class VideoMediaService {
   // - pendingThumbnailFetches: thumbnail futures in flight (requested but
   //   not yet resolved) — a large number here during fast scroll indicates
   //   thumbnail generation is the bottleneck, not the grid itself.
+  // - watchdogReaped: running total of controllers force-disposed by the
+  //   watchdog for exceeding _watchdogStaleAfter. Should normally be 0;
+  //   a nonzero/climbing value means videos are actually failing to load
+  //   (bad files, dead URLs, flaky network) and is worth alerting on even
+  //   though the freeze itself is now prevented.
   Map<String, int> diagnosticsSnapshot() {
     final pendingControllers = _controllersInitialized.values
         .where((initialized) => initialized == false)
@@ -220,8 +292,11 @@ class VideoMediaService {
       'pendingControllers': pendingControllers,
       'cachedThumbnails': _thumbnailCache.length,
       'pendingThumbnailFetches': pendingThumbnailFetches,
+      'watchdogReaped': _watchdogReapedCount,
     };
   }
+
+  int _watchdogReapedCount = 0;
 
   // ── Thumbnail methods ──────────────────────────────────────────
 
@@ -259,11 +334,35 @@ class VideoMediaService {
   /// listener also re-asserts volume=0 if the platform ever reports a
   /// non-zero volume mid-stream (this happens on some Android builds when
   /// the player is re-created after being backgrounded).
+  ///
+  /// **Timeout + concurrency cap (freeze fix):** if [videoUrl] fails to
+  /// finish loading within [_initTimeout], this call fails fast and cleans
+  /// up instead of hanging forever. If [_maxConcurrentInits] controllers
+  /// are already loading, this call is queued rather than started
+  /// immediately, so a burst of slow videos can't all contend for
+  /// resources at once.
   Future<void> initializeController(String videoUrl) async {
     if (_controllers.containsKey(videoUrl) &&
         _controllersInitialized[videoUrl] == true) {
       return;
     }
+    // Already loading (or queued to load) — don't start a duplicate.
+    if (_initInFlight.contains(videoUrl) || _initQueue.contains(videoUrl)) {
+      return;
+    }
+
+    if (_initInFlight.length >= _maxConcurrentInits) {
+      _initQueue.add(videoUrl);
+      return;
+    }
+
+    await _startInitialize(videoUrl);
+  }
+
+  Future<void> _startInitialize(String videoUrl) async {
+    _initInFlight.add(videoUrl);
+    _initStartTimes[videoUrl] = DateTime.now();
+
     try {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(videoUrl),
@@ -282,9 +381,23 @@ class VideoMediaService {
         }
       });
 
-      await controller.initialize();
+      // THE FIX: bound how long we'll wait for initialize() to resolve.
+      // Previously this await had no timeout, so a stalled/corrupt video
+      // would hang here forever — which is what caused the observed
+      // freeze (pendingControllers stuck at 1, UI dropping to ~1fps).
+      await controller.initialize().timeout(
+        _initTimeout,
+        onTimeout: () {
+          throw TimeoutException(
+            'VideoMediaService: initialize() timed out after '
+            '${_initTimeout.inSeconds}s for $videoUrl',
+          );
+        },
+      );
+
       if (!_controllers.containsKey(videoUrl)) {
-        // Disposed while we were awaiting — bail without touching state.
+        // Disposed while we were awaiting (e.g. pruned or watchdog-reaped
+        // mid-load) — bail without touching state.
         return;
       }
 
@@ -303,6 +416,56 @@ class VideoMediaService {
     } catch (_) {
       _controllers.remove(videoUrl)?.dispose();
       _controllersInitialized.remove(videoUrl);
+    } finally {
+      _initStartTimes.remove(videoUrl);
+      _initInFlight.remove(videoUrl);
+      _drainInitQueue();
+    }
+  }
+
+  /// Starts the next queued controller (if any and if a slot is free).
+  /// Called whenever an in-flight initialize finishes, so queued videos
+  /// get picked up without needing a separate poller.
+  void _drainInitQueue() {
+    while (_initQueue.isNotEmpty &&
+        _initInFlight.length < _maxConcurrentInits) {
+      final next = _initQueue.removeAt(0);
+      // Guard against a url that was queued but has since been pruned
+      // or already completed via another path.
+      if (_controllersInitialized[next] == true) continue;
+      unawaited(_startInitialize(next));
+    }
+  }
+
+  /// Independent safety net: periodically checks for controllers that
+  /// have been mid-initialize() for longer than [_watchdogStaleAfter] and
+  /// force-disposes them.
+  ///
+  /// This exists because the primary timeout above only protects a single
+  /// `initializeController` call — if some future code path awaits it
+  /// differently, or if the timeout itself somehow doesn't fire, this
+  /// catches it. It also matters because during an actual freeze, scroll
+  /// events (which normally drive cleanup via pruneOutsideWindow) stop
+  /// firing — this watchdog runs on its own timer, independent of scroll
+  /// or any other UI activity, so cleanup always eventually happens.
+  void _runWatchdog() {
+    final now = DateTime.now();
+    final stale = _initStartTimes.entries
+        .where((e) => now.difference(e.value) > _watchdogStaleAfter)
+        .map((e) => e.key)
+        .toList();
+
+    for (final url in stale) {
+      _controllers.remove(url)?.dispose();
+      _controllersInitialized.remove(url);
+      _initStartTimes.remove(url);
+      _initInFlight.remove(url);
+      _watchdogReapedCount++;
+    }
+
+    if (stale.isNotEmpty) {
+      _drainInitQueue();
+      onRebuild?.call();
     }
   }
 
@@ -355,13 +518,21 @@ class VideoMediaService {
   /// until the screen is disposed, which is what caused the scroll lag
   /// (controllers stuck mid-initialize() piling up and contending for
   /// network/decoder resources with whatever's actually on screen).
+  ///
+  /// Note this is now a secondary defense against stuck controllers — the
+  /// watchdog (see [_runWatchdog]) is the primary one, since this method
+  /// only runs when scroll events are firing, which stops being true
+  /// during an actual freeze.
   void pruneOutsideWindow(Set<String> keepUrls) {
     final controllersToRemove =
         _controllers.keys.where((u) => !keepUrls.contains(u)).toList();
     for (final url in controllersToRemove) {
       _controllers.remove(url)?.dispose();
       _controllersInitialized.remove(url);
+      _initStartTimes.remove(url);
+      _initInFlight.remove(url);
     }
+    _initQueue.removeWhere((u) => !keepUrls.contains(u));
 
     // Thumbnails are cheap (just bytes), so we don't need to be as
     // aggressive — but still cap them so long scroll sessions don't
@@ -397,14 +568,18 @@ class VideoMediaService {
     }
   }
 
-  /// Disposes all resources. Call from the screen’s `dispose()`.
+  /// Disposes all resources. Call from the screen's `dispose()`.
   void dispose() {
     _initDebounce?.cancel();
+    _watchdogTimer?.cancel();
     for (final c in _controllers.values) {
       c.dispose();
     }
     _controllers.clear();
     _controllersInitialized.clear();
+    _initStartTimes.clear();
+    _initInFlight.clear();
+    _initQueue.clear();
     _thumbnailCache.clear();
     _thumbnailFutures.clear();
   }
