@@ -1,20 +1,25 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/services/notification_service.dart';
 
-/// Add this file alongside reactions_methods.dart, e.g.
 /// lib/resources/agree_disagree_methods.dart
 ///
-/// SQL to run once in Supabase (mirrors post_rating):
+/// This version targets a SPECIFIC REACTION (postid + target_userid),
+/// not the post as a whole. Any viewer can agree/disagree with any
+/// individual person's reaction shown in the reactions list — including
+/// their own.
 ///
-/// create table post_agree_disagree (
+/// SQL to run once in Supabase:
+///
+/// create table reaction_agree_disagree (
 ///   postid text not null,
-///   userid text not null,
+///   target_userid text not null,   -- whose reaction this vote is about
+///   voter_userid text not null,    -- who is casting agree/disagree
 ///   choice text not null check (choice in ('agree', 'disagree')),
 ///   timestamp timestamptz not null default now(),
-///   primary key (postid, userid)
+///   primary key (postid, target_userid, voter_userid)
 /// );
 ///
-/// alter publication supabase_realtime add table post_agree_disagree;
+/// alter publication supabase_realtime add table reaction_agree_disagree;
 
 class SupabaseAgreeDisagreeMethods {
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -38,7 +43,7 @@ class SupabaseAgreeDisagreeMethods {
         'additional_data': additionalData,
       });
     } catch (_) {
-      // Fail silently – error logging must not crash the app
+      // Fail silently – logging must not crash the app
     }
   }
 
@@ -51,35 +56,75 @@ class SupabaseAgreeDisagreeMethods {
   }
 
   // ----------------------
-  // Set / toggle / clear a user's agree-disagree choice on a post.
-  //
-  // Behavior (single-choice toggle, matching the app's UX):
-  //   - user has no choice yet          -> insert `choice`
-  //   - user's existing choice == choice -> delete row (un-vote)
-  //   - user's existing choice != choice -> update to `choice`
-  //
-  // Returns "success" or an error string, same convention as reactToPost.
+  // Fetch all agree/disagree data for every reaction on a post, in one query.
+  // Returns: { targetUserId: { 'agree': n, 'disagree': n, 'viewerChoice': 'agree'|'disagree'|null } }
   // ----------------------
-  Future<String> reactToPostAgreeDisagree(
-      String postId, String uid, String choice) async {
+  Future<Map<String, Map<String, dynamic>>> getReactionVotesForPost(
+      String postId, String viewerUserId) async {
+    final Map<String, Map<String, dynamic>> result = {};
+    try {
+      final rows = await _supabase
+          .from('reaction_agree_disagree')
+          .select('target_userid, voter_userid, choice')
+          .eq('postid', postId);
+
+      for (final r in (rows as List).cast<Map<String, dynamic>>()) {
+        final targetId = r['target_userid']?.toString();
+        final voterId = r['voter_userid']?.toString();
+        final choice = r['choice']?.toString();
+        if (targetId == null || choice == null) continue;
+
+        result.putIfAbsent(
+            targetId, () => {'agree': 0, 'disagree': 0, 'viewerChoice': null});
+
+        if (choice == 'agree') {
+          result[targetId]!['agree'] = (result[targetId]!['agree'] as int) + 1;
+        } else if (choice == 'disagree') {
+          result[targetId]!['disagree'] =
+              (result[targetId]!['disagree'] as int) + 1;
+        }
+
+        if (voterId == viewerUserId) {
+          result[targetId]!['viewerChoice'] = choice;
+        }
+      }
+    } catch (e) {
+      await _logReactionError(
+        operationType: 'get_reaction_votes_for_post',
+        userId: viewerUserId,
+        error: e,
+        additionalData: {'postId': postId},
+      );
+    }
+    return result;
+  }
+
+  // ----------------------
+  // Cast/toggle/clear the current viewer's agree-disagree vote on a
+  // specific person's reaction.
+  //
+  // Behavior (single-choice toggle):
+  //   - viewer has no vote on this reaction yet -> insert `choice`
+  //   - viewer's existing vote == choice         -> delete row (un-vote)
+  //   - viewer's existing vote != choice          -> update to `choice`
+  //
+  // Returns "success" or an error string.
+  // ----------------------
+  Future<String> voteOnReaction({
+    required String postId,
+    required String targetUserId, // whose reaction is being voted on
+    required String voterUserId, // who is voting
+    required String choice, // 'agree' or 'disagree'
+  }) async {
     assert(choice == 'agree' || choice == 'disagree');
     String res = "Some error occurred";
-    String postOwnerUid = '';
     try {
-      final postSel = await _supabase
-          .from('posts')
-          .select('uid')
-          .eq('postId', postId)
-          .maybeSingle();
-      final postData = _unwrap(postSel) ?? postSel;
-      if (postData == null) throw Exception('Post not found');
-      postOwnerUid = postData['uid']?.toString() ?? '';
-
       final existing = await _supabase
-          .from('post_agree_disagree')
+          .from('reaction_agree_disagree')
           .select('choice')
           .eq('postid', postId)
-          .eq('userid', uid)
+          .eq('target_userid', targetUserId)
+          .eq('voter_userid', voterUserId)
           .maybeSingle();
       final existingData = _unwrap(existing) ?? existing;
       final String? existingChoice = existingData?['choice']?.toString();
@@ -87,28 +132,32 @@ class SupabaseAgreeDisagreeMethods {
       if (existingChoice == choice) {
         // Un-vote: tapping the already-active choice clears it.
         await _supabase
-            .from('post_agree_disagree')
+            .from('reaction_agree_disagree')
             .delete()
             .eq('postid', postId)
-            .eq('userid', uid);
+            .eq('target_userid', targetUserId)
+            .eq('voter_userid', voterUserId);
       } else {
         final bool isSwitch = existingChoice != null;
 
-        await _supabase.from('post_agree_disagree').upsert({
+        await _supabase.from('reaction_agree_disagree').upsert({
           'postid': postId,
-          'userid': uid,
+          'target_userid': targetUserId,
+          'voter_userid': voterUserId,
           'choice': choice,
           'timestamp': DateTime.now().toUtc().toIso8601String(),
-        }, onConflict: 'postid,userid');
+        }, onConflict: 'postid,target_userid,voter_userid');
 
-        if (uid != postOwnerUid && postOwnerUid.isNotEmpty) {
+        // Notify the reaction's owner (unless they're voting on their own reaction)
+        if (voterUserId != targetUserId) {
           if (isSwitch) {
-            await _deletePreviousAgreeDisagreeNotification(postId, uid);
+            await _deletePreviousVoteNotification(
+                postId, targetUserId, voterUserId);
           }
-          await _createAgreeDisagreeNotification(
+          await _createVoteNotification(
             postId: postId,
-            postOwnerUid: postOwnerUid,
-            reactorUid: uid,
+            targetUserId: targetUserId,
+            voterUserId: voterUserId,
             choice: choice,
           );
         }
@@ -118,118 +167,98 @@ class SupabaseAgreeDisagreeMethods {
     } catch (err) {
       res = err.toString();
       await _logReactionError(
-        operationType: 'react_to_post_agree_disagree',
-        userId: uid,
+        operationType: 'vote_on_reaction',
+        userId: voterUserId,
         error: err,
-        additionalData: {'postId': postId, 'choice': choice},
+        additionalData: {
+          'postId': postId,
+          'targetUserId': targetUserId,
+          'choice': choice,
+        },
       );
     }
     return res;
   }
 
-  Future<void> _deletePreviousAgreeDisagreeNotification(
-      String postId, String reactorUid) async {
+  Future<void> _deletePreviousVoteNotification(
+      String postId, String targetUserId, String voterUserId) async {
     try {
       await _supabase
           .from('notifications')
           .delete()
-          .eq('type', 'post_agree_disagree')
+          .eq('type', 'reaction_agree_disagree')
           .eq('custom_data->>postId', postId)
-          .eq('custom_data->>raterUid', reactorUid);
+          .eq('custom_data->>targetUserId', targetUserId)
+          .eq('custom_data->>voterUserId', voterUserId);
     } catch (e) {
       await _logReactionError(
-        operationType: 'delete_previous_agree_disagree_notification',
-        userId: reactorUid,
+        operationType: 'delete_previous_vote_notification',
+        userId: voterUserId,
         error: e,
-        additionalData: {'postId': postId},
+        additionalData: {'postId': postId, 'targetUserId': targetUserId},
       );
     }
   }
 
-  Future<void> _createAgreeDisagreeNotification({
+  Future<void> _createVoteNotification({
     required String postId,
-    required String postOwnerUid,
-    required String reactorUid,
+    required String targetUserId,
+    required String voterUserId,
     required String choice,
   }) async {
-    if (reactorUid == postOwnerUid || postOwnerUid.isEmpty) return;
-
     // DB write
     try {
       await _supabase.from('notifications').insert({
-        'type': 'post_agree_disagree',
-        'target_user_id': postOwnerUid,
+        'type': 'reaction_agree_disagree',
+        'target_user_id': targetUserId,
         'custom_data': {
           'postId': postId,
-          'raterUid': reactorUid,
+          'targetUserId': targetUserId,
+          'voterUserId': voterUserId,
           'choice': choice,
         },
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     } catch (e) {
       await _logReactionError(
-        operationType: 'create_agree_disagree_notification_db_write',
-        userId: reactorUid,
+        operationType: 'create_vote_notification_db_write',
+        userId: voterUserId,
         error: e,
-        additionalData: {'postId': postId, 'postOwnerUid': postOwnerUid},
+        additionalData: {'postId': postId, 'targetUserId': targetUserId},
       );
     }
 
-    // Resolve username
-    String reactorUsername = 'Someone';
+    // Resolve voter username
+    String voterUsername = 'Someone';
     try {
-      final reactorSel = await _supabase
+      final voterSel = await _supabase
           .from('users')
           .select('username')
-          .eq('uid', reactorUid)
+          .eq('uid', voterUserId)
           .maybeSingle();
-      final reactorData = _unwrap(reactorSel) ?? reactorSel;
-      reactorUsername = reactorData?['username'] ?? 'Someone';
+      final voterData = _unwrap(voterSel) ?? voterSel;
+      voterUsername = voterData?['username'] ?? 'Someone';
     } catch (_) {
-      // Don't log username fetch errors here; not critical for the main error flow
+      // Not critical
     }
 
     // Push notification
     try {
       final verb = choice == 'agree' ? 'agreed with' : 'disagreed with';
       await _notificationService.triggerServerNotification(
-        type: 'post_agree_disagree',
-        targetUserId: postOwnerUid,
+        type: 'reaction_agree_disagree',
+        targetUserId: targetUserId,
         title: 'New Reaction',
-        body: '$reactorUsername $verb your post',
-        customData: {'raterId': reactorUid, 'postId': postId},
+        body: '$voterUsername $verb your reaction',
+        customData: {'voterId': voterUserId, 'postId': postId},
       );
     } catch (e) {
       await _logReactionError(
-        operationType: 'create_agree_disagree_notification_push',
-        userId: reactorUid,
+        operationType: 'create_vote_notification_push',
+        userId: voterUserId,
         error: e,
-        additionalData: {'postId': postId, 'postOwnerUid': postOwnerUid},
+        additionalData: {'postId': postId, 'targetUserId': targetUserId},
       );
-    }
-  }
-
-  // ----------------------
-  // Fetch aggregate agree/disagree counts for a post.
-  // ----------------------
-  Future<Map<String, int>> getCounts(String postId) async {
-    try {
-      final rows = await _supabase
-          .from('post_agree_disagree')
-          .select('choice')
-          .eq('postid', postId);
-      final list = (rows as List).cast<Map<String, dynamic>>();
-      final int agree = list.where((r) => r['choice'] == 'agree').length;
-      final int disagree =
-          list.where((r) => r['choice'] == 'disagree').length;
-      return {'agree': agree, 'disagree': disagree};
-    } catch (e) {
-      await _logReactionError(
-        operationType: 'get_agree_disagree_counts',
-        error: e,
-        additionalData: {'postId': postId},
-      );
-      return {'agree': 0, 'disagree': 0};
     }
   }
 }
