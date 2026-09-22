@@ -707,10 +707,11 @@ class _RatingListScreenState extends State<RatingListScreen> {
                   ),
               ],
             ),
-            // NEW: tappable Agree/Disagree for this specific reaction
+            // NEW: tappable Agree/Disagree for this specific reaction —
+            // right-aligned so it sits under the rating track, not the pfp.
             const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.only(left: 54.0), // aligns under username
+            Align(
+              alignment: Alignment.centerRight,
               child: AgreeDisagreeButtons(
                 agreeCount: agreeCount,
                 disagreeCount: disagreeCount,
