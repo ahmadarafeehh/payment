@@ -188,6 +188,41 @@ class VideoMediaService {
   /// `service.onRebuild = () { if (mounted) setState(() {}); };`
   VoidCallback? onRebuild;
 
+  // ── Diagnostics (read-only snapshot for perf logging) ───────────
+  //
+  // Lets callers (e.g. search_screen's perf logger) capture a cheap
+  // snapshot of internal state at the moment a page load completes,
+  // without exposing the mutable maps themselves.
+  //
+  // - activeControllers: controllers currently instantiated (memory-live),
+  //   regardless of whether they've finished initializing.
+  // - initializedControllers: subset of the above that finished
+  //   `.initialize()` and are actually attached/playable.
+  // - pendingControllers: instantiated but NOT yet initialized — this is
+  //   the number worth watching during scroll, since a controller stuck
+  //   here for a while is a controller the user scrolled past without it
+  //   ever rendering a frame ("video not showing").
+  // - cachedThumbnails: thumbnails successfully decoded and cached.
+  // - pendingThumbnailFetches: thumbnail futures in flight (requested but
+  //   not yet resolved) — a large number here during fast scroll indicates
+  //   thumbnail generation is the bottleneck, not the grid itself.
+  Map<String, int> diagnosticsSnapshot() {
+    final pendingControllers = _controllersInitialized.values
+        .where((initialized) => initialized == false)
+        .length;
+    final pendingThumbnailFetches = _thumbnailFutures.keys
+        .where((url) => !_thumbnailCache.containsKey(url))
+        .length;
+    return {
+      'activeControllers': _controllers.length,
+      'initializedControllers':
+          _controllersInitialized.values.where((v) => v == true).length,
+      'pendingControllers': pendingControllers,
+      'cachedThumbnails': _thumbnailCache.length,
+      'pendingThumbnailFetches': pendingThumbnailFetches,
+    };
+  }
+
   // ── Thumbnail methods ──────────────────────────────────────────
 
   /// Returns the cached thumbnail for [videoUrl] (or null if fetch failed).
