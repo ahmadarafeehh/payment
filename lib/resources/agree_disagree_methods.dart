@@ -100,6 +100,52 @@ class SupabaseAgreeDisagreeMethods {
   }
 
   // ----------------------
+  // Fetch agree/disagree data for ONE specific reaction (postid + targetUserId).
+  // Lighter than getReactionVotesForPost when only one row is needed —
+  // e.g. a single notification showing one person's reaction.
+  // Returns { 'agree': int, 'disagree': int, 'viewerChoice': String? }
+  // ----------------------
+  Future<Map<String, dynamic>> getVotesForReaction({
+    required String postId,
+    required String targetUserId,
+    required String viewerUserId,
+  }) async {
+    final Map<String, dynamic> result = {
+      'agree': 0,
+      'disagree': 0,
+      'viewerChoice': null,
+    };
+    try {
+      final rows = await _supabase
+          .from('reaction_agree_disagree')
+          .select('voter_userid, choice')
+          .eq('postid', postId)
+          .eq('target_userid', targetUserId);
+
+      for (final r in (rows as List).cast<Map<String, dynamic>>()) {
+        final voterId = r['voter_userid']?.toString();
+        final choice = r['choice']?.toString();
+        if (choice == 'agree') {
+          result['agree'] = (result['agree'] as int) + 1;
+        } else if (choice == 'disagree') {
+          result['disagree'] = (result['disagree'] as int) + 1;
+        }
+        if (voterId == viewerUserId) {
+          result['viewerChoice'] = choice;
+        }
+      }
+    } catch (e) {
+      await _logReactionError(
+        operationType: 'get_votes_for_reaction',
+        userId: viewerUserId,
+        error: e,
+        additionalData: {'postId': postId, 'targetUserId': targetUserId},
+      );
+    }
+    return result;
+  }
+
+  // ----------------------
   // Cast/toggle/clear the current viewer's agree-disagree vote on a
   // specific person's reaction.
   //
