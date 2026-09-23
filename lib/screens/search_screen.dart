@@ -117,20 +117,14 @@ class _SearchScreenState extends State<SearchScreen>
     };
 
   // ── Avatar video controllers (still separate, for user search results) ──
-  //
-  // Freeze fix (2026-09): these had the same unbounded-hang bug as the
-  // grid's VideoMediaService — `controller.initialize()` with no timeout,
-  // so a single stuck avatar video could hang forever and (per
-  // search_perf_logs) drag the whole UI thread down with it. They also
-  // never got disposed as search results changed, so they accumulated for
-  // the life of the screen. Both are fixed below:
-  //   - _initializeAvatarVideoController now times out after
-  //     _avatarInitTimeout instead of awaiting indefinitely.
-  //   - _pruneAvatarControllers disposes any avatar controller whose user
-  //     is no longer in the current search results; called from
-  //     _performSearch whenever results change.
   final Map<String, VideoPlayerController> _avatarVideoControllers = {};
   final Map<String, bool> _avatarVideoControllersInitialized = {};
+
+  // How long we allow a single avatar video's initialize() call to run
+  // before giving up on it. Without this, a stuck/unreachable avatar video
+  // hangs this await forever — the same bug class that caused the grid
+  // freeze fixed in VideoMediaService (see search_perf_logs sessions where
+  // the UI dropped to ~1 frame/second and never recovered).
   static const Duration _avatarInitTimeout = Duration(seconds: 5);
 
   // ── Unified colour provider ─────────────────────────────────────────
@@ -205,6 +199,14 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   // ── Avatar video controller ─────────────────────────────────────────
+  //
+  // Freeze fix (2026-09): this previously called `await controller
+  // .initialize()` with no timeout, so a single stuck/unreachable avatar
+  // video would hang forever — the same bug class that caused the grid
+  // freeze in VideoMediaService (see search_perf_logs: pendingControllers
+  // stuck, UI dropping to ~1 frame/second for 70+ seconds). Now bounded by
+  // _avatarInitTimeout, so a stuck load fails fast into the existing
+  // catch/cleanup path instead of hanging indefinitely.
   Future<void> _initializeAvatarVideoController(String videoUrl) async {
     if (_avatarVideoControllers.containsKey(videoUrl) ||
         _avatarVideoControllersInitialized[videoUrl] == true) return;
@@ -225,9 +227,7 @@ class _SearchScreenState extends State<SearchScreen>
       });
 
       // FIX: bound how long we wait for an avatar video to load. Without
-      // this, a stuck avatar (unreachable/corrupt file) hangs here forever
-      // — the same bug class confirmed (via search_perf_logs) to freeze
-      // the whole UI thread when it happened in the post grid.
+      // this, a stuck avatar (unreachable/corrupt file) hangs here forever.
       await controller.initialize().timeout(
         _avatarInitTimeout,
         onTimeout: () {
@@ -238,7 +238,7 @@ class _SearchScreenState extends State<SearchScreen>
       );
 
       if (!_avatarVideoControllers.containsKey(videoUrl)) {
-        // Disposed (e.g. pruned) while we were awaiting — bail without
+        // Disposed while we were awaiting (e.g. pruned) — bail without
         // touching state.
         return;
       }
@@ -263,9 +263,11 @@ class _SearchScreenState extends State<SearchScreen>
     controller.play();
   }
 
-  /// Disposes avatar controllers for users no longer present in
-  /// [keepUrls], so they don't accumulate for the life of the screen.
-  /// Called whenever the search results set changes.
+  /// Disposes avatar controllers for users no longer present in the
+  /// current search results, keyed by [keepUrls]. Without this, avatar
+  /// controllers accumulated for the entire life of the screen — every
+  /// distinct user's avatar video ever scrolled past stayed resident,
+  /// each with its own live per-frame listeners.
   void _pruneAvatarControllers(Set<String> keepUrls) {
     final toRemove = _avatarVideoControllers.keys
         .where((u) => !keepUrls.contains(u))
@@ -931,8 +933,6 @@ class _SearchScreenState extends State<SearchScreen>
           _searchResults = [];
           _isSearching = false;
         });
-        // No results left on screen — nothing to keep.
-        _pruneAvatarControllers({});
       }
     });
   }
@@ -941,9 +941,8 @@ class _SearchScreenState extends State<SearchScreen>
     setState(() => _isSearching = true);
     final results = await _searchUsers(query);
     if (mounted) {
-      // Drop avatar controllers for users no longer in the new result set,
-      // so they don't accumulate for the life of the screen as the person
-      // types different queries.
+      // Drop avatar controllers for users no longer present in the new
+      // results, so they don't accumulate for the life of the screen.
       final currentAvatarUrls = results
           .map((u) => u['photoUrl']?.toString() ?? '')
           .where((url) => url.isNotEmpty && url != 'default')
