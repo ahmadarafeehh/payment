@@ -7,6 +7,9 @@ import 'package:Ratedly/screens/Profile_page/profile_page.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart'; // ← NEW import
 import 'package:Ratedly/utils/global_variable.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
+import 'package:Ratedly/resources/agree_disagree_methods.dart'; // NEW
+import 'package:Ratedly/widgets/agree_disagree_widget.dart'; // NEW
+import 'package:Ratedly/utils/utils.dart'; // NEW (showSnackBar)
 import 'package:timeago/timeago.dart' as timeago;
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
@@ -100,17 +103,20 @@ class _ReactionBar extends StatelessWidget {
 }
 
 // ============================================================================
-// 2. Fetches rating + emoji and builds the bar
+// 2. Fetches rating + emoji and builds the bar, PLUS agree/disagree buttons
+//    for this specific reaction (postId + raterUid).
 // ============================================================================
 class _NotificationReactionBar extends StatefulWidget {
   final String postId;
   final String raterUid;
+  final String currentUserId; // NEW: who is viewing this notification (the voter)
   final Map<String, dynamic> customData;
   final _NotificationColorSet colors;
 
   const _NotificationReactionBar({
     required this.postId,
     required this.raterUid,
+    required this.currentUserId, // NEW
     required this.customData,
     required this.colors,
   });
@@ -125,10 +131,28 @@ class _NotificationReactionBarState extends State<_NotificationReactionBar> {
   String? _emoji;
   bool _isLoading = true;
 
+  // NEW: agree/disagree state for this one reaction
+  final SupabaseAgreeDisagreeMethods _agreeDisagreeMethods =
+      SupabaseAgreeDisagreeMethods();
+  late final RealtimeChannel _voteChannel;
+  int _agreeCount = 0;
+  int _disagreeCount = 0;
+  String? _viewerChoice;
+  bool _votesLoaded = false;
+  bool _isSubmittingVote = false;
+
   @override
   void initState() {
     super.initState();
     _loadData();
+    _fetchVotes(); // NEW
+    _setupVoteRealtime(); // NEW
+  }
+
+  @override
+  void dispose() {
+    _voteChannel.unsubscribe(); // NEW
+    super.dispose();
   }
 
   Future<void> _loadData() async {
@@ -168,6 +192,108 @@ class _NotificationReactionBarState extends State<_NotificationReactionBar> {
     if (mounted) setState(() => _isLoading = false);
   }
 
+  // NEW: fetch this reaction's agree/disagree counts + the viewer's own vote
+  Future<void> _fetchVotes() async {
+    if (widget.raterUid.isEmpty || widget.currentUserId.isEmpty) {
+      if (mounted) setState(() => _votesLoaded = true);
+      return;
+    }
+    final data = await _agreeDisagreeMethods.getVotesForReaction(
+      postId: widget.postId,
+      targetUserId: widget.raterUid,
+      viewerUserId: widget.currentUserId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _agreeCount = data['agree'] as int? ?? 0;
+      _disagreeCount = data['disagree'] as int? ?? 0;
+      _viewerChoice = data['viewerChoice'] as String?;
+      _votesLoaded = true;
+    });
+  }
+
+  // NEW: keep this reaction's vote counts live
+  void _setupVoteRealtime() {
+    _voteChannel = Supabase.instance.client.channel(
+        'reaction_agree_disagree_notif_${widget.postId}_${widget.raterUid}');
+    _voteChannel
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'reaction_agree_disagree',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'postid',
+            value: widget.postId,
+          ),
+          callback: (_) => _fetchVotes(),
+        )
+        .subscribe();
+  }
+
+  // NEW: handle tapping Agree/Disagree on this reaction
+  Future<void> _handleVoteTap(String choice) async {
+    if (widget.currentUserId.isEmpty || _isSubmittingVote) return;
+
+    final previousChoice = _viewerChoice;
+    final previousAgree = _agreeCount;
+    final previousDisagree = _disagreeCount;
+
+    int newAgree = _agreeCount;
+    int newDisagree = _disagreeCount;
+    String? newChoice;
+
+    if (previousChoice == choice) {
+      // un-voting
+      if (choice == 'agree') {
+        newAgree = (newAgree - 1).clamp(0, 1 << 30);
+      } else {
+        newDisagree = (newDisagree - 1).clamp(0, 1 << 30);
+      }
+      newChoice = null;
+    } else {
+      if (previousChoice == 'agree') {
+        newAgree = (newAgree - 1).clamp(0, 1 << 30);
+      } else if (previousChoice == 'disagree') {
+        newDisagree = (newDisagree - 1).clamp(0, 1 << 30);
+      }
+      if (choice == 'agree') {
+        newAgree += 1;
+      } else {
+        newDisagree += 1;
+      }
+      newChoice = choice;
+    }
+
+    setState(() {
+      _isSubmittingVote = true;
+      _agreeCount = newAgree;
+      _disagreeCount = newDisagree;
+      _viewerChoice = newChoice;
+    });
+
+    final String response = await _agreeDisagreeMethods.voteOnReaction(
+      postId: widget.postId,
+      targetUserId: widget.raterUid,
+      voterUserId: widget.currentUserId,
+      choice: choice,
+    );
+
+    if (!mounted) return;
+
+    if (response != 'success') {
+      setState(() {
+        _agreeCount = previousAgree;
+        _disagreeCount = previousDisagree;
+        _viewerChoice = previousChoice;
+        _isSubmittingVote = false;
+      });
+      showSnackBar(context, response);
+    } else {
+      setState(() => _isSubmittingVote = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -182,11 +308,28 @@ class _NotificationReactionBarState extends State<_NotificationReactionBar> {
     }
     return Padding(
       padding: const EdgeInsets.only(top: 4),
-      child: _ReactionBar(
-        rating: _rating!,
-        emoji: _emoji!,
-        trackColor: widget.colors.subtitleTextColor.withOpacity(0.35),
-        activeTrackColor: widget.colors.textColor.withOpacity(0.8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _ReactionBar(
+            rating: _rating!,
+            emoji: _emoji!,
+            trackColor: widget.colors.subtitleTextColor.withOpacity(0.35),
+            activeTrackColor: widget.colors.textColor.withOpacity(0.8),
+          ),
+          // NEW: Agree/Disagree buttons for this specific reaction
+          if (_votesLoaded) ...[
+            const SizedBox(height: 6),
+            AgreeDisagreeButtons(
+              agreeCount: _agreeCount,
+              disagreeCount: _disagreeCount,
+              viewerChoice: _viewerChoice,
+              isLoading: _isSubmittingVote,
+              compact: true,
+              onChoice: _handleVoteTap,
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -1300,11 +1443,12 @@ class _FastNotificationItem extends StatelessWidget {
       case 'post_rating':
         title = '$username reacted to your post';
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
-        // Build the reaction bar widget (fetches rating+emoji)
+        // Build the reaction bar widget (fetches rating+emoji+agree/disagree)
         if (postId != null) {
           reactionBar = _NotificationReactionBar(
             postId: postId,
             raterUid: userId,
+            currentUserId: currentUserId, // NEW: viewer = whoever's inbox this is
             customData: customData,
             colors: colors,
           );
