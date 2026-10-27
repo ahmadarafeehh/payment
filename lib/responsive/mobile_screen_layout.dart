@@ -107,14 +107,38 @@ class _MobileScreenLayoutState extends State<MobileScreenLayout> {
     pageController.jumpToPage(page);
   }
 
+  // ── FIX: black screen after posting ──────────────────────────────────────
+  // The camera route now has the name 'cameraFromProfile', which is what
+  // AddPostScreen.postMedia() looks for with popUntil(...). Without this name
+  // no route matched, every screen was popped, and the app went black.
   void _openCamera() {
     _pauseCurrentVideo();
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => const CustomCameraScreen(),
+        settings: const RouteSettings(name: 'cameraFromProfile'),
+        builder: (_) => CustomCameraScreen(
+          onPostUploaded: _showProfileTab,
+        ),
       ),
     );
+  }
+
+  /// Called only after a post is successfully published.
+  /// Switches to the profile tab (index 3) so the user sees their new post.
+  void _showProfileTab() {
+    if (!mounted) return;
+    if (_page == 3) {
+      // Already on the profile tab: bounce away and back so it reloads
+      // and the new post appears.
+      pageController.jumpToPage(0);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) pageController.jumpToPage(3);
+      });
+    } else {
+      // The profile page gets built fresh, so it loads the new post.
+      pageController.jumpToPage(3);
+    }
   }
 
   _NavColorSet _getColors(ThemeProvider themeProvider) {
