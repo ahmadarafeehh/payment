@@ -117,27 +117,43 @@ class _AgeVerificationScreenState extends State<AgeVerificationScreen> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 40),
-              Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF333333),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                height: 200,
-                child: CupertinoTheme(
-                  data: const CupertinoThemeData(
-                    brightness: Brightness.dark,
-                  ),
-                  child: CupertinoDatePicker(
-                    backgroundColor: const Color(0xFF333333),
-                    mode: CupertinoDatePickerMode.date,
-                    initialDateTime: _selectedDate,
-                    maximumDate: DateTime.now(),
-                    minimumYear: DateTime.now().year - 100,
-                    maximumYear: DateTime.now().year,
-                    onDateTimeChanged: (DateTime newDate) {
-                      setState(() => _selectedDate = newDate);
-                    },
-                  ),
+              SizedBox(
+                height: 220,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // Visible highlight bar behind the selected (middle) row
+                    Container(
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF333333),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    CupertinoTheme(
+                      data: const CupertinoThemeData(
+                        brightness: Brightness.dark,
+                        textTheme: CupertinoTextThemeData(
+                          dateTimePickerTextStyle: TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontFamily: 'Inter',
+                          ),
+                        ),
+                      ),
+                      child: CupertinoDatePicker(
+                        backgroundColor: Colors.transparent,
+                        mode: CupertinoDatePickerMode.date,
+                        initialDateTime: _selectedDate,
+                        maximumDate: DateTime.now(),
+                        minimumYear: DateTime.now().year - 100,
+                        maximumYear: DateTime.now().year,
+                        onDateTimeChanged: (DateTime newDate) {
+                          setState(() => _selectedDate = newDate);
+                        },
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 40),
