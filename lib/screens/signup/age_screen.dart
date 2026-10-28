@@ -102,21 +102,15 @@ class _AgeVerificationScreenState extends State<AgeVerificationScreen> {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24.0),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Image.asset(
-                'assets/logo/22.png',
-                width: 100,
-                height: 100,
-              ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 60),
               const Text(
-                'What is your date of birth?',
+                "What's your date of birth?",
                 style: TextStyle(
-                  color: Color(0xFFd9d9d9),
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w700,
                   fontFamily: 'Montserrat',
                   height: 1.3,
                 ),
@@ -149,7 +143,8 @@ class _AgeVerificationScreenState extends State<AgeVerificationScreen> {
               const SizedBox(height: 40),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF333333),
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -160,14 +155,13 @@ class _AgeVerificationScreenState extends State<AgeVerificationScreen> {
                 child: const Text(
                   'Continue',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: Colors.black,
                     fontSize: 16,
-                    fontWeight: FontWeight.w500,
+                    fontWeight: FontWeight.w600,
                     fontFamily: 'Inter',
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
             ],
           ),
         ),
