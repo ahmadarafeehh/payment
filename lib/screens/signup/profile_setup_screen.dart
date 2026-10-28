@@ -563,6 +563,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
                                 style: const TextStyle(
                                   color: Color(0xFFd9d9d9),
                                   fontFamily: 'Inter',
+                                  fontSize: 16,
                                 ),
                               ),
                             );
@@ -576,6 +577,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
                           style: const TextStyle(
                             color: Color(0xFFd9d9d9),
                             fontFamily: 'Inter',
+                            fontSize: 16,
                           ),
                           hint: const Text(
                             'Choose gender',
