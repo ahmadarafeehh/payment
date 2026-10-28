@@ -393,10 +393,10 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
               children: [
                 const SizedBox(height: 60),
                 const Text(
-                  'Profile Setup',
+                  'Set up your profile',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 20,
+                    fontSize: 24,
                     fontWeight: FontWeight.w700,
                     fontFamily: 'Montserrat',
                     height: 1.3,
@@ -614,9 +614,9 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
                 const SizedBox(height: 40),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: _isFormValid
-                        ? const Color(0xFF333333)
-                        : const Color(0xFF2a2a2a),
+                    backgroundColor:
+                        _isFormValid ? Colors.white : const Color(0xFF555555),
+                    disabledBackgroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -625,17 +625,22 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
                   ),
                   onPressed: _isLoading ? null : completeProfile,
                   child: _isLoading
-                      ? const CircularProgressIndicator(
-                          valueColor:
-                              AlwaysStoppedAnimation<Color>(Colors.white),
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.black),
+                          ),
                         )
                       : Text(
                           'Complete Profile',
                           style: TextStyle(
                             color:
-                                _isFormValid ? Colors.white : Colors.grey[400],
+                                _isFormValid ? Colors.black : Colors.grey[300],
                             fontSize: 16,
-                            fontWeight: FontWeight.w500,
+                            fontWeight: FontWeight.w600,
                             fontFamily: 'Inter',
                           ),
                         ),
