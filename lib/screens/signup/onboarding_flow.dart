@@ -53,19 +53,25 @@ class _OnboardingFlowState extends State<OnboardingFlow>
 
   Map<String, dynamic>? _userData;
 
-  // No longer starts as true — we show the age screen immediately
   bool _isLoading = false;
   bool _hasRequiredFields = false;
 
-  // Tracks whether the background check has finished
+  // Tracks whether the background DB check has finished
   bool _backgroundCheckDone = false;
 
-  // NEW: step-resume state. If a saved marker says the user already got
-  // past age_verification (on THIS device) before the app was closed, we
-  // skip straight to profile_setup instead of always restarting at
-  // age_verification — this is the actual fix for FIX-BOUNCE-ON-RELAUNCH.
-  bool _resumeAtProfileSetup = false;
-  DateTime? _resumeDateOfBirth;
+  // NEW (flash fix): true once the LOCAL saved-progress lookup has finished.
+  // Until then build() shows a blank dark scaffold instead of guessing the
+  // age screen — that guess is what used to flash on resume. The lookup is a
+  // local SharedPreferences read (a few ms), and it no longer waits on the
+  // DB round-trip.
+  bool _progressResolved = false;
+
+  // Which step to show. Replaces the old Navigator.pushReplacement from age →
+  // profile: both the "resumed on cold start" and the "just finished age
+  // screen" cases now go through the same in-tree switch, so this widget
+  // never touches the root navigator for step changes.
+  bool _showProfileSetup = false;
+  DateTime? _profileDateOfBirth;
 
   String? _userId;
 
@@ -84,14 +90,11 @@ class _OnboardingFlowState extends State<OnboardingFlow>
 
   int get _totalElapsed => DateTime.now().difference(_flowStart).inSeconds;
 
-  // ── NEW: step-progress persistence ──────────────────────────────────────
-  // Keyed by the real userId (firebase_uid/supabase_uid), NOT DeviceSession.id
-  // — by the time age_verification completes we have a real uid, and keying
-  // on it means resume works even if the device-session id were to change.
-  // Deliberately a separate SharedPreferences key from ProfileSetupScreen's
-  // own `profile_setup_draft_v1_*` (username/gender draft, keyed by
-  // DeviceSession.id) — that one persists form *input*, this one persists
-  // which *screen* the user should land on.
+  // ── Step-progress persistence ───────────────────────────────────────────
+  // Keyed by the real userId, NOT DeviceSession.id, so a second account on
+  // the same device never inherits another account's saved DOB.
+  // Separate from ProfileSetupScreen's own `profile_setup_draft_v1_*` keys
+  // (form input) — this one stores which *screen* to land on.
   static String _progressKey(String userId) => 'onboarding_progress_v1_$userId';
 
   Future<void> _saveProgress(String step, {DateTime? dateOfBirth}) async {
@@ -105,8 +108,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
           'dateOfBirth': dateOfBirth?.toIso8601String(),
         }),
       );
-      DebugLogger.logEvent(
-          'ONBOARDING_PROGRESS_SAVED [$_userId] step=$step');
+      DebugLogger.logEvent('ONBOARDING_PROGRESS_SAVED [$_userId] step=$step');
     } catch (e) {
       // Best-effort — never let progress persistence crash onboarding.
       DebugLogger.logError('ONBOARDING_PROGRESS_SAVE', e);
@@ -135,13 +137,26 @@ class _OnboardingFlowState extends State<OnboardingFlow>
   }
   // ─────────────────────────────────────────────────────────────────────────
 
+  String? _resolveUserId() {
+    final firebaseUser = _auth.currentUser;
+    if (firebaseUser != null) return firebaseUser.uid;
+    final session = _supabase.auth.currentSession;
+    if (session != null) return session.user.id;
+    return null;
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _flowStart = DateTime.now();
 
-    // Fire the DB check in the background immediately — don't await it
+    // NEW: resolve which step to show from LOCAL storage first, so the very
+    // first real screen we build is already the right one.
+    _resolveInitialStep();
+
+    // DB check still runs in parallel, as before — it only decides
+    // "already complete → go home" and error handling now.
     _checkUserStatusInBackground();
   }
 
@@ -169,26 +184,59 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     }
   }
 
+  /// Local-only lookup of the saved step. Needs no network: the userId comes
+  /// from the already-persisted auth session and the progress marker lives in
+  /// SharedPreferences.
+  Future<void> _resolveInitialStep() async {
+    final userId = _resolveUserId();
+
+    if (userId == null) {
+      // No session. Leave _progressResolved false; the background check will
+      // set _backgroundCheckDone and build() redirects to WelcomeScreen.
+      return;
+    }
+    _userId = userId;
+
+    final saved = await _loadProgress(userId);
+    final dob = saved != null &&
+            saved['step'] == 'profile_setup' &&
+            saved['dateOfBirth'] != null
+        ? DateTime.tryParse(saved['dateOfBirth'] as String)
+        : null;
+
+    if (!mounted) return;
+
+    setState(() {
+      if (dob != null) {
+        _showProfileSetup = true;
+        _profileDateOfBirth = dob;
+      }
+      _progressResolved = true;
+    });
+
+    if (dob != null) {
+      _advanceStep('profile_setup_resumed');
+      DebugLogger.logEvent(
+          'ONBOARDING_FLOW [$userId]: resuming at profile_setup — '
+          'saved progress found (dateOfBirth=$dob), skipping age_verification');
+    } else {
+      _advanceStep('age_screen');
+    }
+  }
+
   /// Runs the DB check entirely in the background.
-  /// The age screen is already visible while this executes — UNLESS a saved
-  /// resume marker is found, in which case profile_setup is shown instead.
   Future<void> _checkUserStatusInBackground() async {
     try {
       _advanceStep('resolving_user');
 
-      final firebaseUser = _auth.currentUser;
-      final supabaseSession = _supabase.auth.currentSession;
-
-      if (firebaseUser != null) {
-        _userId = firebaseUser.uid;
-      } else if (supabaseSession != null) {
-        _userId = supabaseSession.user.id;
-      } else {
+      final userId = _resolveUserId();
+      if (userId == null) {
         DebugLogger.logEvent(
             'ONBOARDING_FLOW: no user found — will redirect to WelcomeScreen');
         if (mounted) setState(() => _backgroundCheckDone = true);
         return;
       }
+      _userId = userId;
 
       DebugLogger.logEvent(
           'ONBOARDING_FLOW: background checking status for userId=$_userId');
@@ -205,22 +253,11 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       final alreadyComplete =
           response != null && _hasCompletedOnboarding(response);
 
-      // NEW: if not already complete server-side, check for a locally saved
-      // "user already passed age_verification on this device" marker.
-      Map<String, dynamic>? savedProgress;
-      if (!alreadyComplete) {
-        savedProgress = await _loadProgress(_userId!);
-      } else {
-        // Onboarding is done some other way (e.g. completed on another
-        // device) — the local marker is stale, clear it.
+      if (alreadyComplete) {
+        // Onboarding is done some other way (e.g. another device) — the local
+        // marker is stale, clear it.
         await _clearProgress(_userId!);
       }
-
-      final resumeDob = savedProgress != null &&
-              savedProgress['step'] == 'profile_setup' &&
-              savedProgress['dateOfBirth'] != null
-          ? DateTime.tryParse(savedProgress['dateOfBirth'] as String)
-          : null;
 
       if (!mounted) return;
 
@@ -228,10 +265,6 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         _userData = response;
         _backgroundCheckDone = true;
         _hasRequiredFields = alreadyComplete;
-        if (!alreadyComplete && resumeDob != null) {
-          _resumeAtProfileSetup = true;
-          _resumeDateOfBirth = resumeDob;
-        }
       });
 
       if (alreadyComplete) {
@@ -240,21 +273,13 @@ class _OnboardingFlowState extends State<OnboardingFlow>
             'waiting briefly before redirecting home');
         _advanceStep('completed');
 
-        // Small delay so the age screen doesn't flash jarringly
-        // before we redirect a returning user who completed onboarding
         await Future.delayed(const Duration(milliseconds: 150));
 
         if (mounted) widget.onComplete();
-      } else if (resumeDob != null) {
-        _advanceStep('profile_setup_resumed');
-        DebugLogger.logEvent(
-            'ONBOARDING_FLOW [$_userId]: resuming at profile_setup — '
-            'saved progress found (dateOfBirth=$resumeDob), skipping age_verification');
       } else {
-        _advanceStep('age_screen');
         DebugLogger.logEvent(
             'ONBOARDING_FLOW [$_userId]: incomplete (background check) — '
-            'staying on age screen. '
+            'showProfileSetup=$_showProfileSetup '
             'username=${response?['username']} dob=${response?['dateOfBirth']} gender=${response?['gender']}');
       }
     } catch (e, stack) {
@@ -263,8 +288,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       // PGRST116 = no row found — expected for brand new users, NOT an error
       if (e is PostgrestException && e.code == 'PGRST116') {
         DebugLogger.logEvent(
-            'ONBOARDING_FLOW [$_userId]: no user record (PGRST116) — '
-            'new user, staying on age screen');
+            'ONBOARDING_FLOW [$_userId]: no user record (PGRST116) — new user');
         if (mounted) {
           setState(() {
             _userData = null;
@@ -272,7 +296,6 @@ class _OnboardingFlowState extends State<OnboardingFlow>
             _backgroundCheckDone = true;
           });
         }
-        _advanceStep('age_screen_new_user');
       } else {
         // Any other DB error IS worth logging
         await _logError(
@@ -285,7 +308,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
             'elapsed_seconds': _totalElapsed,
           },
         );
-        // Even on error we keep the age screen visible — don't crash the user
+        // Even on error we keep the current step visible — don't crash the user
         if (mounted) setState(() => _backgroundCheckDone = true);
         widget.onError(e);
       }
@@ -306,30 +329,17 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     DebugLogger.logEvent(
         'ONBOARDING_FLOW [$_userId]: age verified — moving to profile setup');
 
-    // NEW: persist that this user has reached profile_setup, so a relaunch
-    // (or any future OnboardingFlow rebuild) resumes here instead of
-    // restarting at age_verification.
+    // Persist that this user reached profile_setup, so a relaunch resumes here.
     _saveProgress('profile_setup', dateOfBirth: dateOfBirth);
 
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (context) => ProfileSetupScreen(
-          dateOfBirth: dateOfBirth,
-          onComplete: () {
-            _advanceStep('completed');
-            DebugLogger.logEvent(
-                'ONBOARDING_FLOW [$_userId]: profile setup complete — totalTime=${_totalElapsed}s');
-            if (_userId != null) _clearProgress(_userId!);
-            widget.onComplete();
-          },
-        ),
-      ),
-    );
+    // In-tree step switch (was Navigator.pushReplacement on the root navigator).
+    if (!mounted) return;
+    setState(() {
+      _profileDateOfBirth = dateOfBirth;
+      _showProfileSetup = true;
+    });
   }
 
-  // NEW: shared builder so the resume path and the normal
-  // age-verification-complete path build ProfileSetupScreen identically.
   Widget _buildProfileSetup(DateTime dateOfBirth) {
     return ProfileSetupScreen(
       dateOfBirth: dateOfBirth,
@@ -358,21 +368,24 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     }
 
     // Background check confirmed onboarding is done — show home
-    // (the widget.onComplete() call handles navigation, but this
-    // acts as a safety net in case build fires before the callback)
+    // (safety net in case build fires before widget.onComplete() navigates)
     if (_hasRequiredFields) {
       return const ResponsiveLayout(
         mobileScreenLayout: MobileScreenLayout(),
       );
     }
 
-    // NEW: a saved marker says this user already passed age_verification on
-    // this device — resume at profile_setup instead of restarting.
-    if (_resumeAtProfileSetup && _resumeDateOfBirth != null) {
-      return _buildProfileSetup(_resumeDateOfBirth!);
+    // NEW: don't guess a step before the local progress lookup finishes.
+    // Same background color as the real screens, so there is no visible
+    // change when the real screen appears a few ms later.
+    if (!_progressResolved) {
+      return const Scaffold(backgroundColor: Color(0xFF121212));
     }
 
-    // Show the age screen immediately — background check runs in parallel
+    if (_showProfileSetup && _profileDateOfBirth != null) {
+      return _buildProfileSetup(_profileDateOfBirth!);
+    }
+
     return AgeVerificationScreen(
       onComplete: _handleAgeVerificationComplete,
     );
