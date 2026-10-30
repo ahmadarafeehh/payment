@@ -1,1304 +1,1436 @@
-// lib/screens/Profile_page/profile_post_feed_screen.dart
+// lib/screens/Profile_page/current_profile_screen.dart
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:provider/provider.dart';
-import 'package:share_plus/share_plus.dart'; // ← NEW
-import 'package:Ratedly/models/posted_result.dart'; // ← NEW
-import 'package:Ratedly/utils/theme_provider.dart';
-import 'package:Ratedly/providers/user_provider.dart';
-import 'package:Ratedly/widgets/flutter_rating_bar.dart';
-import 'package:Ratedly/screens/comment_screen.dart';
-import 'package:Ratedly/widgets/postshare.dart';
-import 'package:Ratedly/widgets/verified_username_widget.dart';
-import 'package:Ratedly/widgets/rating_list_screen_postcard.dart';
-import 'package:Ratedly/resources/supabase_posts_methods.dart';
-import 'package:Ratedly/resources/reactions_methods.dart';
+import 'package:Ratedly/services/notification_service.dart';
 import 'package:Ratedly/utils/utils.dart';
+import 'package:Ratedly/widgets/edit_profile_screen.dart';
+import 'package:Ratedly/screens/Profile_page/custom_camera_screen.dart';
+import 'package:Ratedly/widgets/settings_screen.dart';
+import 'package:Ratedly/widgets/user_list_screen.dart';
+import 'package:Ratedly/resources/profile_firestore_methods.dart';
+import 'package:provider/provider.dart';
+import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:Ratedly/screens/Profile_page/profile_page.dart';
-import 'package:timeago/timeago.dart' as timeago;
+import 'package:flutter/gestures.dart';
+import 'package:country_flags/country_flags.dart';
+import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
+import 'package:Ratedly/models/posted_result.dart'; // ← NEW
 import 'package:Ratedly/services/analytics_service.dart';
+import 'package:Ratedly/utils/colors.dart'; // shared colours
+import 'package:Ratedly/utils/video_utils.dart'; // shared video helpers + service
 
-// ✅ Shared utilities
-import 'package:Ratedly/utils/colors.dart';
-import 'package:Ratedly/utils/video_utils.dart';
+// -----------------------------------------------------------------------------
+// Reusable widgets (same as before)
+// -----------------------------------------------------------------------------
+class CountryFlagWidget extends StatelessWidget {
+  final String countryCode;
+  final double width;
+  final double height;
+  final double borderRadius;
 
-typedef _LoadMore = Future<List<Map<String, dynamic>>> Function(
-    int currentCount);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Global video manager – ensures only one video plays at a time
-// ─────────────────────────────────────────────────────────────────────────────
-void unawaited(Future<void> future) {}
-
-class VideoManager {
-  static final VideoManager _instance = VideoManager._internal();
-  factory VideoManager() => _instance;
-  VideoManager._internal();
-
-  VideoPlayerController? _currentPlayingController;
-  String? _currentPostId;
-  final Map<String, VideoPlayerController> _activeControllers = {};
-
-  static void pauseAllVideos() => _instance._pauseAllVideos();
-
-  void playVideo(VideoPlayerController controller, String postId) {
-    if (_currentPlayingController != null &&
-        _currentPlayingController != controller) {
-      _currentPlayingController!.pause();
-    }
-    _currentPlayingController = controller;
-    _currentPostId = postId;
-    _activeControllers[postId] = controller;
-    controller.play();
-  }
-
-  void pauseVideo(VideoPlayerController controller) {
-    if (_currentPlayingController == controller) {
-      controller.pause();
-      _currentPlayingController = null;
-      _currentPostId = null;
-    }
-    _activeControllers.removeWhere((key, value) => value == controller);
-  }
-
-  void disposeController(VideoPlayerController controller, String postId) {
-    if (_currentPlayingController == controller) {
-      _currentPlayingController = null;
-      _currentPostId = null;
-    }
-    _activeControllers.remove(postId);
-    controller.pause();
-    controller.dispose();
-  }
-
-  bool isCurrentlyPlaying(VideoPlayerController controller) =>
-      _currentPlayingController == controller;
-
-  void onPostInvisible(String postId) {
-    if (_currentPostId == postId && _currentPlayingController != null) {
-      _currentPlayingController!.pause();
-      _currentPlayingController = null;
-      _currentPostId = null;
-    }
-    _activeControllers.remove(postId);
-  }
-
-  String? get currentPlayingPostId => _currentPostId;
-
-  void pauseCurrentVideo() {
-    if (_currentPlayingController != null) {
-      _currentPlayingController!.pause();
-      _currentPlayingController = null;
-      _currentPostId = null;
-    }
-  }
-
-  void _pauseAllVideos() {
-    if (_currentPlayingController != null) {
-      _currentPlayingController!.pause();
-      _currentPlayingController = null;
-      _currentPostId = null;
-    }
-    _activeControllers.forEach((postId, controller) {
-      if (controller.value.isInitialized && controller.value.isPlaying) {
-        controller.pause();
-      }
-    });
-    _activeControllers.clear();
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Reaction error logger – logs only exceptions to `reactions_error` table
-// ─────────────────────────────────────────────────────────────────────────────
-Future<void> _logReactionError({
-  required String operationType,
-  String? userId,
-  Map<String, dynamic>? additionalData,
-  required dynamic error,
-}) async {
-  try {
-    await Supabase.instance.client.from('reactions_error').insert({
-      'user_id': userId,
-      'operation_type': operationType,
-      'error_message': error.toString(),
-      'stack_trace': error is Error ? error.stackTrace?.toString() : null,
-      'additional_data': additionalData,
-    });
-  } catch (_) {}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ProfilePostFeedScreen
-// ─────────────────────────────────────────────────────────────────────────────
-class ProfilePostFeedScreen extends StatefulWidget {
-  final List<Map<String, dynamic>> initialPosts;
-  final int initialIndex;
-  final Map<String, dynamic> userData;
-  final _LoadMore onLoadMore;
-  final bool initialHasMore;
-  final VoidCallback? onPostDeleted;
-  final PostedResult? justPosted; // ← NEW
-
-  const ProfilePostFeedScreen({
+  const CountryFlagWidget({
     Key? key,
-    required this.initialPosts,
-    required this.initialIndex,
-    required this.userData,
-    required this.onLoadMore,
-    required this.initialHasMore,
-    this.onPostDeleted,
-    this.justPosted, // ← NEW
+    required this.countryCode,
+    this.width = 16,
+    this.height = 12,
+    this.borderRadius = 2,
   }) : super(key: key);
 
   @override
-  State<ProfilePostFeedScreen> createState() => _ProfilePostFeedScreenState();
-}
-
-class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
-  late List<Map<String, dynamic>> _posts;
-  late PageController _pageController;
-  late int _currentIndex;
-  bool _hasMore = false;
-  bool _loadingMore = false;
-
-  bool _trackingStarted = false;
-  String? _currentUserId;
-
-  late bool _showShareBanner; // ← NEW
-
-  @override
-  void initState() {
-    super.initState();
-    _showShareBanner = widget.justPosted != null; // ← NEW
-    _posts = List.from(widget.initialPosts);
-    _hasMore = widget.initialHasMore;
-    _currentIndex = widget.initialIndex;
-    _pageController = PageController(initialPage: widget.initialIndex);
-    _pageController.addListener(_onPageScroll);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_trackingStarted) {
-      final userProvider = Provider.of<UserProvider>(context, listen: false);
-      _currentUserId = userProvider.firebaseUid ?? userProvider.supabaseUid;
-      if (_currentUserId != null && _currentUserId!.isNotEmpty) {
-        _trackingStarted = true;
-        AnalyticsService.screenEnter('profile_post_feed');
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
-      AnalyticsService.screenExit(
-        screenName: 'profile_post_feed',
-        uid: _currentUserId!,
-      );
-    }
-    _pageController.removeListener(_onPageScroll);
-    _pageController.dispose();
-    super.dispose();
-  }
-
-  void _onPageScroll() {
-    final rawPage = _pageController.page ?? _currentIndex.toDouble();
-    final page = rawPage.round();
-
-    if (page != _currentIndex) {
-      VideoManager.pauseAllVideos();
-      setState(() => _currentIndex = page);
-    }
-
-    if (page >= _posts.length - 3 && _hasMore && !_loadingMore) {
-      _triggerLoadMore();
-    }
-  }
-
-  Future<void> _triggerLoadMore() async {
-    if (_loadingMore || !_hasMore) return;
-    setState(() => _loadingMore = true);
-    try {
-      final batch = await widget.onLoadMore(_posts.length);
-      if (mounted) {
-        setState(() {
-          _posts.addAll(batch);
-          _hasMore = batch.isNotEmpty;
-          _loadingMore = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => _loadingMore = false);
-    }
-  }
-
-  void _onPostDeleted(int index) {
-    widget.onPostDeleted?.call();
-    if (!mounted) return;
-    Navigator.pop(context);
-  }
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // NEW: share the just-posted media via the system share sheet
-  // ───────────────────────────────────────────────────────────────────────────
-  Future<void> _shareJustPosted(Rect? origin) async {
-    final posted = widget.justPosted;
-    if (posted == null) return;
-    VideoManager.pauseAllVideos();
-    try {
-      XFile? file;
-      if (posted.isVideo && posted.videoFile != null) {
-        file = XFile(posted.videoFile!.path);
-      } else if (posted.imageBytes != null) {
-        final f = File(
-            '${Directory.systemTemp.path}/ratedly_post_${DateTime.now().millisecondsSinceEpoch}.jpg');
-        await f.writeAsBytes(posted.imageBytes!);
-        file = XFile(f.path, mimeType: 'image/jpeg');
-      }
-      final caption = posted.caption.trim();
-      await SharePlus.instance.share(ShareParams(
-        text: caption.isEmpty
-            ? 'Check out my post on Ratedly!'
-            : '$caption\n\nPosted on Ratedly',
-        files: file == null ? null : [file],
-        sharePositionOrigin: origin,
-      ));
-    } catch (e) {
-      if (mounted) showSnackBar(context, 'Could not open share sheet');
-    }
-  }
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // FIX: Pause all videos BEFORE navigating to profile from app bar
-  // ───────────────────────────────────────────────────────────────────────────
-  void _goToProfile() {
-    VideoManager.pauseAllVideos(); // ✅ Pause any playing video
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            ProfileScreen(uid: widget.userData['uid']?.toString() ?? ''),
+  Widget build(BuildContext context) {
+    final bool hasCountryFlag =
+        countryCode.isNotEmpty && countryCode.length == 2;
+    if (!hasCountryFlag) return const SizedBox.shrink();
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: SizedBox(
+        width: width,
+        height: height,
+        child: CountryFlag.fromCountryCode(countryCode),
       ),
     );
   }
+}
+
+class ExpandableBioText extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+  final Color expandColor;
+  final int maxLength;
+
+  const ExpandableBioText({
+    Key? key,
+    required this.text,
+    required this.style,
+    required this.expandColor,
+    this.maxLength = 115,
+  }) : super(key: key);
+
+  @override
+  State<ExpandableBioText> createState() => _ExpandableBioTextState();
+}
+
+class _ExpandableBioTextState extends State<ExpandableBioText> {
+  bool _isExpanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final colors = themeProvider.themeMode == ThemeMode.dark
+    final shouldTruncate = widget.text.length > widget.maxLength;
+    if (!shouldTruncate || _isExpanded) {
+      return Text(widget.text, style: widget.style);
+    }
+    final truncatedText = widget.text.substring(0, widget.maxLength);
+    return RichText(
+      text: TextSpan(
+        children: [
+          TextSpan(text: '$truncatedText... ', style: widget.style),
+          TextSpan(
+            text: 'more',
+            style: widget.style.copyWith(
+              color: widget.expandColor,
+              fontWeight: FontWeight.w600,
+            ),
+            recognizer: TapGestureRecognizer()
+              ..onTap = () => setState(() => _isExpanded = true),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Main CurrentUserProfileScreen
+// -----------------------------------------------------------------------------
+class CurrentUserProfileScreen extends StatefulWidget {
+  final String uid;
+  const CurrentUserProfileScreen({Key? key, required this.uid})
+      : super(key: key);
+
+  @override
+  State<CurrentUserProfileScreen> createState() =>
+      _CurrentUserProfileScreenState();
+}
+
+class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
+    with WidgetsBindingObserver {
+  final SupabaseClient _supabase = Supabase.instance.client;
+  var userData = {};
+  int followers = 0;
+  int following = 0;
+  int postCount = 0;
+  List<dynamic> _followersList = [];
+  List<dynamic> _followingList = [];
+  bool isLoading = false;
+  bool hasError = false;
+  String errorMessage = '';
+  final SupabaseProfileMethods _profileMethods = SupabaseProfileMethods();
+
+  Timer? _noPostNudgeTimer;
+  bool _nudgeSent = false;
+
+  // ── Profile-picture video (separate) ─────────────────────────────────
+  VideoPlayerController? _profileVideoController;
+  bool _isProfileVideoInitialized = false;
+  bool _isProfileVideoMuted = false;
+
+  // ── Shared media service (replaces all thumbnail caches & loop controllers) ──
+  late final VideoMediaService _mediaService = VideoMediaService()
+    ..onRebuild = () {
+      if (mounted) setState(() {});
+    };
+
+  List<dynamic> _displayedPosts = [];
+  int _postsOffset = 0;
+  final int _initialPostsLimit = 9;
+  final int _subsequentPostsLimit = 6;
+  bool _hasMorePosts = true;
+  bool _isLoadingMore = false;
+  bool _isFirstLoad = true;
+
+  late ScrollController _scrollController;
+
+  // ── Unified colour getter ───────────────────────────────────────────
+  AppColorSet _getColors(ThemeProvider themeProvider) {
+    return themeProvider.themeMode == ThemeMode.dark
         ? AppColorSet.dark()
         : AppColorSet.light();
+  }
 
-    final itemCount = _posts.length + (_hasMore || _loadingMore ? 1 : 0);
+  // ==========================================================================
+  // ERROR LOGGING HELPER
+  // ==========================================================================
+  Future<void> _logProfileError({
+    required String operation,
+    required dynamic error,
+    StackTrace? stack,
+    Map<String, dynamic>? additionalData,
+  }) async {
+    try {
+      await _supabase.from('profile_errors').insert({
+        'user_id': widget.uid,
+        'operation_type': operation,
+        'error_message': error.toString(),
+        'stack_trace': stack?.toString(),
+        'additional_data': additionalData,
+      });
+    } catch (_) {}
+  }
 
-    return Scaffold(
-      resizeToAvoidBottomInset: false,
-      backgroundColor: colors.backgroundColor,
-      appBar: AppBar(
-        backgroundColor: colors.appBarBackgroundColor,
-        elevation: 0,
-        iconTheme: IconThemeData(color: colors.iconColor),
-        title: GestureDetector(
-          onTap: _goToProfile,
-          child: VerifiedUsernameWidget(
-            username: widget.userData['username']?.toString() ?? '',
-            uid: widget.userData['uid']?.toString() ?? '',
-            style:
-                TextStyle(color: colors.textColor, fontWeight: FontWeight.bold),
+  // ========== PROFILE VIDEO (unchanged) =================================
+
+  Future<void> _initializeProfileVideo(String videoUrl) async {
+    if (_profileVideoController != null) {
+      await _profileVideoController!.dispose();
+      if (mounted) {
+        setState(() {
+          _profileVideoController = null;
+          _isProfileVideoInitialized = false;
+        });
+      }
+    }
+    try {
+      final controller = VideoPlayerController.networkUrl(
+        Uri.parse(videoUrl),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+      );
+      await controller.initialize();
+      await controller.setVolume(1.0);
+      await controller.setLooping(true);
+      await controller.play();
+      if (mounted) {
+        setState(() {
+          _profileVideoController = controller;
+          _isProfileVideoInitialized = true;
+          _isProfileVideoMuted = false;
+        });
+      }
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'initializeProfileVideo',
+        error: e,
+        stack: stack,
+        additionalData: {'videoUrl': videoUrl},
+      );
+      if (mounted) setState(() => _isProfileVideoInitialized = false);
+    }
+  }
+
+  Widget _buildProfileVideoPlayer(AppColorSet colors) {
+    if (_profileVideoController == null || !_isProfileVideoInitialized) {
+      return Container(
+        decoration:
+            BoxDecoration(shape: BoxShape.circle, color: colors.cardColor),
+        child:
+            Center(child: CircularProgressIndicator(color: colors.textColor)),
+      );
+    }
+    return Stack(children: [
+      ClipOval(
+        child: SizedBox(
+          width: 80,
+          height: 80,
+          child: FittedBox(
+            fit: BoxFit.cover,
+            child: SizedBox(
+              width: _profileVideoController!.value.size.width,
+              height: _profileVideoController!.value.size.height,
+              child: VideoPlayer(_profileVideoController!),
+            ),
           ),
         ),
-        centerTitle: true,
       ),
-      body: Column(
-        children: [
-          if (_showShareBanner)
-            _ShareBanner(
-              colors: colors,
-              isVideo: widget.justPosted?.isVideo ?? false,
-              onShare: _shareJustPosted,
-              onDismiss: () => setState(() => _showShareBanner = false),
-            ),
-          Expanded(
-            child: PageView.builder(
-              controller: _pageController,
-              scrollDirection: Axis.vertical,
-              itemCount: itemCount,
-              itemBuilder: (context, index) {
-                if (index >= _posts.length) {
-                  return Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: CircularProgressIndicator(color: colors.textColor),
-                    ),
-                  );
-                }
-                return _FeedPostPage(
-                  key: ValueKey(_posts[index]['postId']),
-                  post: _posts[index],
-                  userData: widget.userData,
-                  isActive: index == _currentIndex,
-                  onPostDeleted: widget.onPostDeleted != null
-                      ? () => _onPostDeleted(index)
-                      : null,
-                );
-              },
+      Positioned(
+        top: 4,
+        right: 4,
+        child: GestureDetector(
+          onTap: _toggleProfileVideoMute,
+          child: Container(
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.6), shape: BoxShape.circle),
+            child: Icon(
+              _isProfileVideoMuted ? Icons.volume_off : Icons.volume_up,
+              size: 12,
+              color: Colors.white,
             ),
           ),
-        ],
+        ),
       ),
-    );
+    ]);
   }
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// NEW: Share banner shown after a successful post
-// ─────────────────────────────────────────────────────────────────────────────
-class _ShareBanner extends StatelessWidget {
-  final AppColorSet colors;
-  final bool isVideo;
-  final void Function(Rect? origin) onShare;
-  final VoidCallback onDismiss;
+  Widget _buildProfilePicture(AppColorSet colors) {
+    final photoUrl = userData['photoUrl']?.toString() ?? '';
+    final isDefault = photoUrl.isEmpty || photoUrl == 'default';
+    final isVideo = !isDefault && isVideoFile(photoUrl); // ← shared
 
-  const _ShareBanner({
-    required this.colors,
-    required this.isVideo,
-    required this.onShare,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
-      decoration: BoxDecoration(
+    if (isDefault) {
+      return CircleAvatar(
+        radius: 40,
+        backgroundColor: colors.cardColor,
+        child: Icon(Icons.account_circle, size: 80, color: colors.textColor),
+      );
+    }
+    if (isVideo) return _buildProfileVideoPlayer(colors);
+    return ClipOval(
+      child: Container(
+        width: 80,
+        height: 80,
         color: colors.cardColor,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  isVideo ? 'Video posted! 🎉' : 'Posted! 🎉',
-                  style: TextStyle(
-                    color: colors.textColor,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Share it on Snapchat, Instagram, X and more to get more reactions.',
-                  style: TextStyle(
-                    color: colors.textColor.withOpacity(0.65),
-                    fontSize: 12,
-                    height: 1.3,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Builder(builder: (btnContext) {
-            return ElevatedButton(
-              onPressed: () {
-                final box = btnContext.findRenderObject() as RenderBox?;
-                final origin = box != null
-                    ? box.localToGlobal(Offset.zero) & box.size
-                    : null;
-                onShare(origin);
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3797EF),
-                foregroundColor: Colors.white,
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-              ),
-              child: const Text('Share'),
-            );
-          }),
-          IconButton(
-            icon: Icon(Icons.close, size: 18, color: colors.iconColor),
-            onPressed: onDismiss,
-          ),
-        ],
+        child: Image.network(photoUrl,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Center(
+                child: Icon(Icons.account_circle,
+                    size: 80, color: colors.textColor))),
       ),
     );
   }
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// _FeedPostPage
-// ─────────────────────────────────────────────────────────────────────────────
-class _FeedPostPage extends StatefulWidget {
-  final Map<String, dynamic> post;
-  final Map<String, dynamic> userData;
-  final bool isActive;
-  final VoidCallback? onPostDeleted;
+  void _muteProfileVideo() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      try {
+        _profileVideoController!.setVolume(0.0);
+      } catch (e, stack) {
+        _logProfileError(operation: 'muteProfileVideo', error: e, stack: stack);
+      }
+    }
+  }
 
-  const _FeedPostPage({
-    Key? key,
-    required this.post,
-    required this.userData,
-    required this.isActive,
-    this.onPostDeleted,
-  }) : super(key: key);
+  void _unmuteProfileVideo() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      try {
+        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
+      } catch (e, stack) {
+        _logProfileError(
+            operation: 'unmuteProfileVideo', error: e, stack: stack);
+      }
+    }
+  }
 
-  @override
-  State<_FeedPostPage> createState() => _FeedPostPageState();
-}
+  void _toggleProfileVideoMute() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      setState(() => _isProfileVideoMuted = !_isProfileVideoMuted);
+      try {
+        _profileVideoController!.setVolume(_isProfileVideoMuted ? 0.0 : 1.0);
+      } catch (e, stack) {
+        _logProfileError(
+            operation: 'toggleProfileVideoMute', error: e, stack: stack);
+      }
+    }
+  }
 
-class _FeedPostPageState extends State<_FeedPostPage>
-    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
-  @override
-  bool get wantKeepAlive => true;
-
-  final SupabaseClient _supabase = Supabase.instance.client;
-  final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
-  final VideoManager _videoManager = VideoManager();
-
-  VideoPlayerController? _videoController;
-  bool _isVideoInitialized = false;
-  bool _isVideoLoading = false;
-  bool _isMuted = false;
-
-  double _averageRating = 0.0;
-  int _totalRatingsCount = 0;
-  double? _userRating;
-  bool _isLoadingRatings = true;
-  String _reactionEmoji = '❤️';
-  int _commentCount = 0;
-
-  VideoEditResult? _editResult;
-  bool _dataFetched = false;
-
-  // Global key for rating bar measurement
-  final GlobalKey _ratingBarKey = GlobalKey();
-
-  String get _postUrl => widget.post['postUrl']?.toString() ?? '';
-  String get _postId => widget.post['postId']?.toString() ?? '';
-
-  // ✅ Use shared helper
-  bool get _isVideo => isVideoFile(_postUrl);
-
-  bool get _isVideoPlaying =>
-      _videoController != null &&
-      _videoManager.isCurrentlyPlaying(_videoController!);
+  // ========== LIFECYCLE =================================================
 
   @override
   void initState() {
     super.initState();
+    AnalyticsService.screenEnter('current_profile');
     WidgetsBinding.instance.addObserver(this);
-    // ✅ parse edit metadata using shared helper
-    _editResult = parseEditResult(widget.post);
-    _fetchAllData();
-    if (widget.isActive) _onBecomeActive();
-  }
-
-  @override
-  void didUpdateWidget(_FeedPostPage old) {
-    super.didUpdateWidget(old);
-    if (widget.isActive && !old.isActive) {
-      _onBecomeActive();
-    } else if (!widget.isActive && old.isActive) {
-      _onBecomeInactive();
-    }
+    _scrollController = ScrollController();
+    _scrollController.addListener(_scrollListener);
+    getData();
   }
 
   @override
   void dispose() {
+    AnalyticsService.screenExit(screenName: 'profile', uid: widget.uid);
     WidgetsBinding.instance.removeObserver(this);
-    _disposeVideoController();
+    _scrollController.removeListener(_scrollListener);
+    _scrollController.dispose();
+    _profileVideoController?.dispose();
+    _profileVideoController = null;
+    _noPostNudgeTimer?.cancel();
+    _mediaService.dispose(); // ← disposes all loop controllers & thumbnails
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
-      _pauseVideo();
+      _mediaService.pauseAll(); // ← pauses loop controllers
+      _muteProfileVideo();
+    } else if (state == AppLifecycleState.resumed) {
+      _unmuteProfileVideo();
     }
   }
 
-  void _onBecomeActive() {
-    if (_isVideo) {
-      if (_isVideoInitialized) {
-        _playVideo();
-      } else if (!_isVideoLoading) {
-        _initVideo();
-      }
+  void _scrollListener() {
+    if (_scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent - 50 &&
+        !_isLoadingMore &&
+        _hasMorePosts) {
+      Future.delayed(const Duration(milliseconds: 15), () {
+        if (mounted) _loadMorePosts();
+      });
     }
   }
 
-  void _onBecomeInactive() {
-    _pauseVideo();
-  }
+  // ========== DATA FETCHING =============================================
 
-  void _playVideo() {
-    if (_videoController != null &&
-        _isVideoInitialized &&
-        mounted &&
-        widget.isActive) {
-      _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
-      _videoManager.playVideo(_videoController!, _postId);
-      setState(() {});
-    }
-  }
-
-  void _pauseVideo() {
-    if (_videoController != null && _isVideoInitialized && mounted) {
-      _videoManager.pauseVideo(_videoController!);
-      setState(() {});
-    }
-  }
-
-  void _togglePlayback() {
-    if (!_isVideoInitialized || _videoController == null) return;
-    if (_isVideoPlaying) {
-      _pauseVideo();
-    } else {
-      _playVideo();
-    }
-    setState(() {});
-  }
-
-  void _toggleMute() {
-    if (!_isVideoInitialized || _videoController == null) return;
-    setState(() {
-      _isMuted = !_isMuted;
-      _videoController!.setVolume(_isMuted ? 0.0 : 1.0);
-    });
-  }
-
-  void _disposeVideoController() {
-    if (_videoController != null) {
-      _videoController!.removeListener(_videoListener);
-      if (_isVideoPlaying) {
-        _videoManager.pauseVideo(_videoController!);
-      }
-      _videoController!.pause();
-      _videoController!.dispose();
-      _videoController = null;
-    }
-    _isVideoInitialized = false;
-    _isVideoLoading = false;
-  }
-
-  void _videoListener() {
+  Future<void> getData() async {
     if (!mounted) return;
-    if (_videoController != null &&
-        _videoController!.value.position == _videoController!.value.duration &&
-        _videoController!.value.duration != Duration.zero) {
-      _videoController!.seekTo(Duration.zero);
-      if (widget.isActive && !_isVideoPlaying) {
-        _videoController!.play();
-      }
-    }
-    if (_videoController != null && _isVideoInitialized) {
-      final actuallyPlaying = _videoController!.value.isPlaying;
-      final shouldBePlaying =
-          _videoManager.isCurrentlyPlaying(_videoController!);
-      if (actuallyPlaying != shouldBePlaying && widget.isActive) {
-        if (shouldBePlaying && !actuallyPlaying) {
-          _videoController!.play();
-        } else if (!shouldBePlaying && actuallyPlaying) {
-          _videoController!.pause();
-        }
-      }
-    }
-  }
 
-  Future<void> _initVideo() async {
-    if (_isVideoLoading || _isVideoInitialized || _postUrl.isEmpty) return;
-
-    setState(() => _isVideoLoading = true);
+    setState(() {
+      isLoading = true;
+      hasError = false;
+      errorMessage = '';
+    });
 
     try {
-      final controller = VideoPlayerController.networkUrl(
-        Uri.parse(_postUrl),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-      );
+      final postsLimit =
+          _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
 
-      await controller.initialize();
-      controller.setLooping(true);
-      controller.addListener(_videoListener);
+      final countFuture = _supabase
+          .from('posts')
+          .select('postId')
+          .eq('uid', widget.uid)
+          .count(CountOption.exact);
+
+      final postsFuture = _supabase
+          .from('posts')
+          .select(
+              'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
+          .eq('uid', widget.uid)
+          .order('datePublished', ascending: false)
+          .range(0, postsLimit - 1);
+
+      final userFuture =
+          _supabase.from('users').select().eq('uid', widget.uid).maybeSingle();
+
+      final followersFuture = _supabase
+          .from('user_followers')
+          .select('follower_id, followed_at')
+          .eq('user_id', widget.uid)
+          .then<List>((v) => v)
+          .catchError((e, stack) {
+        _logProfileError(
+          operation: 'getData_followers',
+          error: e,
+          stack: stack,
+          additionalData: {'uid': widget.uid},
+        );
+        return <dynamic>[];
+      });
+
+      final followingFuture = _supabase
+          .from('user_following')
+          .select('following_id, followed_at')
+          .eq('user_id', widget.uid)
+          .then<List>((v) => v)
+          .catchError((e, stack) {
+        _logProfileError(
+          operation: 'getData_following',
+          error: e,
+          stack: stack,
+          additionalData: {'uid': widget.uid},
+        );
+        return <dynamic>[];
+      });
+
+      final countResponse = await countFuture;
+      final totalPostCount = countResponse.count;
+
+      final initialPosts = await postsFuture;
+
+      final userResponse = await userFuture;
+
+      final followersResponse = await followersFuture;
+
+      final followingResponse = await followingFuture;
+
+      if (userResponse == null) {
+        if (mounted) {
+          setState(() {
+            hasError = true;
+            errorMessage = 'User profile not found';
+            isLoading = false;
+            _isFirstLoad = false;
+          });
+        }
+        return;
+      }
+
+      final bool isTestUser = userResponse['test'] == true;
+
+      final photoUrl = userResponse['photoUrl'] ?? '';
+      if (isVideoFile(photoUrl)) _initializeProfileVideo(photoUrl);
+
+      // Preload media via the shared service
+      _mediaService.preloadMedia(List<Map<String, dynamic>>.from(initialPosts));
+
+      final processedData = await Future.wait([
+        _processUserList(followersResponse, 'follower_id'),
+        _processUserList(followingResponse, 'following_id'),
+      ]);
 
       if (mounted) {
         setState(() {
-          _videoController = controller;
-          _isVideoInitialized = true;
-          _isVideoLoading = false;
+          userData = userResponse;
+          postCount = totalPostCount;
+          followers = followersResponse.length;
+          following = followingResponse.length;
+          _followersList = processedData[0];
+          _followingList = processedData[1];
+          _displayedPosts = initialPosts;
+          _postsOffset = initialPosts.length;
+          _hasMorePosts = totalPostCount > initialPosts.length;
+          _isFirstLoad = false;
         });
-        if (widget.isActive) {
-          _playVideo();
+
+        if (isTestUser && totalPostCount == 0) {
+          _startNoPostNudgeTimer();
         }
-      } else {
-        controller.dispose();
       }
-    } catch (e) {
-      if (mounted) setState(() => _isVideoLoading = false);
+    } catch (e, stackTrace) {
+      await _logProfileError(
+        operation: 'getData',
+        error: e,
+        stack: stackTrace,
+        additionalData: {'uid': widget.uid},
+      );
+      if (mounted) {
+        setState(() {
+          hasError = true;
+          errorMessage = 'Failed to load profile data';
+          _isFirstLoad = false;
+        });
+        showSnackBar(
+            context, "Please try again or contact us at ratedly9@gmail.com");
+      }
+    } finally {
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
-  Future<void> _fetchAllData() async {
-    if (_dataFetched) return;
-    _dataFetched = true;
-    await Future.wait([
-      _fetchRatings(),
-      _fetchReactionEmoji(),
-      _fetchCommentsCount(),
+  void _startNoPostNudgeTimer() {
+    if (_nudgeSent || _noPostNudgeTimer != null) return;
+    _noPostNudgeTimer = Timer(const Duration(minutes: 1), () async {
+      if (!mounted || _nudgeSent) return;
+      if (postCount > 0) return;
+      _nudgeSent = true;
+      try {
+        NotificationService().triggerServerNotification(
+          type: 'nudge',
+          targetUserId: widget.uid,
+          title: ' Post your first moment',
+          body: 'Your first post could be the start of something big.',
+          customData: {'source': 'no_post_nudge'},
+        );
+      } catch (e, stack) {
+        await _logProfileError(
+          operation: 'startNoPostNudgeTimer_notification',
+          error: e,
+          stack: stack,
+          additionalData: {'uid': widget.uid},
+        );
+      }
+    });
+  }
+
+  Future<void> _loadMorePosts() async {
+    if (!_hasMorePosts || _isLoadingMore) return;
+    setState(() => _isLoadingMore = true);
+    try {
+      final newPosts = await _supabase
+          .from('posts')
+          .select(
+              'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
+          .eq('uid', widget.uid)
+          .order('datePublished', ascending: false)
+          .range(_postsOffset, _postsOffset + _subsequentPostsLimit - 1);
+
+      _mediaService.preloadMedia(List<Map<String, dynamic>>.from(newPosts));
+
+      if (newPosts.isNotEmpty && mounted) {
+        setState(() {
+          _displayedPosts.addAll(newPosts);
+          _postsOffset += newPosts.length;
+          _hasMorePosts = newPosts.length == _subsequentPostsLimit;
+        });
+      } else {
+        if (mounted) setState(() => _hasMorePosts = false);
+      }
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadMorePosts',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid, 'offset': _postsOffset},
+      );
+      if (mounted) showSnackBar(context, 'Failed to load more posts');
+    } finally {
+      if (mounted) setState(() => _isLoadingMore = false);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _loadMorePostsForFeed(
+      int currentCount) async {
+    try {
+      final newPosts = await _supabase
+          .from('posts')
+          .select(
+              'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
+          .eq('uid', widget.uid)
+          .order('datePublished', ascending: false)
+          .range(currentCount, currentCount + _subsequentPostsLimit - 1);
+
+      _mediaService.preloadMedia(List<Map<String, dynamic>>.from(newPosts));
+      return List<Map<String, dynamic>>.from(newPosts);
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'loadMorePostsForFeed',
+        error: e,
+        stack: stack,
+        additionalData: {'uid': widget.uid, 'currentCount': currentCount},
+      );
+      return [];
+    }
+  }
+
+  Future<List<dynamic>> _processUserList(
+      List<dynamic> userList, String idKey) async {
+    if (userList.isEmpty) return [];
+    final userIds = userList.map((u) => u[idKey] as String).toList();
+    try {
+      final usersData = await _supabase
+          .from('users')
+          .select('uid, username, photoUrl')
+          .inFilter('uid', userIds);
+      final userMap = {for (var u in usersData) u['uid'] as String: u};
+      return userList
+          .map((entry) {
+            final info = userMap[entry[idKey]];
+            return info != null
+                ? {
+                    'userId': entry[idKey],
+                    'username': info['username'],
+                    'photoUrl': info['photoUrl'],
+                    'timestamp': entry['followed_at'],
+                  }
+                : null;
+          })
+          .where((item) => item != null)
+          .toList();
+    } catch (e, stack) {
+      await _logProfileError(
+        operation: 'processUserList',
+        error: e,
+        stack: stack,
+        additionalData: {'idKey': idKey, 'userIds': userIds},
+      );
+      return [];
+    }
+  }
+
+  // ========== CAMERA + POST-SHARE FLOW (NEW) ============================
+
+  /// Single entry point for every "add post" button. If the composer returns
+  /// a [PostedResult], we open the feed on the new post (with share banner).
+  Future<void> _openCamera() async {
+    _mediaService.pauseAll();
+    _muteProfileVideo();
+
+    final posted = await Navigator.push<PostedResult>(
+      context,
+      MaterialPageRoute<PostedResult>(
+        builder: (_) => CustomCameraScreen(
+          onPostUploaded: () async => getData(),
+        ),
+        settings: const RouteSettings(name: 'cameraFromProfile'),
+      ),
+    );
+    if (!mounted) return;
+
+    if (posted != null) {
+      await _openFeedForNewPost(posted);
+    } else {
+      _resumeProfileMedia();
+    }
+  }
+
+  Future<void> _openFeedForNewPost(PostedResult posted) async {
+    final row = Map<String, dynamic>.from(posted.postRow);
+
+    // New post first, then the rest, without duplicating it if getData()
+    // already finished and put it in _displayedPosts.
+    final posts = <Map<String, dynamic>>[
+      row,
+      ..._displayedPosts
+          .map((p) => Map<String, dynamic>.from(p as Map))
+          .where((p) => p['postId'] != row['postId']),
+    ];
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProfilePostFeedScreen(
+          initialPosts: posts,
+          initialIndex: 0,
+          userData: {
+            'uid': widget.uid,
+            'username': userData['username'] ?? '',
+            'photoUrl': userData['photoUrl'] ?? '',
+            'isVerified': userData['isVerified'] ?? false,
+            'country': userData['country'] ?? '',
+          },
+          onLoadMore: _loadMorePostsForFeed,
+          // Only expect more posts if we already have a full page.
+          // With fewer than a page, everything is already loaded, so the
+          // feed won't add the extra loader page you can scroll into.
+          initialHasMore: posts.length >= _initialPostsLimit,
+          onPostDeleted: () async => getData(),
+          justPosted: posted,
+        ),
+      ),
+    );
+
+    if (mounted) _resumeProfileMedia();
+  }
+
+  void _resumeProfileMedia() {
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (mounted) {
+        _mediaService.resumeAll();
+        _unmuteProfileVideo();
+      }
+    });
+  }
+
+  void _navigateToSettings() {
+    _muteProfileVideo();
+    Navigator.push(
+            context, MaterialPageRoute(builder: (_) => const SettingsScreen()))
+        .then((_) {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) _unmuteProfileVideo();
+      });
+    });
+  }
+
+  Widget _buildUsernameWithFlag(String username, bool isVerified,
+      String? countryCode, AppColorSet colors) {
+    final bool hasFlag = countryCode != null &&
+        countryCode.isNotEmpty &&
+        countryCode.length == 2;
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Text(username,
+          style:
+              TextStyle(color: colors.textColor, fontWeight: FontWeight.bold)),
+      if (hasFlag) ...[
+        const SizedBox(width: 4),
+        CountryFlagWidget(countryCode: countryCode!),
+      ],
+      if (isVerified) ...[
+        const SizedBox(width: 4),
+        const Icon(Icons.verified, color: Colors.blue, size: 16),
+      ],
     ]);
   }
 
-  Future<void> _fetchRatings() async {
-    final user = Provider.of<UserProvider>(context, listen: false).user;
-    try {
-      final ratings = await _supabase
-          .from('post_rating')
-          .select()
-          .eq('postid', _postId) as List<dynamic>;
+  // ========== BUILD ======================================================
 
-      double avg = 0;
-      double? userRating;
-      if (ratings.isNotEmpty) {
-        final total = ratings.fold<double>(
-            0, (s, r) => s + (r['rating'] as num).toDouble());
-        avg = total / ratings.length;
-        if (user != null) {
-          for (final r in ratings) {
-            if (r['userid'] == user.uid) {
-              userRating = (r['rating'] as num).toDouble();
-              break;
-            }
-          }
-        }
-      }
-      if (mounted) {
-        setState(() {
-          _totalRatingsCount = ratings.length;
-          _averageRating = avg;
-          _userRating = userRating;
-          _isLoadingRatings = false;
-        });
-      }
-    } catch (e) {
-      await _logReactionError(
-        operationType: 'fetch_ratings_profile_feed',
-        userId: user?.uid,
-        additionalData: {'postId': _postId},
-        error: e,
-      );
-      if (mounted) setState(() => _isLoadingRatings = false);
-    }
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final colors = _getColors(themeProvider);
+
+    return Scaffold(
+      appBar: AppBar(
+        iconTheme: IconThemeData(color: colors.textColor),
+        backgroundColor: colors.backgroundColor,
+        elevation: 0,
+        title: isLoading
+            ? Container(
+                height: 16,
+                width: 120,
+                decoration: BoxDecoration(
+                  color: colors.skeletonColor, // ← updated
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              )
+            : _buildUsernameWithFlag(
+                userData['username'] ?? 'Loading...',
+                userData['isVerified'] == true,
+                userData['country']?.toString(),
+                colors,
+              ),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: Icon(Icons.menu, color: colors.textColor),
+            onPressed: _navigateToSettings,
+          ),
+        ],
+      ),
+      backgroundColor: colors.backgroundColor,
+      body: hasError
+          ? _buildErrorWidget(colors)
+          : isLoading
+              ? _buildProfileSkeleton(colors)
+              : _buildScrollableBody(colors),
+    );
   }
 
-  Future<void> _fetchReactionEmoji() async {
-    try {
-      final resp = await _supabase
-          .from('posts')
-          .select('reaction_emoji')
-          .eq('postId', _postId)
-          .maybeSingle();
-      if (mounted && resp != null) {
-        final emoji = resp['reaction_emoji']?.toString();
-        if (emoji != null && emoji.isNotEmpty) {
-          setState(() => _reactionEmoji = emoji);
-        }
-      }
-    } catch (e) {
-      final user = Provider.of<UserProvider>(context, listen: false).user;
-      await _logReactionError(
-        operationType: 'fetch_reaction_emoji_profile_feed',
-        userId: user?.uid,
-        additionalData: {'postId': _postId},
-        error: e,
-      );
-    }
+  Widget _buildScrollableBody(AppColorSet colors) {
+    return CustomScrollView(
+      controller: _scrollController,
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            child: Column(children: [
+              _buildProfileHeader(colors),
+              const SizedBox(height: 20),
+              _buildBioSection(colors),
+              const SizedBox(height: 16),
+              _buildPostsHeaderStrip(colors),
+            ]),
+          ),
+        ),
+        ..._buildPostsSliverContent(colors),
+        const SliverToBoxAdapter(child: SizedBox(height: 20)),
+      ],
+    );
   }
 
-  Future<void> _fetchCommentsCount() async {
-    try {
-      final comments = await _supabase
-          .from('comments')
-          .select('id')
-          .eq('postid', _postId) as List<dynamic>;
-      final replies = await _supabase
-          .from('replies')
-          .select('id')
-          .eq('postid', _postId) as List<dynamic>;
-      if (mounted) {
-        setState(() => _commentCount = comments.length + replies.length);
-      }
-    } catch (e) {}
-  }
-
-  void _handleRatingSubmitted(double rating) async {
-    final user = Provider.of<UserProvider>(context, listen: false).user;
-    if (user == null) return;
-
-    final oldRating = _userRating;
-    final isUpdating = oldRating != null;
-
-    setState(() {
-      _userRating = rating;
-      final currentTotal = _averageRating * _totalRatingsCount;
-      if (isUpdating) {
-        _averageRating =
-            (currentTotal - oldRating! + rating) / _totalRatingsCount;
-      } else {
-        _totalRatingsCount++;
-        _averageRating = (currentTotal + rating) / _totalRatingsCount;
-      }
-    });
-
-    try {
-      final res = await SupabaseReactionsMethods()
-          .reactToPost(_postId, user.uid, rating);
-      if (res != 'success' && mounted) _fetchRatings();
-    } catch (_) {
-      if (mounted) _fetchRatings();
-    }
-  }
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // FIX: Pause this post's video BEFORE navigating to profile
-  // ───────────────────────────────────────────────────────────────────────────
-  void _goToProfile() {
-    _pauseVideo(); // ✅ Pause only the current post's video
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            ProfileScreen(uid: widget.userData['uid']?.toString() ?? ''),
+  /// X-style tab strip — two hairlines with a centered "grid + POSTS" label.
+  /// Replaces the old two-tab buttons (POSTS | GALLERIES) now that galleries
+  /// are gone.
+  Widget _buildPostsHeaderStrip(AppColorSet colors) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: colors.cardColor, width: 1),
+          bottom: BorderSide(color: colors.cardColor, width: 1),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.grid_on, size: 16, color: colors.textColor),
+          const SizedBox(width: 6),
+          Text(
+            'POSTS',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+              color: colors.textColor,
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  void _openRatingsPanel() {
-    RatingListScreen.show(
-      context,
-      postId: _postId,
-      isVideo: false,
-      videoController: null,
-      onClose: null,
-    );
+  List<Widget> _buildPostsSliverContent(AppColorSet colors) {
+    if (_displayedPosts.isEmpty && !_isLoadingMore) {
+      return [SliverToBoxAdapter(child: _buildEmptyPostsWidget(colors))];
+    }
+
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+        sliver: SliverGrid(
+          delegate: SliverChildBuilderDelegate(
+            (context, index) {
+              if (index == 0) return _buildAddPostButton(colors);
+              final postIndex = index - 1;
+              if (postIndex >= _displayedPosts.length) {
+                return const SizedBox.shrink();
+              }
+              return _buildPostItem(
+                  _displayedPosts[postIndex], colors, postIndex);
+            },
+            childCount: _displayedPosts.length + 1,
+          ),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            crossAxisSpacing: 2,
+            mainAxisSpacing: 2,
+            childAspectRatio: 0.8,
+          ),
+        ),
+      ),
+      if (_isLoadingMore)
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Center(
+                child: CircularProgressIndicator(color: colors.textColor)),
+          ),
+        ),
+    ];
   }
 
-  Future<void> _deletePost(BuildContext context) async {
-    final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
-    final colors = themeProvider.themeMode == ThemeMode.dark
-        ? AppColorSet.dark()
-        : AppColorSet.light();
+  // ========== EMPTY STATE WIDGETS =======================================
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return WillPopScope(
-          onWillPop: () async => false,
-          child: Dialog(
-            backgroundColor: colors.backgroundColor,
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(color: colors.textColor),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Deleting post...',
-                    style: TextStyle(color: colors.textColor, fontSize: 16),
-                  ),
-                ],
-              ),
+  Widget _buildEmptyPostsWidget(AppColorSet colors) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Upload your first post',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: colors.textColor,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
             ),
           ),
-        );
-      },
+          const SizedBox(height: 10),
+          Text(
+            'Go viral The world is waiting for you!',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: colors.textColor.withOpacity(0.6),
+              fontSize: 15,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 28),
+          ElevatedButton(
+            onPressed: _openCamera, // ← CHANGED
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF3797EF),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              elevation: 0,
+            ),
+            child: const Text(
+              'Upload',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
     );
-
-    try {
-      final result = await _postsMethods.deletePost(_postId);
-      if (mounted) Navigator.of(context).pop();
-      if (result == 'success') {
-        widget.onPostDeleted?.call();
-      }
-    } catch (_) {
-      if (mounted) Navigator.of(context).pop();
-    }
   }
 
-  void _showOptionsMenu(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
-    final colors = themeProvider.themeMode == ThemeMode.dark
-        ? AppColorSet.dark()
-        : AppColorSet.light();
+  // ========== PROFILE HEADER / BIO / METRICS ============================
 
-    showDialog(
-      context: context,
-      builder: (_) => Dialog(
-        backgroundColor: colors.backgroundColor,
-        child: ListView(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          shrinkWrap: true,
+  Widget _buildErrorWidget(AppColorSet colors) {
+    return Center(
+      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Icon(Icons.error_outline, color: colors.textColor, size: 64),
+        const SizedBox(height: 16),
+        Text('Something went wrong',
+            style: TextStyle(
+                color: colors.textColor,
+                fontSize: 18,
+                fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Text(errorMessage,
+            style: TextStyle(color: colors.textColor),
+            textAlign: TextAlign.center),
+        const SizedBox(height: 16),
+        ElevatedButton(
+          onPressed: getData,
+          style: ElevatedButton.styleFrom(
+              backgroundColor: colors.cardColor,
+              foregroundColor: colors.textColor),
+          child: const Text('Try Again'),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildProfileHeader(AppColorSet colors) {
+    return Column(children: [
+      SizedBox(
+        height: 80,
+        child: Center(
+          child: Transform.translate(
+            offset: const Offset(0, -12),
+            child: _buildProfilePicture(colors),
+          ),
+        ),
+      ),
+      Column(children: [
+        SizedBox(
+          width: double.infinity,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _buildMetric(postCount, "Posts", colors.textColor),
+              _buildInteractiveMetric(
+                  followers, "Followers", _followersList, colors),
+              _buildInteractiveMetric(
+                  following, "Following", _followingList, colors),
+            ],
+          ),
+        ),
+        const SizedBox(height: 5),
+        Center(child: _buildEditProfileButton(colors)),
+      ]),
+    ]);
+  }
+
+  Widget _buildInteractiveMetric(
+      int value, String label, List<dynamic> userList, AppColorSet colors) {
+    return GestureDetector(
+      onTap: () {
+        _muteProfileVideo();
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+              builder: (_) =>
+                  UserListScreen(title: label, userEntries: userList)),
+        ).then((_) {
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (mounted) _unmuteProfileVideo();
+          });
+        });
+      },
+      child: _buildMetric(value, label, colors.textColor),
+    );
+  }
+
+  Widget _buildEditProfileButton(AppColorSet colors) {
+    return ElevatedButton(
+      onPressed: () async {
+        _muteProfileVideo();
+        final result = await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const EditProfileScreen()),
+        );
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted) _unmuteProfileVideo();
+        });
+        if (result != null && mounted) {
+          setState(() {
+            userData['bio'] = result['bio'] ?? userData['bio'];
+            userData['photoUrl'] = result['photoUrl'] ?? userData['photoUrl'];
+          });
+          await getData();
+        }
+      },
+      style: ElevatedButton.styleFrom(
+        backgroundColor: colors.buttonBackgroundColor,
+        foregroundColor: colors.buttonTextColor,
+      ),
+      child: const Text("Edit Profile"),
+    );
+  }
+
+  Widget _buildMetric(int value, String label, Color textColor) {
+    return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Text(value.toString(),
+          style: TextStyle(
+              fontSize: 14, fontWeight: FontWeight.bold, color: textColor)),
+      const SizedBox(height: 4),
+      Text(label,
+          style: TextStyle(
+              fontSize: 15, fontWeight: FontWeight.w400, color: textColor)),
+    ]);
+  }
+
+  Widget _buildBioSection(AppColorSet colors) {
+    final String bio = userData['bio'] ?? '';
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _buildUsernameWithFlag(
+          userData['username'] ?? '',
+          userData['isVerified'] == true,
+          userData['country']?.toString(),
+          colors,
+        ),
+        const SizedBox(height: 4),
+        if (bio.isNotEmpty)
+          ExpandableBioText(
+            text: bio,
+            style: TextStyle(color: colors.textColor),
+            expandColor: colors.textColor.withOpacity(0.8),
+          ),
+      ]),
+    );
+  }
+
+  // ========== GRID ITEM BUILDERS (using shared helpers & service) ========
+
+  Widget _buildAddPostButton(AppColorSet colors) {
+    return GestureDetector(
+      onTap: _openCamera, // ← CHANGED
+      child: Container(
+        margin: const EdgeInsets.all(1),
+        decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(4), color: colors.cardColor),
+        child:
+            Icon(Icons.add_circle_outline, size: 40, color: colors.textColor),
+      ),
+    );
+  }
+
+  Widget _buildPostItem(
+      Map<String, dynamic> post, AppColorSet colors, int postIndex) {
+    final postUrl = post['postUrl'] ?? '';
+    final isVideo = isVideoFile(postUrl); // shared
+    final editResult = parseEditResult(post); // shared
+    final postId = post['postId']?.toString() ?? '';
+
+    final Map<String, dynamic> feedUserData = {
+      'uid': widget.uid,
+      'username': userData['username'] ?? '',
+      'photoUrl': userData['photoUrl'] ?? '',
+      'isVerified': userData['isVerified'] ?? false,
+      'country': userData['country'] ?? '',
+    };
+
+    return GestureDetector(
+      onTap: () {
+        _mediaService.pauseAll();
+        _muteProfileVideo();
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ProfilePostFeedScreen(
+              initialPosts: List<Map<String, dynamic>>.from(_displayedPosts),
+              initialIndex: postIndex,
+              userData: feedUserData,
+              onLoadMore: _loadMorePostsForFeed,
+              initialHasMore: _hasMorePosts,
+              onPostDeleted: () async => getData(),
+            ),
+          ),
+        ).then((_) {
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (mounted) {
+              _mediaService.resumeAll();
+              _unmuteProfileVideo();
+            }
+          });
+        });
+      },
+      child: Container(
+        margin: const EdgeInsets.all(1),
+        decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(4),
+            color: isVideo ? colors.cardColor : null),
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            InkWell(
-              onTap: () async {
-                Navigator.of(context).pop();
-                await _deletePost(context);
-              },
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                child: Text('Delete',
-                    style: TextStyle(color: Colors.red[400], fontSize: 15)),
-              ),
-            ),
-            InkWell(
-              onTap: () => Navigator.of(context).pop(),
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                child: Text('Cancel',
-                    style: TextStyle(color: colors.textColor, fontSize: 15)),
-              ),
-            ),
+            if (isVideo)
+              shouldShowVideoLoop(postId) // shared
+                  ? _buildPostVideoPlayer(postUrl, colors, editResult)
+                  : _buildPostVideoThumbnail(postUrl, colors, editResult)
+            else
+              _buildPostImage(post, colors),
           ],
         ),
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    super.build(context);
+  Widget _buildPostVideoPlayer(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
+    final controller = _mediaService.getController(videoUrl);
+    final isInitialized = _mediaService.isControllerInitialized(videoUrl);
 
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final colors = themeProvider.themeMode == ThemeMode.dark
-        ? AppColorSet.dark()
-        : AppColorSet.light();
+    if (!isInitialized || controller == null) {
+      return Container(
+          color: colors.cardColor,
+          child: Center(
+              child: CircularProgressIndicator(color: colors.textColor)));
+    }
 
-    final user = Provider.of<UserProvider>(context).user;
-    final isOwner = user != null &&
-        (user.uid == widget.userData['uid']?.toString() ||
-            user.uid == widget.post['uid']?.toString());
+    final List<double> matrix = buildColorMatrix(editResult); // shared
+    final int quarters = editResult?.rotationQuarters ?? 0;
 
-    final dateRaw = widget.post['datePublished'];
-    final date = dateRaw is DateTime
-        ? dateRaw
-        : (dateRaw is String ? DateTime.tryParse(dateRaw) : null);
-    final timeStr = date != null ? timeago.format(date) : '';
-
-    final photoUrl = widget.userData['photoUrl']?.toString() ?? '';
-    final uid = widget.userData['uid']?.toString() ?? '';
-
-    // ✅ Use shared helper
-    final matrix = buildColorMatrix(_editResult);
-    final quarters = _editResult?.rotationQuarters ?? 0;
-    final description = widget.post['description']?.toString() ?? '';
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            children: [
-              GestureDetector(
-                onTap: _goToProfile,
-                child: _buildAvatar(photoUrl, uid, user?.uid ?? '', colors),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    GestureDetector(
-                      onTap: _goToProfile,
-                      child: VerifiedUsernameWidget(
-                        username: widget.userData['username']?.toString() ?? '',
-                        uid: uid,
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: colors.textColor),
-                      ),
-                    ),
-                    if (timeStr.isNotEmpty)
-                      Text(timeStr,
-                          style: TextStyle(
-                              color: colors.textColor.withOpacity(0.6),
-                              fontSize: 12)),
-                  ],
-                ),
-              ),
-              if (isOwner && widget.onPostDeleted != null)
-                IconButton(
-                  icon: Icon(Icons.more_vert, color: colors.iconColor),
-                  onPressed: () => _showOptionsMenu(context),
-                ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              return _buildMedia(matrix, quarters, colors,
-                  maxHeight: constraints.maxHeight);
-            },
-          ),
-        ),
-        if (description.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              description,
-              style: TextStyle(color: colors.textColor, fontSize: 15),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        if (!_isLoadingRatings)
-          Builder(
-            key: _ratingBarKey,
-            builder: (context) {
-              return LayoutBuilder(
-                builder: (context, constraints) {
-                  return SizedBox(
-                    height: 90.6,
-                    child: RatingBar(
-                      averageRating: _averageRating,
-                      reactionEmoji: _reactionEmoji,
-                      initialThumbPosition:
-                          _userRating == null ? 5.0 : _averageRating,
-                      onRatingEnd: _handleRatingSubmitted,
-                      hasUserRated: _userRating != null,
-                      userRating: _userRating,
-                      userProfilePhoto: widget.userData['photoUrl']?.toString(),
-                    ),
-                  );
-                },
-              );
-            },
-          )
-        else
-          const SizedBox(height: 48),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            children: [
-              Stack(
-                clipBehavior: Clip.none,
-                alignment: Alignment.center,
-                children: [
-                  IconButton(
-                    icon: Icon(Icons.comment_outlined,
-                        color: colors.iconColor, size: 28),
-                    onPressed: () => _showComments(context),
-                  ),
-                  if (_commentCount > 0)
-                    Positioned(
-                      top: -6,
-                      left: -6,
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        constraints:
-                            const BoxConstraints(minWidth: 20, minHeight: 20),
-                        decoration: BoxDecoration(
-                            color: colors.cardColor, shape: BoxShape.circle),
-                        child: Center(
-                          child: Text(
-                            _commentCount.toString(),
-                            style: TextStyle(
-                                color: colors.textColor,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              IconButton(
-                icon: Icon(Icons.send, color: colors.iconColor),
-                onPressed: () {
-                  if (user != null) {
-                    showDialog(
-                      context: context,
-                      builder: (_) =>
-                          PostShare(currentUserId: user.uid, postId: _postId),
-                    );
-                  }
-                },
-              ),
-              const Spacer(),
-              GestureDetector(
-                onTap: _openRatingsPanel,
-                child: Container(
-                  decoration: BoxDecoration(
-                      color: colors.cardColor,
-                      borderRadius: BorderRadius.circular(4)),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  child: Text(
-                    _totalRatingsCount == 0
-                        ? 'Be the first to react'
-                        : '$_totalRatingsCount '
-                            '${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: colors.textColor,
-                        fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
-          ),
-        ),
-        const SizedBox(height: 32),
-      ],
-    );
-  }
-
-  Widget _buildAvatar(
-      String photoUrl, String uid, String currentUserId, AppColorSet colors) {
-    final isDefault = photoUrl.isEmpty || photoUrl == 'default';
-    return CircleAvatar(
-      radius: 20,
-      backgroundColor: colors.cardColor,
-      backgroundImage: !isDefault ? NetworkImage(photoUrl) : null,
-      child: isDefault
-          ? Icon(Icons.account_circle, size: 40, color: colors.textColor)
-          : null,
-    );
-  }
-
-  Widget _buildMedia(List<double> matrix, int quarters, AppColorSet colors,
-      {double? maxHeight}) {
-    if (_isVideo)
-      return _buildVideoPlayer(matrix, quarters, colors, maxHeight: maxHeight);
-    return _buildImage(matrix, quarters, colors, maxHeight: maxHeight);
-  }
-
-  Widget _buildVideoPlayer(
-      List<double> matrix, int quarters, AppColorSet colors,
-      {double? maxHeight}) {
-    final double videoAspect = (_isVideoInitialized && _videoController != null)
-        ? _videoController!.value.aspectRatio
-        : 1.0;
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final double width = constraints.maxWidth;
-        final double naturalHeight = width / videoAspect;
-        final double containerHeight = maxHeight != null
-            ? math.min(naturalHeight, maxHeight)
-            : naturalHeight;
-        final bool needsCropping =
-            maxHeight != null && naturalHeight > maxHeight;
-
-        return SizedBox(
-          width: width,
-          height: containerHeight,
-          child: ClipRect(
-            child: Container(
-              color: Colors.black,
-              child: GestureDetector(
-                onTap: _togglePlayback,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (_isVideoInitialized && _videoController != null)
-                      ColorFiltered(
-                        colorFilter: ColorFilter.matrix(matrix),
-                        child: Transform.rotate(
-                          angle: quarters * math.pi / 2,
-                          child: needsCropping
-                              ? FittedBox(
-                                  fit: BoxFit.cover,
-                                  child: SizedBox(
-                                    width: _videoController!.value.size.width,
-                                    height: _videoController!.value.size.height,
-                                    child: VideoPlayer(_videoController!),
-                                  ),
-                                )
-                              : VideoPlayer(_videoController!),
-                        ),
-                      )
-                    else if (_isVideoLoading)
-                      Center(
-                          child: CircularProgressIndicator(
-                              color: colors.textColor))
-                    else
-                      Center(
-                          child: Icon(Icons.videocam,
-                              color: colors.textColor, size: 48)),
-
-                    // ✅ Edit overlays (strokes + text) using shared function
-                    if (_editResult != null)
-                      Positioned.fill(
-                        child: IgnorePointer(
-                          child: LayoutBuilder(
-                            builder: (context, overlayConstraints) =>
-                                buildEditOverlayLayer(
-                              editResult: _editResult!,
-                              constraints: overlayConstraints,
-                              screenSize: MediaQuery.of(context).size,
-                            ),
-                          ),
-                        ),
-                      ),
-
-                    // Play overlay
-                    if (_isVideoInitialized && !_isVideoPlaying)
-                      Center(
-                        child: Container(
-                          width: 80,
-                          height: 80,
-                          decoration: const BoxDecoration(
-                            color: Colors.black54,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.play_arrow,
-                              size: 40, color: Colors.white),
-                        ),
-                      ),
-
-                    // Mute button
-                    if (_isVideoInitialized)
-                      Positioned(
-                        bottom: 16,
-                        right: 16,
-                        child: GestureDetector(
-                          onTap: _toggleMute,
-                          child: Container(
-                            width: 36,
-                            height: 36,
-                            decoration: const BoxDecoration(
-                                color: Colors.black54, shape: BoxShape.circle),
-                            child: Icon(
-                              _isMuted ? Icons.volume_off : Icons.volume_up,
-                              size: 18,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(
+          child: ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: controller.value.size.width,
+                  height: controller.value.size.height,
+                  child: VideoPlayer(controller),
                 ),
               ),
             ),
           ),
+        ),
+        if (editResult != null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: LayoutBuilder(
+                builder: (context, constraints) => buildEditOverlayLayer(
+                  editResult: editResult,
+                  constraints: constraints,
+                  screenSize: MediaQuery.of(context).size,
+                ),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  Widget _buildPostVideoThumbnail(
+      String videoUrl, AppColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    return FutureBuilder<Uint8List?>(
+      future: _mediaService.getThumbnailFuture(videoUrl),
+      builder: (context, snapshot) {
+        final haveImage = snapshot.connectionState == ConnectionState.done &&
+            snapshot.data != null;
+
+        Widget imageLayer = haveImage
+            ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+            : Container(color: colors.cardColor);
+
+        imageLayer = ColorFiltered(
+          colorFilter: ColorFilter.matrix(matrix),
+          child: Transform.rotate(
+            angle: quarters * math.pi / 2,
+            child: imageLayer,
+          ),
+        );
+
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Stack(fit: StackFit.expand, children: [
+            Positioned.fill(child: imageLayer),
+            if (editResult != null)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) => buildEditOverlayLayer(
+                      editResult: editResult,
+                      constraints: constraints,
+                      screenSize: MediaQuery.of(context).size,
+                    ),
+                  ),
+                ),
+              ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.55),
+                  shape: BoxShape.circle,
+                ),
+                padding: const EdgeInsets.all(2),
+                child: const Icon(
+                  Icons.play_arrow,
+                  color: Colors.white,
+                  size: 14,
+                ),
+              ),
+            ),
+          ]),
         );
       },
     );
   }
 
-  Widget _buildImage(List<double> matrix, int quarters, AppColorSet colors,
-      {double? maxHeight}) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final double width = constraints.maxWidth;
-        final double naturalHeight = width;
-        final double containerHeight = maxHeight != null
-            ? math.min(naturalHeight, maxHeight)
-            : naturalHeight;
-        final bool needsCropping =
-            maxHeight != null && naturalHeight > maxHeight;
+  Widget _buildPostImage(Map<String, dynamic> post, AppColorSet colors) {
+    final postUrl = post['postUrl'] ?? '';
+    final editResult = parseEditResult(post);
+    final List<double> matrix = buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
 
-        return SizedBox(
-          width: width,
-          height: containerHeight,
-          child: ClipRect(
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                InteractiveViewer(
-                  panEnabled: true,
-                  scaleEnabled: true,
-                  minScale: 1.0,
-                  maxScale: 4.0,
-                  child: ColorFiltered(
-                    colorFilter: ColorFilter.matrix(matrix),
-                    child: Transform.rotate(
-                      angle: quarters * math.pi / 2,
-                      child: needsCropping
-                          ? FittedBox(
-                              fit: BoxFit.cover,
-                              child: Image.network(
-                                _postUrl,
-                                width: width,
-                                height: width,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => Container(
-                                  color: colors.cardColor,
-                                  child: Icon(Icons.broken_image,
-                                      color: colors.textColor, size: 48),
-                                ),
-                              ),
-                            )
-                          : Image.network(
-                              _postUrl,
-                              width: width,
-                              height: width,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => Container(
-                                color: colors.cardColor,
-                                child: Icon(Icons.broken_image,
-                                    color: colors.textColor, size: 48),
-                              ),
-                            ),
-                    ),
+    Widget baseImage = ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: editResult == null
+          ? Image.network(
+              postUrl,
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+              errorBuilder: (_, __, ___) => Container(
+                color: colors.cardColor,
+                child:
+                    Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+              ),
+            )
+          : ColorFiltered(
+              colorFilter: ColorFilter.matrix(matrix),
+              child: Transform.rotate(
+                angle: quarters * math.pi / 2,
+                child: Image.network(
+                  postUrl,
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                  errorBuilder: (_, __, ___) => Container(
+                    color: colors.cardColor,
+                    child: Icon(Icons.broken_image,
+                        color: colors.iconColor, size: 20),
                   ),
                 ),
-                // ✅ Edit overlays for images using shared function
-                if (_editResult != null)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: LayoutBuilder(
-                        builder: (context, overlayConstraints) =>
-                            buildEditOverlayLayer(
-                          editResult: _editResult!,
-                          constraints: overlayConstraints,
-                          screenSize: MediaQuery.of(context).size,
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
+              ),
+            ),
+    );
+
+    if (editResult == null) return baseImage;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(child: baseImage),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: LayoutBuilder(
+              builder: (context, constraints) => buildEditOverlayLayer(
+                editResult: editResult,
+                constraints: constraints,
+                screenSize: MediaQuery.of(context).size,
+              ),
             ),
           ),
-        );
-      },
+        ),
+      ]),
     );
   }
 
-  void _showComments(BuildContext context) {
-    _pauseVideo();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => CommentsBottomSheet(
-        postId: _postId,
-        postImage: _postUrl,
-        isVideo: _isVideo,
-        onClose: () {
-          if (widget.isActive) _playVideo();
-        },
-        videoController: _videoController,
+  // ========== LOADING SKELETON ===========================================
+
+  Widget _buildProfileSkeleton(AppColorSet colors) {
+    return SingleChildScrollView(
+      controller: _scrollController,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(children: [
+          _buildProfileHeaderSkeleton(colors),
+          const SizedBox(height: 20),
+          Column(children: [
+            _buildBioSectionSkeleton(colors),
+            const SizedBox(height: 16),
+            _buildPostsHeaderStrip(colors),
+            const SizedBox(height: 16),
+            _buildPostsGridSkeleton(colors),
+          ]),
+        ]),
       ),
-    ).then((_) => _fetchCommentsCount());
+    );
+  }
+
+  Widget _buildProfileHeaderSkeleton(AppColorSet colors) {
+    return Column(children: [
+      SizedBox(
+        height: 80,
+        child: Center(
+          child: Container(
+            width: 80,
+            height: 80,
+            decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: colors.skeletonColor), // ← updated
+          ),
+        ),
+      ),
+      const SizedBox(height: 16),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _buildMetricSkeleton(colors),
+          _buildMetricSkeleton(colors),
+          _buildMetricSkeleton(colors),
+        ],
+      ),
+      const SizedBox(height: 16),
+      Container(
+        width: 120,
+        height: 36,
+        decoration: BoxDecoration(
+            color: colors.skeletonColor, // ← updated
+            borderRadius: BorderRadius.circular(8)),
+      ),
+    ]);
+  }
+
+  Widget _buildMetricSkeleton(AppColorSet colors) {
+    return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Container(
+          height: 16,
+          width: 30,
+          decoration: BoxDecoration(
+              color: colors.skeletonColor, // ← updated
+              borderRadius: BorderRadius.circular(4))),
+      const SizedBox(height: 6),
+      Container(
+          height: 12,
+          width: 50,
+          decoration: BoxDecoration(
+              color: colors.skeletonColor, // ← updated
+              borderRadius: BorderRadius.circular(4))),
+    ]);
+  }
+
+  Widget _buildBioSectionSkeleton(AppColorSet colors) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+            height: 18,
+            width: 120,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor, // ← updated
+                borderRadius: BorderRadius.circular(4))),
+        const SizedBox(height: 12),
+        Container(
+            height: 14,
+            width: double.infinity,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor, // ← updated
+                borderRadius: BorderRadius.circular(4))),
+        const SizedBox(height: 6),
+        Container(
+            height: 14,
+            width: 250,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor, // ← updated
+                borderRadius: BorderRadius.circular(4))),
+        const SizedBox(height: 6),
+        Container(
+            height: 14,
+            width: 200,
+            decoration: BoxDecoration(
+                color: colors.skeletonColor, // ← updated
+                borderRadius: BorderRadius.circular(4))),
+      ]),
+    );
+  }
+
+  Widget _buildPostsGridSkeleton(AppColorSet colors) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: 9, // ← match other screen (9 items)
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          crossAxisSpacing: 2,
+          mainAxisSpacing: 2,
+          childAspectRatio: 0.8),
+      itemBuilder: (_, __) => Container(
+        margin: const EdgeInsets.all(1),
+        decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(4),
+            color: colors.skeletonColor), // ← updated
+      ),
+    );
   }
 }
