@@ -19,6 +19,7 @@ import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 import 'package:Ratedly/screens/Profile_page/promote_post.dart';
 import 'package:Ratedly/services/post_boost_service.dart';
+import 'package:Ratedly/models/posted_result.dart'; // ← NEW
 
 // Identity matrix — passthrough when no filter/adjust is applied.
 const List<double> _kIdentityMatrix = [
@@ -525,13 +526,55 @@ class _AddPostScreenState extends State<AddPostScreen>
               ? (_isVideo ? 'Video Posted & Boosted! 🔥' : 'Posted & Boosted! 🔥')
               : (_isVideo ? 'Video Posted!' : 'Posted!'),
         );
+
+        // ── Capture everything the share banner needs BEFORE clearMedia() ───
+        final bool wasVideo = _isVideo;
+        final Uint8List? sharedBytes = _file;
+        final File? sharedVideo = _videoFile;
+        final String sharedCaption = _descriptionController.text;
+
+        // Fetch the new post row (same columns the profile grid uses) so the
+        // feed can display it immediately.
+        Map<String, dynamic>? postRow;
+        try {
+          final fetched = await Supabase.instance.client
+              .from('posts')
+              .select(
+                  'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
+              .eq('uid', user.uid)
+              .order('datePublished', ascending: false)
+              .limit(1)
+              .maybeSingle();
+          if (fetched != null) postRow = Map<String, dynamic>.from(fetched);
+        } catch (_) {
+          // Non-critical: without the row the user simply lands on the
+          // profile as before, with no share banner.
+        }
+        if (!mounted) return;
+
         clearMedia();
         widget.onPostUploaded?.call();
 
+        final PostedResult? result = postRow == null
+            ? null
+            : PostedResult(
+                postRow: postRow,
+                isVideo: wasVideo,
+                imageBytes: sharedBytes,
+                videoFile: sharedVideo,
+                caption: sharedCaption,
+              );
+
         final navigator = Navigator.of(context);
-        navigator
-            .popUntil((route) => route.settings.name == 'cameraFromProfile');
-        navigator.pop();
+        bool foundCameraRoute = false;
+        navigator.popUntil((route) {
+          if (route.settings.name == 'cameraFromProfile') {
+            foundCameraRoute = true;
+            return true;
+          }
+          return route.isFirst; // never throws if the route is missing
+        });
+        if (foundCameraRoute) navigator.pop(result);
       } else if (context.mounted) {
         setState(() => isLoading = false);
         showSnackBar(context, 'Error: $res');
