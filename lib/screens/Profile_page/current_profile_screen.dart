@@ -17,6 +17,7 @@ import 'package:video_player/video_player.dart';
 import 'package:flutter/gestures.dart';
 import 'package:country_flags/country_flags.dart';
 import 'package:Ratedly/screens/Profile_page/profile_post_feed_screen.dart';
+import 'package:Ratedly/models/posted_result.dart'; // ← NEW
 import 'package:Ratedly/services/analytics_service.dart';
 import 'package:Ratedly/utils/colors.dart'; // shared colours
 import 'package:Ratedly/utils/video_utils.dart'; // shared video helpers + service
@@ -628,6 +629,77 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
+  // ========== CAMERA + POST-SHARE FLOW (NEW) ============================
+
+  /// Single entry point for every "add post" button. If the composer returns
+  /// a [PostedResult], we open the feed on the new post (with share banner).
+  Future<void> _openCamera() async {
+    _mediaService.pauseAll();
+    _muteProfileVideo();
+
+    final posted = await Navigator.push<PostedResult>(
+      context,
+      MaterialPageRoute<PostedResult>(
+        builder: (_) => CustomCameraScreen(
+          onPostUploaded: () async => getData(),
+        ),
+        settings: const RouteSettings(name: 'cameraFromProfile'),
+      ),
+    );
+    if (!mounted) return;
+
+    if (posted != null) {
+      await _openFeedForNewPost(posted);
+    } else {
+      _resumeProfileMedia();
+    }
+  }
+
+  Future<void> _openFeedForNewPost(PostedResult posted) async {
+    final row = Map<String, dynamic>.from(posted.postRow);
+
+    // New post first, then the rest, without duplicating it if getData()
+    // already finished and put it in _displayedPosts.
+    final posts = <Map<String, dynamic>>[
+      row,
+      ..._displayedPosts
+          .map((p) => Map<String, dynamic>.from(p as Map))
+          .where((p) => p['postId'] != row['postId']),
+    ];
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProfilePostFeedScreen(
+          initialPosts: posts,
+          initialIndex: 0,
+          userData: {
+            'uid': widget.uid,
+            'username': userData['username'] ?? '',
+            'photoUrl': userData['photoUrl'] ?? '',
+            'isVerified': userData['isVerified'] ?? false,
+            'country': userData['country'] ?? '',
+          },
+          onLoadMore: _loadMorePostsForFeed,
+          initialHasMore: true,
+          onPostDeleted: () async => getData(),
+          justPosted: posted,
+        ),
+      ),
+    );
+
+    if (mounted) _resumeProfileMedia();
+  }
+
+  void _resumeProfileMedia() {
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (mounted) {
+        _mediaService.resumeAll();
+        _unmuteProfileVideo();
+      }
+    });
+  }
+
   void _navigateToSettings() {
     _muteProfileVideo();
     Navigator.push(
@@ -825,26 +897,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           ),
           const SizedBox(height: 28),
           ElevatedButton(
-            onPressed: () {
-              _mediaService.pauseAll(); // pause loop videos
-              _muteProfileVideo();
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => CustomCameraScreen(
-                    onPostUploaded: () async => getData(),
-                  ),
-                  settings: const RouteSettings(name: 'cameraFromProfile'),
-                ),
-              ).then((_) {
-                Future.delayed(const Duration(milliseconds: 300), () {
-                  if (mounted) {
-                    _mediaService.resumeAll();
-                    _unmuteProfileVideo();
-                  }
-                });
-              });
-            },
+            onPressed: _openCamera, // ← CHANGED
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF3797EF),
               foregroundColor: Colors.white,
@@ -1008,26 +1061,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
 
   Widget _buildAddPostButton(AppColorSet colors) {
     return GestureDetector(
-      onTap: () {
-        _mediaService.pauseAll();
-        _muteProfileVideo();
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => CustomCameraScreen(
-              onPostUploaded: () async => getData(),
-            ),
-            settings: const RouteSettings(name: 'cameraFromProfile'),
-          ),
-        ).then((_) {
-          Future.delayed(const Duration(milliseconds: 300), () {
-            if (mounted) {
-              _mediaService.resumeAll();
-              _unmuteProfileVideo();
-            }
-          });
-        });
-      },
+      onTap: _openCamera, // ← CHANGED
       child: Container(
         margin: const EdgeInsets.all(1),
         decoration: BoxDecoration(
