@@ -5,6 +5,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart'; // ← NEW
+import 'package:Ratedly/models/posted_result.dart'; // ← NEW
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/widgets/flutter_rating_bar.dart';
@@ -140,6 +142,7 @@ class ProfilePostFeedScreen extends StatefulWidget {
   final _LoadMore onLoadMore;
   final bool initialHasMore;
   final VoidCallback? onPostDeleted;
+  final PostedResult? justPosted; // ← NEW
 
   const ProfilePostFeedScreen({
     Key? key,
@@ -149,6 +152,7 @@ class ProfilePostFeedScreen extends StatefulWidget {
     required this.onLoadMore,
     required this.initialHasMore,
     this.onPostDeleted,
+    this.justPosted, // ← NEW
   }) : super(key: key);
 
   @override
@@ -165,9 +169,12 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   bool _trackingStarted = false;
   String? _currentUserId;
 
+  late bool _showShareBanner; // ← NEW
+
   @override
   void initState() {
     super.initState();
+    _showShareBanner = widget.justPosted != null; // ← NEW
     _posts = List.from(widget.initialPosts);
     _hasMore = widget.initialHasMore;
     _currentIndex = widget.initialIndex;
@@ -239,6 +246,36 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
+  // NEW: share the just-posted media via the system share sheet
+  // ───────────────────────────────────────────────────────────────────────────
+  Future<void> _shareJustPosted(Rect? origin) async {
+    final posted = widget.justPosted;
+    if (posted == null) return;
+    VideoManager.pauseAllVideos();
+    try {
+      XFile? file;
+      if (posted.isVideo && posted.videoFile != null) {
+        file = XFile(posted.videoFile!.path);
+      } else if (posted.imageBytes != null) {
+        final f = File(
+            '${Directory.systemTemp.path}/ratedly_post_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        await f.writeAsBytes(posted.imageBytes!);
+        file = XFile(f.path, mimeType: 'image/jpeg');
+      }
+      final caption = posted.caption.trim();
+      await SharePlus.instance.share(ShareParams(
+        text: caption.isEmpty
+            ? 'Check out my post on Ratedly!'
+            : '$caption\n\nPosted on Ratedly',
+        files: file == null ? null : [file],
+        sharePositionOrigin: origin,
+      ));
+    } catch (e) {
+      if (mounted) showSnackBar(context, 'Could not open share sheet');
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
   // FIX: Pause all videos BEFORE navigating to profile from app bar
   // ───────────────────────────────────────────────────────────────────────────
   void _goToProfile() {
@@ -279,29 +316,123 @@ class _ProfilePostFeedScreenState extends State<ProfilePostFeedScreen> {
         ),
         centerTitle: true,
       ),
-      body: PageView.builder(
-        controller: _pageController,
-        scrollDirection: Axis.vertical,
-        itemCount: itemCount,
-        itemBuilder: (context, index) {
-          if (index >= _posts.length) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: CircularProgressIndicator(color: colors.textColor),
+      body: Column(
+        children: [
+          if (_showShareBanner)
+            _ShareBanner(
+              colors: colors,
+              isVideo: widget.justPosted?.isVideo ?? false,
+              onShare: _shareJustPosted,
+              onDismiss: () => setState(() => _showShareBanner = false),
+            ),
+          Expanded(
+            child: PageView.builder(
+              controller: _pageController,
+              scrollDirection: Axis.vertical,
+              itemCount: itemCount,
+              itemBuilder: (context, index) {
+                if (index >= _posts.length) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: CircularProgressIndicator(color: colors.textColor),
+                    ),
+                  );
+                }
+                return _FeedPostPage(
+                  key: ValueKey(_posts[index]['postId']),
+                  post: _posts[index],
+                  userData: widget.userData,
+                  isActive: index == _currentIndex,
+                  onPostDeleted: widget.onPostDeleted != null
+                      ? () => _onPostDeleted(index)
+                      : null,
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEW: Share banner shown after a successful post
+// ─────────────────────────────────────────────────────────────────────────────
+class _ShareBanner extends StatelessWidget {
+  final AppColorSet colors;
+  final bool isVideo;
+  final void Function(Rect? origin) onShare;
+  final VoidCallback onDismiss;
+
+  const _ShareBanner({
+    required this.colors,
+    required this.isVideo,
+    required this.onShare,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+      decoration: BoxDecoration(
+        color: colors.cardColor,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isVideo ? 'Video posted! 🎉' : 'Posted! 🎉',
+                  style: TextStyle(
+                    color: colors.textColor,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Share it on Snapchat, Instagram, X and more to get more reactions.',
+                  style: TextStyle(
+                    color: colors.textColor.withOpacity(0.65),
+                    fontSize: 12,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Builder(builder: (btnContext) {
+            return ElevatedButton(
+              onPressed: () {
+                final box = btnContext.findRenderObject() as RenderBox?;
+                final origin = box != null
+                    ? box.localToGlobal(Offset.zero) & box.size
+                    : null;
+                onShare(origin);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF3797EF),
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
               ),
+              child: const Text('Share'),
             );
-          }
-          return _FeedPostPage(
-            key: ValueKey(_posts[index]['postId']),
-            post: _posts[index],
-            userData: widget.userData,
-            isActive: index == _currentIndex,
-            onPostDeleted: widget.onPostDeleted != null
-                ? () => _onPostDeleted(index)
-                : null,
-          );
-        },
+          }),
+          IconButton(
+            icon: Icon(Icons.close, size: 18, color: colors.iconColor),
+            onPressed: onDismiss,
+          ),
+        ],
       ),
     );
   }
