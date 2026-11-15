@@ -10,6 +10,7 @@ class TextFieldInput extends StatelessWidget {
   final Color? fillColor;
   final List<TextInputFormatter>? inputFormatters;
   final FocusNode? focusNode; // ADD THIS
+  final TextStyle? textStyle; // NEW: optional override for the typed text
 
   const TextFieldInput({
     Key? key,
@@ -21,6 +22,7 @@ class TextFieldInput extends StatelessWidget {
     this.fillColor,
     this.inputFormatters,
     this.focusNode, // ADD THIS
+    this.textStyle, // NEW
   }) : super(key: key);
 
   @override
@@ -41,10 +43,13 @@ class TextFieldInput extends StatelessWidget {
       ),
       keyboardType: textInputType,
       obscureText: isPass,
-      style: const TextStyle(
-        color: Colors.white,
-        fontFamily: 'Inter',
-      ),
+      // NEW: falls back to the original style when no textStyle is passed,
+      // so every other screen using TextFieldInput looks exactly as before.
+      style: textStyle ??
+          const TextStyle(
+            color: Colors.white,
+            fontFamily: 'Inter',
+          ),
       inputFormatters: inputFormatters,
     );
   }
