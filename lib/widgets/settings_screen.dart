@@ -429,10 +429,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final now = DateTime.now().toUtc().toIso8601String();
 
+      // NEW: read when the account was created, before the users row is
+      // deleted (this runs before deleteEntireUserAccount).
+      String? createdAt;
+      try {
+        final row = await _supabase
+            .from('users')
+            .select('createdAt')
+            .eq('uid', uid)
+            .maybeSingle();
+        createdAt = row?['createdAt'] as String?;
+      } catch (e) {
+        debugPrint('users createdAt fetch failed: $e');
+      }
+
       await _supabase.from('deleted_users').insert({
         'uid': uid,
         'username': username,
         'email': email,
+        'created_at': createdAt, // NEW
         'deleted_at': now,
       });
     } catch (e) {
