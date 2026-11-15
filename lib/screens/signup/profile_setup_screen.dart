@@ -54,6 +54,14 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
     with WidgetsBindingObserver {
   static const _draftKeyPrefix = 'profile_setup_draft_v1';
 
+  // NEW: one shared style for the text shown inside both form fields
+  // (username input + gender dropdown), so they always match.
+  static const TextStyle _fieldTextStyle = TextStyle(
+    color: Color(0xFFd9d9d9),
+    fontFamily: 'Inter',
+    fontSize: 16,
+  );
+
   final TextEditingController _usernameController = TextEditingController();
   // NEW: needed so we can select-all the auto-generated username when the
   // field gains focus.
@@ -445,6 +453,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
                         color: Colors.grey[400],
                         fontFamily: 'Inter',
                       ),
+                      // NEW: same text style as the gender dropdown below.
+                      textStyle: _fieldTextStyle,
                       inputFormatters: [_UsernameFormatter()],
                     ),
                     Padding(
@@ -558,14 +568,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
                           items: _genders.map((String value) {
                             return DropdownMenuItem<String>(
                               value: value,
-                              child: Text(
-                                value,
-                                style: const TextStyle(
-                                  color: Color(0xFFd9d9d9),
-                                  fontFamily: 'Inter',
-                                  fontSize: 16,
-                                ),
-                              ),
+                              // NEW: shared style (matches username field).
+                              child: Text(value, style: _fieldTextStyle),
                             );
                           }).toList(),
                           onChanged: (value) {
@@ -574,11 +578,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
                           },
                           icon: const Icon(Icons.arrow_drop_down,
                               color: Color(0xFFd9d9d9)),
-                          style: const TextStyle(
-                            color: Color(0xFFd9d9d9),
-                            fontFamily: 'Inter',
-                            fontSize: 16,
-                          ),
+                          // NEW: shared style (matches username field).
+                          style: _fieldTextStyle,
                           hint: const Text(
                             'Choose gender',
                             style: TextStyle(
