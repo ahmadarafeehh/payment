@@ -281,7 +281,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                                     child: CircularProgressIndicator(
                                       strokeWidth: 2,
                                       valueColor: AlwaysStoppedAnimation<Color>(
-                                          Colors.white),
+                                          Colors.black),
                                     ),
                                   )
                                 : const Text(
@@ -293,8 +293,8 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                                     ),
                                   ),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF333333),
-                              foregroundColor: Colors.white,
+                              backgroundColor: Colors.white,
+                              foregroundColor: Colors.black,
                               minimumSize: const Size(double.infinity, 56),
                               padding: const EdgeInsets.symmetric(horizontal: 16),
                               shape: RoundedRectangleBorder(
@@ -313,7 +313,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                                 width: 24,
                                 height: 24,
                                 fit: BoxFit.contain,
-                                color: Colors.white,
+                                color: Colors.black,
                               ),
                               label: _isLoading
                                   ? const SizedBox(
@@ -323,7 +323,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                                         strokeWidth: 2,
                                         valueColor:
                                             AlwaysStoppedAnimation<Color>(
-                                                Colors.white),
+                                                Colors.black),
                                       ),
                                     )
                                   : const Text(
@@ -335,8 +335,8 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                                       ),
                                     ),
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF333333),
-                                foregroundColor: Colors.white,
+                                backgroundColor: Colors.white,
+                                foregroundColor: Colors.black,
                                 minimumSize: const Size(double.infinity, 56),
                                 padding:
                                     const EdgeInsets.symmetric(horizontal: 16),
