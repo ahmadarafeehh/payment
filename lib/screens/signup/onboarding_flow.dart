@@ -340,9 +340,28 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     });
   }
 
+  // NEW: back from profile_setup → age_verification so the user can change
+  // their date of birth.
+  void _handleBackToAge() {
+    _advanceStep('age_screen');
+    DebugLogger.logEvent(
+        'ONBOARDING_FLOW [$_userId]: back to age verification');
+
+    // Clear the saved "profile_setup" marker, otherwise a cold start after
+    // going back would resume at profile_setup with the old DOB.
+    if (_userId != null) _clearProgress(_userId!);
+
+    if (!mounted) return;
+    setState(() {
+      _showProfileSetup = false;
+      _profileDateOfBirth = null;
+    });
+  }
+
   Widget _buildProfileSetup(DateTime dateOfBirth) {
     return ProfileSetupScreen(
       dateOfBirth: dateOfBirth,
+      onBack: _handleBackToAge,
       onComplete: () {
         _advanceStep('completed');
         DebugLogger.logEvent(
