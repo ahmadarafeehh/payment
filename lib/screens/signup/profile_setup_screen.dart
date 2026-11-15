@@ -17,11 +17,15 @@ import 'package:Ratedly/services/device_session.dart'; // NEW
 class ProfileSetupScreen extends StatefulWidget {
   final DateTime dateOfBirth;
   final VoidCallback onComplete;
+  // NEW: optional. When provided, a back arrow is shown at the top-left so the
+  // user can return to the age screen and change their date of birth.
+  final VoidCallback? onBack;
 
   const ProfileSetupScreen({
     Key? key,
     required this.dateOfBirth,
     required this.onComplete,
+    this.onBack,
   }) : super(key: key);
 
   @override
@@ -399,7 +403,19 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen>
           child: SingleChildScrollView(
             child: Column(
               children: [
-                const SizedBox(height: 60),
+                // NEW: back arrow to return to the age screen (only shown when
+                // the parent provides onBack). Disabled while submitting.
+                if (widget.onBack != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      onPressed: _isLoading ? null : widget.onBack,
+                    ),
+                  )
+                else
+                  const SizedBox(height: 48),
+                const SizedBox(height: 12),
                 const Text(
                   'Set up your profile',
                   style: TextStyle(
