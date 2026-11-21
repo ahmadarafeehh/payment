@@ -1150,6 +1150,8 @@ class _FastNotificationListState extends State<_FastNotificationList> {
         return customData['replierUid'] ?? customData['replier_uid'];
       case 'reply_like':
         return customData['likerUid'] ?? customData['liker_uid'];
+      case 'reaction_agree_disagree':
+        return customData['voterUserId'] ?? customData['voter_userid'];
       default:
         return null;
     }
@@ -1382,6 +1384,8 @@ class _FastNotificationItem extends StatelessWidget {
         return customData['replierUid'] ?? customData['replier_uid'] ?? '';
       case 'reply_like':
         return customData['likerUid'] ?? customData['liker_uid'] ?? '';
+      case 'reaction_agree_disagree':
+        return customData['voterUserId'] ?? customData['voter_userid'] ?? '';
       default:
         return '';
     }
@@ -1396,6 +1400,7 @@ class _FastNotificationItem extends StatelessWidget {
       case 'comment_like':
       case 'reply':
       case 'reply_like':
+      case 'reaction_agree_disagree':
         return customData['postId'] ?? customData['post_id'];
       default:
         return null;
@@ -1496,6 +1501,12 @@ class _FastNotificationItem extends StatelessWidget {
       case 'reply_like':
         title = '$username liked your reply';
         subtitle = customData['replyText'] ?? customData['reply_text'];
+        onTap = postId != null ? () => _navigateToPost(context, postId) : null;
+        break;
+      case 'reaction_agree_disagree':
+        final choice = customData['choice']?.toString();
+        final verb = choice == 'disagree' ? 'disagreed with' : 'agreed with';
+        title = '$username $verb your reaction';
         onTap = postId != null ? () => _navigateToPost(context, postId) : null;
         break;
       default:
